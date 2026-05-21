@@ -2139,6 +2139,296 @@
       return callGAS(funcName, data);
     }
 
+    // ============================================================
+    // v73.0: 報告書 UI 閲覧・編集 ヘルパー / モーダル制御
+    // ============================================================
+
+    // HTML エスケープ（XSS 対策・innerHTML 構築の安全化）
+    window.escapeHtmlV73 = function (s) {
+      if (s === null || s === undefined) return '';
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    };
+
+    // Drive 共有 URL から fileId を抽出（サムネイル URL 構築用）
+    function extractDriveFileIdV73_(url) {
+      if (!url) return '';
+      const m1 = String(url).match(/\/d\/([a-zA-Z0-9_-]+)/);
+      if (m1) return m1[1];
+      const m2 = String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (m2) return m2[1];
+      return '';
+    }
+
+    // ====== 個人報告書 詳細モーダル ======
+    let _currentReportDetailV73 = null;
+    let _isEditingReportV73 = false;
+
+    window.openReportDetail = async function (id) {
+      const modal  = document.getElementById('report-detail-modal');
+      const body   = document.getElementById('rd-body');
+      const footer = document.getElementById('rd-footer');
+      modal.classList.remove('hidden');
+      body.innerHTML   = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
+      footer.innerHTML = '';
+      try {
+        const detail = await runGasTask('getReportDetail', { id });
+        _currentReportDetailV73 = detail;
+        _isEditingReportV73 = false;
+        renderReportDetailV73_();
+      } catch (e) {
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">エラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
+      }
+    };
+
+    window.closeReportDetail = function () {
+      if (_isEditingReportV73) {
+        if (!confirm('編集中の内容は破棄されます。閉じますか？')) return;
+      }
+      document.getElementById('report-detail-modal').classList.add('hidden');
+      _currentReportDetailV73 = null;
+      _isEditingReportV73 = false;
+    };
+
+    function renderReportDetailV73_() {
+      const d = _currentReportDetailV73;
+      if (!d) return;
+      const esc = window.escapeHtmlV73;
+      const editing = _isEditingReportV73;
+      document.getElementById('rd-title').textContent =
+        (d.isEmergency ? '🚨 ' : '') + (d.mode || '報告書');
+
+      const summaryView = editing
+        ? `<textarea id="rd-summary" class="w-full border border-slate-300 rounded p-2 text-sm" rows="5">${esc(d.summary)}</textarea>`
+        : `<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded border border-slate-200">${esc(d.summary || '（要約なし）')}</div>`;
+
+      const transcriptView = editing
+        ? `<textarea id="rd-transcript" class="w-full border border-slate-300 rounded p-2 text-sm" rows="10">${esc(d.transcript)}</textarea>`
+        : `<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded border border-slate-200">${esc(d.transcript || '（原文なし）')}</div>`;
+
+      const emergencyView = editing
+        ? `<label class="flex items-center gap-2 text-sm cursor-pointer"><input id="rd-emergency" type="checkbox" ${d.isEmergency ? 'checked' : ''} class="w-5 h-5"><span class="text-red-600 font-bold">🚨 緊急として扱う</span></label>`
+        : (d.isEmergency
+            ? '<div class="text-sm text-red-600 font-bold bg-red-50 inline-block px-2 py-1 rounded border border-red-200">🚨 緊急扱い</div>'
+            : '<div class="text-sm text-slate-400">通常モード</div>');
+
+      // 画像プレビュー
+      let imageHtml = '';
+      if (d.imageUrls && d.imageUrls.length > 0) {
+        imageHtml = '<div class="grid grid-cols-2 gap-2">' + d.imageUrls.map(url => {
+          const fileId = extractDriveFileIdV73_(url);
+          const thumb  = fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w400` : url;
+          return `<a href="${esc(url)}" target="_blank" rel="noopener" class="block bg-white rounded border border-slate-200 overflow-hidden">
+            <img src="${esc(thumb)}" class="w-full h-32 object-cover" alt="添付画像" loading="lazy"
+              onerror="this.outerHTML='<div class=\\'p-3 text-xs text-slate-400 text-center\\'>画像を読込めません</div>'">
+          </a>`;
+        }).join('') + '</div>';
+      } else {
+        imageHtml = '<div class="text-sm text-slate-400">添付画像なし</div>';
+      }
+
+      document.getElementById('rd-body').innerHTML = `
+        <div class="bg-white rounded-lg p-3 border border-slate-200">
+          <div class="text-xs text-slate-500 mb-1">日時 / 店舗 / 担当</div>
+          <div class="text-sm font-bold text-slate-700">${esc(d.tsDisplay)}</div>
+          <div class="text-sm text-slate-700">${esc(d.shop)} · ${esc(d.name)}</div>
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">緊急フラグ</div>
+          ${emergencyView}
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">要約</div>
+          ${summaryView}
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">原文（全文）</div>
+          ${transcriptView}
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">添付画像 ${d.imageUrls ? '(' + d.imageUrls.length + ')' : ''}</div>
+          ${imageHtml}
+        </div>
+        ${d.docUrl ? `<div><a href="${esc(d.docUrl)}" target="_blank" rel="noopener" class="text-xs text-blue-600 underline inline-flex items-center gap-1"><span class="material-icons text-xs">open_in_new</span>Google Doc で開く</a></div>` : ''}
+        <div class="text-[10px] text-slate-400 pt-2 border-t border-slate-200">最終更新: ${esc(d.lastModified || '-')}</div>
+      `;
+
+      if (!d.canEdit) {
+        document.getElementById('rd-footer').innerHTML = `
+          <button onclick="window.closeReportDetail()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">閉じる</button>
+        `;
+      } else if (editing) {
+        document.getElementById('rd-footer').innerHTML = `
+          <button onclick="window.cancelEditReportV73()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">キャンセル</button>
+          <button onclick="window.saveReportDetailV73()" class="flex-1 py-3 bg-green-700 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">💾 保存</button>
+        `;
+      } else {
+        document.getElementById('rd-footer').innerHTML = `
+          <button onclick="window.closeReportDetail()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">閉じる</button>
+          <button onclick="window.startEditReportV73()" class="flex-1 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">✎ 編集</button>
+        `;
+      }
+    }
+
+    window.startEditReportV73 = function () { _isEditingReportV73 = true;  renderReportDetailV73_(); };
+    window.cancelEditReportV73 = function () { _isEditingReportV73 = false; renderReportDetailV73_(); };
+
+    window.saveReportDetailV73 = async function () {
+      const d = _currentReportDetailV73;
+      if (!d) return;
+      const patch = {
+        summary     : document.getElementById('rd-summary').value,
+        transcript  : document.getElementById('rd-transcript').value,
+        isEmergency : document.getElementById('rd-emergency').checked,
+        lastModified: d.lastModified
+      };
+      try {
+        await doWithLoading('保存中・Google Doc 再生成中…', runGasTask('updateReport', { id: d.id, patch }));
+        const fresh = await runGasTask('getReportDetail', { id: d.id });
+        _currentReportDetailV73 = fresh;
+        _isEditingReportV73 = false;
+        renderReportDetailV73_();
+        alert('保存しました。Google Doc も最新内容で再生成されました。');
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (msg.indexOf('CONFLICT') >= 0) {
+          if (confirm('他のセッションで先に更新されました。\n最新版を取得して画面を更新しますか？\n（あなたの編集内容は破棄されます）')) {
+            const fresh = await runGasTask('getReportDetail', { id: d.id });
+            _currentReportDetailV73 = fresh;
+            _isEditingReportV73 = false;
+            renderReportDetailV73_();
+          }
+        } else {
+          alert('保存エラー: ' + msg);
+        }
+      }
+    };
+
+    // ====== 集計レポート 詳細モーダル ======
+    let _currentAggDetailV73 = null;
+    let _isEditingAggV73 = false;
+
+    window.openAggregatedDetail = async function (docId) {
+      const modal  = document.getElementById('aggregated-detail-modal');
+      const body   = document.getElementById('ad-body');
+      const footer = document.getElementById('ad-footer');
+      modal.classList.remove('hidden');
+      body.innerHTML   = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
+      footer.innerHTML = '';
+      try {
+        const detail = await runGasTask('getAggregatedReportDetail', { docId });
+        _currentAggDetailV73 = detail;
+        _isEditingAggV73 = false;
+        renderAggregatedDetailV73_();
+      } catch (e) {
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">エラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
+      }
+    };
+
+    window.closeAggregatedDetail = function () {
+      if (_isEditingAggV73) {
+        if (!confirm('編集中の内容は破棄されます。閉じますか？')) return;
+      }
+      document.getElementById('aggregated-detail-modal').classList.add('hidden');
+      _currentAggDetailV73 = null;
+      _isEditingAggV73 = false;
+    };
+
+    function renderAggregatedDetailV73_() {
+      const d = _currentAggDetailV73;
+      if (!d) return;
+      const esc = window.escapeHtmlV73;
+      const editing = _isEditingAggV73;
+      document.getElementById('ad-title').textContent = d.fileName || '集計レポート';
+
+      const overallView = editing
+        ? `<textarea id="ad-overall" class="w-full border border-slate-300 rounded p-2 text-sm" rows="6">${esc(d.overallSummary)}</textarea>`
+        : `<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded border border-slate-200">${esc(d.overallSummary || '（概要なし）')}</div>`;
+
+      const topicsView = editing
+        ? `<textarea id="ad-topics" class="w-full border border-slate-300 rounded p-2 text-sm font-mono" rows="14" placeholder="・トピックタイトル&#10;トピックの要約文…&#10;&#10;・次のトピック&#10;…">${esc(d.topicsText)}</textarea>`
+        : `<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded border border-slate-200">${esc(d.topicsText || '（トピックなし）')}</div>`;
+
+      let originalHtml = '<div class="text-sm text-slate-400">原文データなし</div>';
+      if (d.originalRows && d.originalRows.length > 0) {
+        originalHtml = '<div class="space-y-1">' + d.originalRows.map(r => {
+          const safeId = esc(r.id);
+          const sumPreview = (r.summary || '').substring(0, 100) + ((r.summary && r.summary.length > 100) ? '…' : '');
+          return `
+            <div class="bg-slate-50 rounded p-2 border border-slate-100 cursor-pointer active:bg-slate-100" onclick="window.openReportDetail('${safeId}')">
+              <div class="text-xs text-slate-500">${esc(r.time)} · ${esc(r.shop)} · ${esc(r.name)} · ${esc(r.mode)}${r.hasImage ? ' 🖼️' : ''}</div>
+              <div class="text-xs text-slate-700 break-words mt-1">${esc(sumPreview)}</div>
+            </div>
+          `;
+        }).join('') + '</div>';
+      }
+
+      document.getElementById('ad-body').innerHTML = `
+        <div class="bg-white rounded-lg p-3 border border-slate-200">
+          <div class="text-xs text-slate-500 mb-1">対象日 / 種別</div>
+          <div class="text-sm font-bold text-slate-700">${esc(d.titlePrefix)} · ${esc(d.dateDisplay)}</div>
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">【全体概要】</div>
+          ${overallView}
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">【トピック別要約】</div>
+          ${editing ? '<div class="text-[10px] text-slate-400 mb-1">形式: 「・タイトル」で始まる行＋本文を交互に記入</div>' : ''}
+          ${topicsView}
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">原文データ（${d.originalRows ? d.originalRows.length : 0}件 · タップで個別報告書を表示）</div>
+          ${originalHtml}
+        </div>
+        ${d.docUrl ? `<div><a href="${esc(d.docUrl)}" target="_blank" rel="noopener" class="text-xs text-blue-600 underline inline-flex items-center gap-1"><span class="material-icons text-xs">open_in_new</span>Google Doc で開く</a></div>` : ''}
+      `;
+
+      if (editing) {
+        document.getElementById('ad-footer').innerHTML = `
+          <button onclick="window.cancelEditAggV73()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">キャンセル</button>
+          <button onclick="window.saveAggregatedDetailV73()" class="flex-1 py-3 bg-teal-700 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">💾 保存</button>
+        `;
+      } else {
+        document.getElementById('ad-footer').innerHTML = `
+          <button onclick="window.closeAggregatedDetail()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">閉じる</button>
+          <button onclick="window.startEditAggV73()" class="flex-1 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">✎ AI要約を編集</button>
+        `;
+      }
+    }
+
+    window.startEditAggV73 = function () { _isEditingAggV73 = true;  renderAggregatedDetailV73_(); };
+    window.cancelEditAggV73 = function () { _isEditingAggV73 = false; renderAggregatedDetailV73_(); };
+
+    window.saveAggregatedDetailV73 = async function () {
+      const d = _currentAggDetailV73;
+      if (!d) return;
+      const patch = {
+        overallSummary: document.getElementById('ad-overall').value,
+        topicsText    : document.getElementById('ad-topics').value,
+        lastModified  : d.lastModified
+      };
+      try {
+        await doWithLoading('保存中・Google Doc 再生成中…', runGasTask('updateAggregatedReport', { docId: d.docId, patch }));
+        const fresh = await runGasTask('getAggregatedReportDetail', { docId: d.docId });
+        _currentAggDetailV73 = fresh;
+        _isEditingAggV73 = false;
+        renderAggregatedDetailV73_();
+        alert('保存しました。Google Doc も最新内容で再生成されました。');
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (msg.indexOf('CONFLICT') >= 0) {
+          if (confirm('他のセッションで先に更新されました。\n最新版を取得して画面を更新しますか？\n（あなたの編集内容は破棄されます）')) {
+            const fresh = await runGasTask('getAggregatedReportDetail', { docId: d.docId });
+            _currentAggDetailV73 = fresh;
+            _isEditingAggV73 = false;
+            renderAggregatedDetailV73_();
+          }
+        } else {
+          alert('保存エラー: ' + msg);
+        }
+      }
+    };
+
     // ローディングオーバーレイ付きでタスクを実行する関数
     async function doWithLoading(loadingText, taskPromise) {
       const overlay = document.getElementById('loading-overlay');
@@ -3324,14 +3614,39 @@
     window.showReportsList = function () {
       window.toggleMenu();
       document.getElementById('sub-screen').classList.remove('hidden');
-      document.getElementById('sub-title').innerText = "レポート";
-      document.getElementById('sub-body').scrollTop = 0; // スクロールリセット
+      document.getElementById('sub-title').innerText = "今月のレポート一覧";
+      document.getElementById('sub-body').scrollTop = 0;
+      document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
 
       runGasTask('getAggregatedReports').then(function (r) {
-        let h = ""; r.forEach(function (i) {
-          h += '<div class="p-3 border-b bg-white"><a href="' + i.url + '" target="_blank" class="text-blue-600 font-bold block">' + i.name + '</a><div class="text-xs text-gray-400">' + i.date + '</div></div>';
+        if (!r || r.length === 0) {
+          document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">今月のレポートはまだありません</div>';
+          return;
+        }
+        let h = "";
+        r.forEach(function (i) {
+          const safeId   = window.escapeHtmlV73(i.id   || '');
+          const safeName = window.escapeHtmlV73(i.name || '');
+          const safeDate = window.escapeHtmlV73(i.date || '');
+          const safeUrl  = window.escapeHtmlV73(i.url  || '');
+          h += `
+            <div class="p-3 border-b bg-white">
+              <div class="flex justify-between items-start gap-2">
+                <div class="flex-1 min-w-0">
+                  <div class="font-bold text-sm text-slate-700 break-words">${safeName}</div>
+                  <div class="text-xs text-slate-400 mt-1">${safeDate}</div>
+                </div>
+                <div class="flex flex-col gap-1 flex-shrink-0">
+                  <button onclick="window.openAggregatedDetail('${safeId}')" class="text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 active:bg-blue-100">詳細 ›</button>
+                  <a href="${safeUrl}" target="_blank" class="text-xs text-slate-500 px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-center">Doc</a>
+                </div>
+              </div>
+            </div>
+          `;
         });
-        document.getElementById('sub-body').innerHTML = h || "なし";
+        document.getElementById('sub-body').innerHTML = h;
+      }).catch(function (e) {
+        document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
       });
     }
 
@@ -3340,16 +3655,40 @@
     window.showHistory = function () {
       document.getElementById('sub-screen').classList.remove('hidden');
       document.getElementById('sub-title').innerText = "履歴";
-      document.getElementById('sub-body').scrollTop = 0; // スクロールリセット
+      document.getElementById('sub-body').scrollTop = 0;
+      document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
 
       runGasTask('getMyHistory').then(function (h) {
-        let html = ""; h.forEach(function (i) {
-          html += '<div class="p-3 border-b bg-white"><div class="font-bold text-xs bg-gray-100 inline-block px-1 rounded">' + i.mode + '</div> <span class="text-xs text-gray-400">' + i.date + '</span><div class="text-sm mt-1">' + i.summary + '</div></div>';
+        if (!h || h.length === 0) {
+          document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">履歴がありません</div>';
+          return;
+        }
+        let html = "";
+        h.forEach(function (i) {
+          const safeId      = window.escapeHtmlV73(i.id      || '');
+          const safeDate    = window.escapeHtmlV73(i.date    || '');
+          const safeMode    = window.escapeHtmlV73(i.mode    || '');
+          const safeSummary = window.escapeHtmlV73(i.summary || '');
+          const emergencyBadge = i.isEmergency ? '<span class="text-red-600 font-bold text-xs">🚨 緊急</span> ' : '';
+          const wrapperClass = i.isEmergency ? 'border-l-4 border-red-500 bg-red-50' : 'bg-white';
+          html += `
+            <div class="${wrapperClass} p-3 border-b border-slate-100">
+              <div class="flex justify-between items-start gap-2">
+                <div class="flex-1 min-w-0">
+                  <div class="text-xs text-slate-500 mb-1">${safeDate} · ${emergencyBadge}<span class="font-bold">${safeMode}</span></div>
+                  <div class="text-sm text-slate-700 break-words">${safeSummary}</div>
+                </div>
+                <button onclick="window.openReportDetail('${safeId}')" class="flex-shrink-0 text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 active:bg-blue-100">詳細 ›</button>
+              </div>
+            </div>
+          `;
         });
-        document.getElementById('sub-body').innerHTML = html || "履歴なし";
+        document.getElementById('sub-body').innerHTML = html;
+        return; // 旧コードは下記の forEach に続いていたので break する
+      }).catch(function (e) {
+        document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
       });
     }
-
       ;
 
     window.updateMaster = function () {
@@ -3698,6 +4037,32 @@
     });
 
   </script>
+
+  <!-- v73.0: 報告書詳細モーダル（個人報告書） -->
+  <div id="report-detail-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
+    <header class="bg-green-700 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
+      <button onclick="window.closeReportDetail()" class="p-1 active:bg-white/20 rounded">
+        <span class="material-icons">close</span>
+      </button>
+      <div class="font-bold text-sm truncate flex-1 text-center px-2" id="rd-title">報告書詳細</div>
+      <div class="w-8"></div>
+    </header>
+    <div class="flex-1 overflow-y-auto p-4 space-y-3" id="rd-body"></div>
+    <footer class="bg-white border-t border-slate-200 px-4 py-3 flex gap-2 flex-shrink-0" id="rd-footer"></footer>
+  </div>
+
+  <!-- v73.0: 集計レポート詳細モーダル -->
+  <div id="aggregated-detail-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
+    <header class="bg-teal-700 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
+      <button onclick="window.closeAggregatedDetail()" class="p-1 active:bg-white/20 rounded">
+        <span class="material-icons">close</span>
+      </button>
+      <div class="font-bold text-sm truncate flex-1 text-center px-2" id="ad-title">集計レポート詳細</div>
+      <div class="w-8"></div>
+    </header>
+    <div class="flex-1 overflow-y-auto p-4 space-y-3" id="ad-body"></div>
+    <footer class="bg-white border-t border-slate-200 px-4 py-3 flex gap-2 flex-shrink-0" id="ad-footer"></footer>
+  </div>
 
   <!-- HQ配信 編集モーダル -->
   <div id="hq-edit-modal" class="hidden fixed inset-0 bg-black/50 z-[5000] flex items-end justify-center">
