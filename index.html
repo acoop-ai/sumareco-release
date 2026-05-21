@@ -2097,11 +2097,28 @@
 
     // ===== GAS通信 (fetch版) =====
     async function callGAS(action, data = {}) {
-      if (!currentAccessToken) throw new Error('未ログインです');
-      // 期限切れ間近ならサイレント更新を試みる
-      if (accessTokenExpiry && Date.now() > accessTokenExpiry - 60 * 1000) {
+      // currentAccessToken が無い、または期限切れ間近ならまず silent 再取得を試みる
+      // （タブ長時間放置・bfcache 復帰・silent refresh タイマー skip 等で消えていても自動復帰させる）
+      const noToken    = !currentAccessToken;
+      const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 60 * 1000;
+      if (noToken || nearExpiry) {
         try { await requestAccessTokenOnce_({ silent: true }); }
-        catch (e) { console.warn('inline token refresh failed; will try with stale token:', e); }
+        catch (e) { console.warn('silent token refresh failed:', e); }
+      }
+      // それでもトークンが無ければログイン画面へ戻して再ログインを促す
+      if (!currentAccessToken) {
+        try {
+          const home  = document.getElementById('screen-home');
+          const login = document.getElementById('screen-login');
+          if (home)  home.classList.add('hidden');
+          if (login) login.classList.remove('hidden');
+          const errEl = document.getElementById('login-error');
+          if (errEl) {
+            errEl.textContent = 'セッションの有効期限が切れました。再度ログインしてください。';
+            errEl.classList.remove('hidden');
+          }
+        } catch (_) {}
+        throw new Error('セッション切れです。ログイン画面で再度ログインしてください。');
       }
       const payload = { action, accessToken: currentAccessToken, ...data };
       const res = await fetch(CONFIG.GAS_URL, {
