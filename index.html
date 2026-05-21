@@ -2561,7 +2561,7 @@
                      <span class="material-icons text-xs">check_circle_outline</span>完了しました
                    </button>` : '';
               return `<div id="hq-alert-card-${a.id || ''}" class="flex flex-col border-l-4 rounded-r-lg px-3 py-2 mb-1 ${borderColor} ${bgColor}">
-                <div class="flex items-start cursor-pointer" onclick="window.showScreen('dash-screen')">
+                <div class="flex items-start cursor-pointer" onclick="window.showWeatherDashboard()">
                   <span class="material-icons ${iconColor} text-sm mr-2 mt-0.5 flex-shrink-0">${icon}</span>
                   <div class="w-full min-w-0">
                     <div class="text-xs font-bold text-slate-700">
@@ -2575,7 +2575,7 @@
             }).join('');
 
             area.className = `block mb-4`;
-            area.innerHTML = `<div class="text-[10px] font-bold text-slate-500 mb-1 px-1">⚠️ アラート ${sorted.length}件</div>${alertRows}<div class="text-[10px] text-blue-600 underline text-right pr-1 cursor-pointer" onclick="window.showScreen('dash-screen')">詳細を表示</div>`;
+            area.innerHTML = `<div class="text-[10px] font-bold text-slate-500 mb-1 px-1">⚠️ アラート ${sorted.length}件</div>${alertRows}<div class="text-[10px] text-blue-600 underline text-right pr-1 cursor-pointer" onclick="window.showWeatherDashboard()">詳細を表示</div>`;
           }
 
           else {
