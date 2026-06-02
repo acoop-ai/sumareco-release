@@ -140,9 +140,16 @@
     .green-popup .leaflet-popup-content {
       margin: 8px;
       line-height: 1.4;
-      /* v73.2: Leaflet が幅をクランプしてカード(PC 600px)の右カラムを見切れさせる問題を解消。
-         内容の自然幅に合わせる（カード側の width 指定が効くようにする） */
-      width: auto !important;
+    }
+
+    /* v73.3: Leaflet の幅自動測定に依存せず、ポップアップ幅を JS の isMobile 判定と同じ条件で固定する。
+       PC は横3カラムが収まる 600px、スマホは縦積みの 248px を !important で強制。
+       （前回の width:auto は親要素の制約で 600px まで広がらず失敗したため、固定幅方式に変更） */
+    .green-popup-pc .leaflet-popup-content {
+      width: 600px !important;
+    }
+    .green-popup-mobile .leaflet-popup-content {
+      width: 248px !important;
     }
 
     .green-popup .leaflet-popup-close-button {
@@ -1379,7 +1386,7 @@
     </div>
     <div id="manual-screen-scroll" class="flex-grow overflow-y-auto manual-content">
       <header>
-        <div class="hero-badge">Ver 68.2 Official User Manual</div>
+        <div class="hero-badge">Ver 68.3 Official User Manual</div>
         <h1>Smart Record</h1>
         <p class="subtitle">店舗巡回・業務報告ボイスレコーダーシステム<br>最新版 取扱説明書</p>
       </header>
@@ -1870,26 +1877,61 @@
 
         <!-- ═══════════════════ SEC 8 ═══════════════════ -->
         <section id="sec8">
-          <h2><span class="sec-num">08</span> メニュー一覧・管理機能</h2>
-          <p>画面左上の設定アイコンからアクセスできる、管理者・開発者向けを含む全機能リストです。</p>
+          <h2><span class="sec-num">08</span> マイレポート・メニュー一覧</h2>
+
+          <div class="tip-box green">
+            <div class="title">📋 まずは「マイレポート」</div>
+            <p>自分が送信した報告や巡回まとめを確認・修正したいときは、<strong>ホーム画面の「マイレポート」ボタン</strong>、または画面右上の<strong>メニュー（⚙️）→「マイレポート」</strong>を開いてください。<strong>共有ドライブ（Googleドキュメント）を開かなくても、アプリの中だけで中身の確認と修正</strong>ができます。</p>
+          </div>
+
+          <h3>マイレポートでできること</h3>
+          <ol class="step-list">
+            <li><strong>自分の報告</strong>（日報・巡回・苦情・提案など）の一覧が表示されます。各行の「<strong>詳細 ›</strong>」をタップすると、全文・添付写真・緊急フラグを確認できます。</li>
+            <li>自分が送信した報告は「<strong>✎ 編集</strong>」から、要約・原文・緊急の有無をその場で修正できます。保存すると Googleドキュメントも自動で最新内容に更新されます。</li>
+            <li><strong>まとめレポート</strong>（巡回まとめ・速報・朝刊）も同じ画面の下部に表示されます。「詳細」から内容を確認でき、AI要約の文面を修正することも可能です。</li>
+          </ol>
+
+          <h3>メニュー（⚙️）の項目</h3>
+          <p>画面右上の歯車アイコンから、<strong>すべての利用者</strong>が開けます。</p>
           <table class="ref-table">
             <tr>
-              <th>マイ店舗設定</th>
-              <td>自分の所属店舗を選択。ホーム画面にアラートが出るようになります。</td>
+              <th>マイレポート</th>
+              <td>自分の報告と、巡回まとめ等の集計レポートを1画面で確認・修正します。</td>
             </tr>
             <tr>
-              <th>全点天気マップ</th>
-              <td>日本地図上に全拠点の天気をピン表示。直感的な把握が可能です。</td>
+              <th>ご利用説明書</th>
+              <td>本マニュアルを表示します。</td>
             </tr>
             <tr>
-              <th>レポート一覧</th>
-              <td>過去に作成された集計レポート（Googleドキュメント）を閲覧。</td>
+              <th>マイ店舗を設定</th>
+              <td>自分の所属店舗を選択。ホーム画面にその店舗のアラートが出るようになります。</td>
             </tr>
             <tr>
-              <th>送信履歴</th>
-              <td>自分がこれまでに送信した個別の報告履歴を確認。</td>
+              <th>全店 週間予報一覧</th>
+              <td>全拠点の週間天気予報を一覧で確認します。</td>
+            </tr>
+            <tr>
+              <th>全店 天気マップ</th>
+              <td>日本地図上に全拠点の天気をピン表示。ピンをタップで詳細カードが開きます。</td>
+            </tr>
+            <tr>
+              <th>天気情報の見方</th>
+              <td>天気カードの記号やアラートの意味を解説します。</td>
+            </tr>
+            <tr>
+              <th>【巡回者用】本日の巡回まとめ作成</th>
+              <td>自分が本日送信した巡回報告を1つの「巡回日誌」にまとめます。</td>
+            </tr>
+            <tr>
+              <th>ホーム画面に追加する方法</th>
+              <td>スマホのホーム画面にアプリとして追加する手順を表示します。</td>
             </tr>
           </table>
+
+          <div class="tip-box info">
+            <div class="title">🔑 管理者向けメニュー</div>
+            <p>本部・管理者の権限を持つ方には、上記に加えて「今日の速報を作成」「昨日の日報を集計」「全店 天気データ強制更新」が表示されます。一般の利用者には表示されません。</p>
+          </div>
         </section>
 
         <!-- ═══════════════════ SEC 9（本部配信管理） ═══════════════════ -->
@@ -1972,6 +2014,14 @@
               <td><strong>仕様です。</strong> 複雑な報告は一度切って再度「追加録音」するか、数回に分けて送信してください。</td>
             </tr>
             <tr>
+              <td><strong>「音声をうまく聞き取れませんでした」と出る</strong></td>
+              <td>周囲が騒がしい・声が小さい・ほぼ無音などで内容を聞き取れなかったときに表示されます。<strong>事実と違う内容が自動で作られるのを防ぐため、あえて保存していません。</strong>「録音し直す」を選び、静かな場所ではっきりと話して録音し直してください（撮った写真はそのまま残ります）。どうしてもこの音声で送りたい場合のみ「このまま送信」を選べます。</td>
+            </tr>
+            <tr>
+              <td><strong>送った報告を直したい／見返したい</strong></td>
+              <td>ホーム画面の「<strong>マイレポート</strong>」を開いてください。自分の報告の「詳細 ›」→「✎ 編集」から、その場で修正できます（詳しくは第8章）。</td>
+            </tr>
+            <tr>
               <td><strong>「未登録ユーザー」と出る</strong></td>
               <td>管理者に権限の付与を依頼してください。マスタデータにメールアドレスの登録が必要です。</td>
             </tr>
@@ -1981,7 +2031,7 @@
 
       <footer>
         <div style="margin-bottom:8px; font-weight:800; color:var(--green-900);">Smart Record Implementation Team</div>
-        <p>Ver 68.0 Official Documentation | 2026.02.14 Update</p>
+        <p>Ver 68.3 Official Documentation | 2026.06.02 Update</p>
       </footer>
     </div>
   </div>
@@ -3216,8 +3266,9 @@
       const widthRight = "w-full md:w-2/5";
 
       if (isMapPopup) {
+        // v73.3: カード幅はポップアップ幅（CSS で固定）に合わせて 100% にする
         if (isMobile) {
-          containerStyle = "width: 260px;";
+          containerStyle = "width: 100%;";
           layoutClass = "flex flex-col";
           leftColClass = "w-full border-b border-green-100 p-3 flex flex-col items-center justify-center";
           midColClass = "w-full border-b border-green-100 p-2 overflow-hidden";
@@ -3225,7 +3276,7 @@
         }
 
         else {
-          containerStyle = "width: 600px;";
+          containerStyle = "width: 100%;";
           layoutClass = "flex flex-row";
           leftColClass = "w-1/5 border-r border-green-100 p-3 flex flex-col items-center justify-center";
           midColClass = "w-2/5 border-r border-green-100 p-2 overflow-hidden";
@@ -3393,8 +3444,9 @@
       const now = new Date();
       document.getElementById('map-update-time').innerText = now.getHours() + ":" + now.getMinutes();
       const isMobile = window.innerWidth < 768;
-      // v73.2: PC は card 600px + margin/border 分の余裕を持たせ、横並びレイアウトを見切れさせない
-      const popupMaxWidth = isMobile ? 300 : 680;
+      // v73.3: 幅は CSS（.green-popup-pc / -mobile）で !important 固定するため maxWidth は余裕値でOK
+      const popupMaxWidth = isMobile ? 300 : 700;
+      const popupClass = 'green-popup ' + (isMobile ? 'green-popup-mobile' : 'green-popup-pc');
 
       shops.forEach(function (s) {
         if (!s.lat || !s.lng) return;
@@ -3406,7 +3458,7 @@
           color: color, fillColor: color, fillOpacity: 0.8, radius: 10
 
         }).addTo(mapInstance).bindPopup(cardDOM, {
-          maxWidth: popupMaxWidth, className: 'green-popup', autoPanPadding: [50, 50]
+          maxWidth: popupMaxWidth, className: popupClass, autoPanPadding: [50, 50]
         });
       });
     }
