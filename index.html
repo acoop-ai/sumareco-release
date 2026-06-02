@@ -3256,6 +3256,7 @@
       const myShopBadge = isMyShop ? '<span class="ml-2 bg-yellow-400 text-white text-[9px] px-1 rounded font-bold">MY</span>' : '';
 
       const isMobile = window.innerWidth < 768;
+      const pcPopup = isMapPopup && !isMobile; // v73.5: PC のマップポップアップは右側を縦積みにする
       let containerStyle = "",
         layoutClass = "",
         leftColClass = "",
@@ -3276,12 +3277,12 @@
         }
 
         else {
-          // v73.4: アラート列(左)を大幅に広げ、24h/週間は横スクロールするので狭めに
+          // v73.5: 左=アラート（広め）/ 右エリア=24h予報と週間予報を縦積み（各フル幅で横スクロール不要に）
           containerStyle = "width: 100%;";
-          layoutClass = "flex flex-row";
-          leftColClass = "w-[44%] border-r border-green-100 p-3 flex flex-col items-stretch justify-start";
-          midColClass = "w-[28%] border-r border-green-100 p-2 overflow-hidden";
-          rightColClass = "w-[28%] p-2 overflow-hidden";
+          layoutClass = "flex flex-row items-stretch";
+          leftColClass = "w-[40%] border-r border-green-100 p-3 flex flex-col items-stretch justify-start";
+          midColClass = "w-full border-b border-green-100 p-2 overflow-hidden";   // 右エリア上段(24h)
+          rightColClass = "w-full p-2 overflow-hidden";                            // 右エリア下段(週間)
         }
       }
 
@@ -3368,7 +3369,8 @@
       }
 
       midCol.appendChild(midContent);
-      layout.appendChild(midCol);
+      // v73.5: PC ポップアップは後で右エリアに縦積みするため、ここでは layout に直接追加しない
+      if (!pcPopup) layout.appendChild(midCol);
 
       const rightCol = createElement('div', rightColClass);
       const rightContent = createElement('div', 'w-full overflow-hidden flex flex-col p-2');
@@ -3407,7 +3409,15 @@
       }
 
       rightCol.appendChild(rightContent);
-      layout.appendChild(rightCol);
+      if (pcPopup) {
+        // v73.5: 右エリア（60%）に 24h予報(midCol) と 週間予報(rightCol) を縦積み。各フル幅で横スクロール不要に。
+        const rightArea = createElement('div', 'w-[60%] flex flex-col');
+        rightArea.appendChild(midCol);
+        rightArea.appendChild(rightCol);
+        layout.appendChild(rightArea);
+      } else {
+        layout.appendChild(rightCol);
+      }
 
       return card;
     }
