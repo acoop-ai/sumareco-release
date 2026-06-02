@@ -140,6 +140,9 @@
     .green-popup .leaflet-popup-content {
       margin: 8px;
       line-height: 1.4;
+      /* v73.2: Leaflet が幅をクランプしてカード(PC 600px)の右カラムを見切れさせる問題を解消。
+         内容の自然幅に合わせる（カード側の width 指定が効くようにする） */
+      width: auto !important;
     }
 
     .green-popup .leaflet-popup-close-button {
@@ -633,49 +636,70 @@
         class="text-xs font-bold text-slate-500">メニュー</span><button onclick="window.toggleMenu()"
         class="text-slate-400 p-1"><span class="material-icons text-lg">close</span></button></div>
     <div id="admin-menu-scroll" class="max-h-[70vh] overflow-y-auto">
-      <!-- ご利用説明書（最上部に配置） --><button onclick="window.showManual()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-blue-50 text-blue-700 flex items-center font-bold bg-blue-50/40 border-b border-blue-100"><span
-          class="material-icons text-lg mr-3">help_outline</span>ご利用説明書</button>
-      <!-- マイ店舗設定 --><button onclick="window.setMyShop()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-orange-50 text-orange-700 flex items-center font-bold bg-orange-50/30 border-b border-orange-100"><span
-          class="material-icons text-lg mr-3">storefront</span>マイ店舗を設定</button><button
-        onclick="window.showWeatherDashboard()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-green-50 text-green-700 font-bold flex items-center"><span
-          class="material-icons text-lg mr-3">calendar_month</span>全店週間予報一覧</button><button onclick="window.showMap()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-green-50 text-green-700 font-bold flex items-center"><span
-          class="material-icons text-lg mr-3">map</span>全店天気マップ</button>
-      <div class="h-1 bg-slate-100"></div><button onclick="window.runAggregation('flash')"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-slate-700 flex items-center"><span
-          class="material-icons text-lg mr-3">flash_on</span>今日の速報作成</button><button
-        onclick="window.runAggregation('daily')"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-slate-700 flex items-center"><span
-          class="material-icons text-lg mr-3">article</span>昨日の日報集計</button>
-      <!-- 巡回まとめボタン --><button onclick="window.runPatrolAggregation()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-teal-50 text-teal-700 flex items-center font-bold border-l-4 border-teal-500 bg-teal-50/50"><span
-          class="material-icons text-lg mr-3">summarize</span>【巡回者用】本日の巡回まとめ作成</button><button
-        onclick="window.showReportsList()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-slate-700 flex items-center"><span
-          class="material-icons text-lg mr-3">folder_shared</span>今月のレポート一覧</button><button onclick="window.showHelp()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-blue-600 flex items-center border-t border-slate-100"><span
-          class="material-icons text-lg mr-3">menu_book</span>天気情報の見方</button><button
-        onclick="document.getElementById('pwa-guide').classList.toggle('hidden'); window.toggleMenu();"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-blue-600 flex items-center"><span
-          class="material-icons text-lg mr-3">install_mobile</span>アプリ化ガイド</button>
-      <!-- Admin Section -->
-      <div class="h-1 bg-slate-100 border-t border-slate-200 mt-1"></div>
-      <div class="px-4 py-2 text-[10px] font-bold text-slate-400 bg-slate-50 uppercase tracking-wider">Admin
-        Tools</div><button
-        onclick="window.forceWeatherUpdate()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-blue-50 text-blue-700 flex items-center border-b border-slate-50"><span
-          class="material-icons text-lg mr-3">cloud_sync</span>全店天気データ強制更新</button><button
-        onclick="window.updateMaster()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-green-50 text-green-700 flex items-center border-b border-slate-50"><span
-          class="material-icons text-lg mr-3">sync</span>マスタデータ更新</button><button onclick="window.runSetup()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-indigo-50 text-indigo-700 flex items-center font-bold border-b border-slate-50"><span
-          class="material-icons text-lg mr-3">settings</span>システム初期設定</button><button
-        onclick="window.forceResetMaster()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-red-50 text-red-600 flex items-center"><span
-          class="material-icons text-lg mr-3">delete_forever</span>マスタデータ完全リセット</button>
+
+      <!-- ① マイレポート（最上部・全員） -->
+      <button onclick="window.openMyReports()"
+        class="w-full text-left px-4 py-3.5 text-sm hover:bg-green-50 text-green-800 flex items-center font-bold bg-green-50/60 border-b border-green-100">
+        <span class="material-icons text-lg mr-3">folder_shared</span>マイレポート
+        <span class="ml-auto material-icons text-base text-green-400">chevron_right</span>
+      </button>
+
+      <!-- 基本（全員） -->
+      <button onclick="window.showManual()"
+        class="w-full text-left px-4 py-3 text-sm hover:bg-blue-50 text-blue-700 flex items-center font-bold">
+        <span class="material-icons text-lg mr-3">help_outline</span>ご利用説明書</button>
+      <button onclick="window.setMyShop()"
+        class="w-full text-left px-4 py-3 text-sm hover:bg-orange-50 text-orange-700 flex items-center font-bold">
+        <span class="material-icons text-lg mr-3">storefront</span>マイ店舗を設定</button>
+
+      <!-- ② 天気（全員） -->
+      <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-slate-400 bg-slate-50 tracking-wider flex items-center gap-1">
+        <span class="material-icons text-[13px]">wb_sunny</span>天気をみる</div>
+      <button onclick="window.showWeatherDashboard()"
+        class="w-full text-left px-4 py-3 text-sm hover:bg-green-50 text-green-700 font-bold flex items-center">
+        <span class="material-icons text-lg mr-3">calendar_month</span>全店 週間予報一覧</button>
+      <button onclick="window.showMap()"
+        class="w-full text-left px-4 py-3 text-sm hover:bg-green-50 text-green-700 font-bold flex items-center">
+        <span class="material-icons text-lg mr-3">map</span>全店 天気マップ</button>
+      <button onclick="window.showHelp()"
+        class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-blue-600 flex items-center">
+        <span class="material-icons text-lg mr-3">menu_book</span>天気情報の見方</button>
+
+      <!-- ③ 巡回まとめ（全員・巡回者用） -->
+      <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-slate-400 bg-slate-50 tracking-wider flex items-center gap-1">
+        <span class="material-icons text-[13px]">fact_check</span>巡回</div>
+      <button onclick="window.runPatrolAggregation()"
+        class="w-full text-left px-4 py-3 text-sm hover:bg-teal-50 text-teal-700 flex items-center font-bold border-l-4 border-teal-500 bg-teal-50/50">
+        <span class="material-icons text-lg mr-3">summarize</span>【巡回者用】本日の巡回まとめ作成</button>
+
+      <!-- ④ アプリ（全員） -->
+      <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-slate-400 bg-slate-50 tracking-wider flex items-center gap-1">
+        <span class="material-icons text-[13px]">smartphone</span>アプリ</div>
+      <button onclick="document.getElementById('pwa-guide').classList.toggle('hidden'); window.toggleMenu();"
+        class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-blue-600 flex items-center">
+        <span class="material-icons text-lg mr-3">install_mobile</span>ホーム画面に追加する方法</button>
+
+      <!-- ⑤ レポート作成（ADMIN/HQ_ADMIN のみ） -->
+      <div id="report-create-section" class="hidden">
+        <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-indigo-400 bg-indigo-50/40 tracking-wider flex items-center gap-1">
+          <span class="material-icons text-[13px]">admin_panel_settings</span>レポート作成（管理者）</div>
+        <button onclick="window.runAggregation('flash')"
+          class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-slate-700 flex items-center">
+          <span class="material-icons text-lg mr-3">flash_on</span>今日の速報を作成</button>
+        <button onclick="window.runAggregation('daily')"
+          class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-slate-700 flex items-center">
+          <span class="material-icons text-lg mr-3">article</span>昨日の日報を集計</button>
+      </div>
+
+      <!-- ⑥ 管理者ツール（ADMIN/HQ_ADMIN のみ） -->
+      <div id="admin-tools-section" class="hidden">
+        <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-rose-400 bg-rose-50/40 tracking-wider flex items-center gap-1">
+          <span class="material-icons text-[13px]">build</span>管理者ツール</div>
+        <button onclick="window.forceWeatherUpdate()"
+          class="w-full text-left px-4 py-3 text-sm hover:bg-blue-50 text-blue-700 flex items-center">
+          <span class="material-icons text-lg mr-3">cloud_sync</span>全店 天気データ強制更新</button>
+      </div>
+
     </div>
   </div>
   <!-- PWA Guide -->
@@ -874,9 +898,9 @@
             class="btn-press p-3 bg-teal-50 border border-teal-200 rounded-xl shadow-sm hover:bg-teal-100 text-center h-24 flex flex-col items-center justify-center"><span
               class="material-icons text-teal-600 text-2xl mb-1">fact_check</span><span
               class="text-sm font-bold text-teal-800">巡回報告</span></button></div>
-      </div><button onclick="window.showHistory()"
-        class="btn-press w-full py-3 text-sm text-slate-500 font-bold bg-transparent rounded-xl flex items-center justify-center"><span
-          class="material-icons text-sm mr-2">history</span>送信履歴を確認</button>
+      </div><button onclick="window.openMyReports()"
+        class="btn-press w-full py-3.5 text-sm font-bold bg-white border border-green-200 text-green-700 rounded-xl flex items-center justify-center shadow-sm active:scale-95"><span
+          class="material-icons text-base mr-2">folder_shared</span>マイレポート（自分の報告・まとめを見る）</button>
       <!-- 本部専用ボタン（HQ_ADMINのみ表示） -->
       <button id="btn-hq-admin" onclick="window.showHQAdmin()"
         class="hidden btn-press w-full py-3 text-sm font-bold bg-indigo-700 text-white rounded-xl flex items-center justify-center shadow-lg">
@@ -2481,9 +2505,15 @@
       // HQ_ADMIN または ADMIN の場合に「本部配信」ボタンを表示
       const hqBtn = document.getElementById('btn-hq-admin');
       if (hqBtn) hqBtn.classList.toggle('hidden', userRole !== 'HQ_ADMIN' && userRole !== 'ADMIN');
-      // ADMIN または HQ_ADMIN の場合のみメニューボタンを表示
+      // v73.2: メニューボタンは全ユーザーに表示（一般ユーザーがマイレポート/天気等に到達できるよう開放）
       const menuBtn = document.getElementById('btn-admin-menu');
-      if (menuBtn) menuBtn.classList.toggle('hidden', userRole !== 'ADMIN' && userRole !== 'HQ_ADMIN');
+      if (menuBtn) menuBtn.classList.remove('hidden');
+      // v73.2: 管理者ツールのセクションは ADMIN/HQ_ADMIN のみ表示
+      const isAdmin = (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
+      const adminToolsSection = document.getElementById('admin-tools-section');
+      if (adminToolsSection) adminToolsSection.classList.toggle('hidden', !isAdmin);
+      const reportCreateSection = document.getElementById('report-create-section');
+      if (reportCreateSection) reportCreateSection.classList.toggle('hidden', !isAdmin);
       // ログイン画面を隠してホームを表示
       document.getElementById('screen-login').classList.add('hidden');
       document.getElementById('screen-home').classList.remove('hidden');
@@ -3061,7 +3091,32 @@
             document.getElementById('loading-msg').innerText = "AI解析・送信中...";
 
             try {
-              const res = await runGasTask('submitVoiceReport', payload);
+              let res = await runGasTask('submitVoiceReport', payload);
+
+              // v73.2: 聞き取れなかった場合は保存されない → 再録音を促す（捏造の絶対防止）
+              if (res && res.inaudible) {
+                const reRecord = confirm(
+                  "⚠️ 音声をうまく聞き取れませんでした。\n（理由: " + (res.reason || "不明瞭・無音") + "）\n\n" +
+                  "事実と異なる内容が作られるのを防ぐため、報告はまだ保存していません。\n\n" +
+                  "「OK」＝もう一度録音し直す（おすすめ）\n" +
+                  "「キャンセル」＝それでもこの音声で送信する"
+                );
+                if (reRecord) {
+                  // 録音だけ破棄して READY に戻す（写真は残す）
+                  audioChunks = []; recTime = 0;
+                  document.getElementById('timer').innerText = "00:00";
+                  document.getElementById('rec-status').innerText = "READY";
+                  updateBtns(false);
+                  resolve();
+                  setTimeout(() => alert("🎙️ マイクボタンを押して、もう一度はっきりと録音してください。\n（写真は保持されています）"), 50);
+                  return;
+                }
+                // ユーザーが「このまま送信」を選択 → forceSend で再送
+                document.getElementById('loading-msg').innerText = "送信中...";
+                payload.forceSend = true;
+                res = await runGasTask('submitVoiceReport', payload);
+              }
+
               alert("送信完了！\n\n【要約】\n" + res.summary);
 
               // Reset
@@ -3338,7 +3393,8 @@
       const now = new Date();
       document.getElementById('map-update-time').innerText = now.getHours() + ":" + now.getMinutes();
       const isMobile = window.innerWidth < 768;
-      const popupMaxWidth = isMobile ? 300 : 600;
+      // v73.2: PC は card 600px + margin/border 分の余裕を持たせ、横並びレイアウトを見切れさせない
+      const popupMaxWidth = isMobile ? 300 : 680;
 
       shops.forEach(function (s) {
         if (!s.lat || !s.lng) return;
@@ -3601,106 +3657,136 @@
 
       ;
 
-    window.runSetup = function () {
-      if (!confirm("これは開発・管理者用のメニューです。\nあなたは開発者または管理者ですか？")) return;
-      if (!confirm("【最終確認】\nシステム初期設定を行いますか？\n（フォルダやシートが存在しない場合のみ作成されます）")) return;
-      window.toggleMenu();
+    // v73.2: 「マイレポート」統合ビュー — 個別報告 + 集計レポートを1画面で確認（全ユーザーの入口）
+    window.openMyReports = function () {
+      // メニューから開いた場合は閉じる（ホームボタンから開いた場合は no-op）
+      const menu = document.getElementById('admin-menu');
+      if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
 
-      doWithLoading("システム設定中...", runGasTask('runSetupFromClient')).then(alert);
-    }
+      const sub = document.getElementById('sub-screen');
+      sub.classList.remove('hidden');
+      document.getElementById('sub-title').innerText = "マイレポート";
+      const body = document.getElementById('sub-body');
+      body.scrollTop = 0;
+      body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
 
-      ;
+      Promise.all([
+        runGasTask('getMyHistory').catch(() => []),
+        runGasTask('getAggregatedReports').catch(() => [])
+      ]).then(function (results) {
+        const history = Array.isArray(results[0]) ? results[0] : [];
+        const aggregated = Array.isArray(results[1]) ? results[1] : [];
 
+        const explainer = `
+          <details class="bg-slate-50 border border-slate-200 rounded-lg mb-3 mx-1">
+            <summary class="px-3 py-2 text-xs font-bold text-slate-500 cursor-pointer select-none">📁 報告書はどこに保存される？</summary>
+            <div class="px-3 pb-3 text-[11px] text-slate-500 leading-relaxed space-y-1">
+              <div>・<b>自分の報告</b>（日報/巡回/苦情/提案など）＝下の「自分の報告」一覧。1件ずつ記録され、Google Doc にも保存されます。</div>
+              <div>・<b>まとめレポート</b>（巡回まとめ/速報/朝刊）＝下の「まとめレポート」一覧。複数の報告を1つに集約したものです。</div>
+              <div>・どちらも「詳細」ボタンから<b>この画面内で中身の確認・修正</b>ができます（共有ドライブを開く必要はありません）。</div>
+            </div>
+          </details>`;
+
+        const historySection = `
+          <div class="px-1 pt-1 pb-1 text-xs font-bold text-slate-600 flex items-center gap-1">
+            <span class="material-icons text-sm text-green-600">edit_note</span>自分の報告（${history.length}）
+          </div>
+          ${history.length ? window.renderHistoryRows_(history) : '<div class="px-3 py-4 text-center text-slate-400 text-xs">まだ報告がありません</div>'}`;
+
+        const aggregatedSection = `
+          <div class="px-1 pt-4 pb-1 text-xs font-bold text-slate-600 flex items-center gap-1">
+            <span class="material-icons text-sm text-teal-600">summarize</span>まとめレポート（${aggregated.length}）
+          </div>
+          ${aggregated.length ? window.renderAggregatedRows_(aggregated) : '<div class="px-3 py-4 text-center text-slate-400 text-xs">今月のまとめはまだありません</div>'}`;
+
+        body.innerHTML = explainer + historySection + aggregatedSection;
+      }).catch(function (e) {
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
+      });
+    };
+
+    // 個別報告 行レンダラ（showHistory / openMyReports 共用）
+    window.renderHistoryRows_ = function (list) {
+      return list.map(function (i) {
+        const safeId      = window.escapeHtmlV73(i.id      || '');
+        const safeDate    = window.escapeHtmlV73(i.date    || '');
+        const safeMode    = window.escapeHtmlV73(i.mode    || '');
+        const safeSummary = window.escapeHtmlV73(i.summary || '');
+        const emergencyBadge = i.isEmergency ? '<span class="text-red-600 font-bold text-xs">🚨 緊急</span> ' : '';
+        const wrapperClass = i.isEmergency ? 'border-l-4 border-red-500 bg-red-50' : 'bg-white';
+        return `
+          <div class="${wrapperClass} p-3 border-b border-slate-100">
+            <div class="flex justify-between items-start gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="text-xs text-slate-500 mb-1">${safeDate} · ${emergencyBadge}<span class="font-bold">${safeMode}</span></div>
+                <div class="text-sm text-slate-700 break-words">${safeSummary}</div>
+              </div>
+              <button onclick="window.openReportDetail('${safeId}')" class="flex-shrink-0 text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 active:bg-blue-100">詳細 ›</button>
+            </div>
+          </div>`;
+      }).join('');
+    };
+
+    // 集計レポート 行レンダラ（showReportsList / openMyReports 共用）
+    window.renderAggregatedRows_ = function (list) {
+      return list.map(function (i) {
+        const safeId   = window.escapeHtmlV73(i.id   || '');
+        const safeName = window.escapeHtmlV73(i.name || '');
+        const safeDate = window.escapeHtmlV73(i.date || '');
+        const safeUrl  = window.escapeHtmlV73(i.url  || '');
+        return `
+          <div class="p-3 border-b bg-white">
+            <div class="flex justify-between items-start gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="font-bold text-sm text-slate-700 break-words">${safeName}</div>
+                <div class="text-xs text-slate-400 mt-1">${safeDate}</div>
+              </div>
+              <div class="flex flex-col gap-1 flex-shrink-0">
+                <button onclick="window.openAggregatedDetail('${safeId}')" class="text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 active:bg-blue-100">詳細 ›</button>
+                <a href="${safeUrl}" target="_blank" class="text-xs text-slate-500 px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-center">Doc</a>
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+    };
+
+    // 互換: 集計レポート単独ビュー（現在の主入口は openMyReports）
     window.showReportsList = function () {
-      window.toggleMenu();
+      const menu = document.getElementById('admin-menu');
+      if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
       document.getElementById('sub-screen').classList.remove('hidden');
       document.getElementById('sub-title').innerText = "今月のレポート一覧";
-      document.getElementById('sub-body').scrollTop = 0;
-      document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
-
+      const body = document.getElementById('sub-body');
+      body.scrollTop = 0;
+      body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
       runGasTask('getAggregatedReports').then(function (r) {
         if (!r || r.length === 0) {
-          document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">今月のレポートはまだありません</div>';
+          body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">今月のレポートはまだありません</div>';
           return;
         }
-        let h = "";
-        r.forEach(function (i) {
-          const safeId   = window.escapeHtmlV73(i.id   || '');
-          const safeName = window.escapeHtmlV73(i.name || '');
-          const safeDate = window.escapeHtmlV73(i.date || '');
-          const safeUrl  = window.escapeHtmlV73(i.url  || '');
-          h += `
-            <div class="p-3 border-b bg-white">
-              <div class="flex justify-between items-start gap-2">
-                <div class="flex-1 min-w-0">
-                  <div class="font-bold text-sm text-slate-700 break-words">${safeName}</div>
-                  <div class="text-xs text-slate-400 mt-1">${safeDate}</div>
-                </div>
-                <div class="flex flex-col gap-1 flex-shrink-0">
-                  <button onclick="window.openAggregatedDetail('${safeId}')" class="text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 active:bg-blue-100">詳細 ›</button>
-                  <a href="${safeUrl}" target="_blank" class="text-xs text-slate-500 px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-center">Doc</a>
-                </div>
-              </div>
-            </div>
-          `;
-        });
-        document.getElementById('sub-body').innerHTML = h;
+        body.innerHTML = window.renderAggregatedRows_(r);
       }).catch(function (e) {
-        document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
       });
-    }
+    };
 
-      ;
-
+    // 互換: 個別報告履歴 単独ビュー（現在の主入口は openMyReports）
     window.showHistory = function () {
       document.getElementById('sub-screen').classList.remove('hidden');
-      document.getElementById('sub-title').innerText = "履歴";
-      document.getElementById('sub-body').scrollTop = 0;
-      document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
-
+      document.getElementById('sub-title').innerText = "送信履歴";
+      const body = document.getElementById('sub-body');
+      body.scrollTop = 0;
+      body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
       runGasTask('getMyHistory').then(function (h) {
         if (!h || h.length === 0) {
-          document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">履歴がありません</div>';
+          body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">履歴がありません</div>';
           return;
         }
-        let html = "";
-        h.forEach(function (i) {
-          const safeId      = window.escapeHtmlV73(i.id      || '');
-          const safeDate    = window.escapeHtmlV73(i.date    || '');
-          const safeMode    = window.escapeHtmlV73(i.mode    || '');
-          const safeSummary = window.escapeHtmlV73(i.summary || '');
-          const emergencyBadge = i.isEmergency ? '<span class="text-red-600 font-bold text-xs">🚨 緊急</span> ' : '';
-          const wrapperClass = i.isEmergency ? 'border-l-4 border-red-500 bg-red-50' : 'bg-white';
-          html += `
-            <div class="${wrapperClass} p-3 border-b border-slate-100">
-              <div class="flex justify-between items-start gap-2">
-                <div class="flex-1 min-w-0">
-                  <div class="text-xs text-slate-500 mb-1">${safeDate} · ${emergencyBadge}<span class="font-bold">${safeMode}</span></div>
-                  <div class="text-sm text-slate-700 break-words">${safeSummary}</div>
-                </div>
-                <button onclick="window.openReportDetail('${safeId}')" class="flex-shrink-0 text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 active:bg-blue-100">詳細 ›</button>
-              </div>
-            </div>
-          `;
-        });
-        document.getElementById('sub-body').innerHTML = html;
-        return; // 旧コードは下記の forEach に続いていたので break する
+        body.innerHTML = window.renderHistoryRows_(h);
       }).catch(function (e) {
-        document.getElementById('sub-body').innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' + window.escapeHtmlV73(e.message || String(e)) + '</div>';
       });
-    }
-      ;
-
-    window.updateMaster = function () {
-      if (!confirm("これは開発・管理者用のメニューです。\nあなたは開発者または管理者ですか？")) return;
-
-      if (confirm("【最終確認】\n本当にマスタデータを更新しますか？")) {
-        window.toggleMenu();
-        doWithLoading("マスタデータ更新中...", runGasTask('addShopsToMaster')).then(alert);
-      }
-    }
-
-      ;
+    };
 
     window.forceWeatherUpdate = function () {
       if (!confirm("これは開発・管理者用のメニューです。\nあなたは開発者または管理者ですか？")) return;
@@ -3712,18 +3798,6 @@
     }
 
       ;
-
-    window.forceResetMaster = function () {
-      if (!confirm("これは開発・管理者用のメニューです。\nあなたは開発者または管理者ですか？")) return;
-
-      if (confirm("【最終確認】\nマスタデータを全て削除し、初期状態に戻します。\n本当によろしいですか？\nこの操作は取り消せません。")) {
-        window.toggleMenu();
-        doWithLoading("マスタ再構築中...", runGasTask('forceResetMaster')).then(alert);
-      }
-    }
-
-      ;
-
 
     window.scrollToManualSection = function (id) {
       const el = document.getElementById(id);
