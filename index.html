@@ -146,7 +146,7 @@
        PC は横3カラムが収まる 600px、スマホは縦積みの 248px を !important で強制。
        （前回の width:auto は親要素の制約で 600px まで広がらず失敗したため、固定幅方式に変更） */
     .green-popup-pc .leaflet-popup-content {
-      width: 600px !important;
+      width: 820px !important;
     }
     .green-popup-mobile .leaflet-popup-content {
       width: 248px !important;
@@ -3276,11 +3276,12 @@
         }
 
         else {
+          // v73.4: アラート列(左)を大幅に広げ、24h/週間は横スクロールするので狭めに
           containerStyle = "width: 100%;";
           layoutClass = "flex flex-row";
-          leftColClass = "w-1/5 border-r border-green-100 p-3 flex flex-col items-center justify-center";
-          midColClass = "w-2/5 border-r border-green-100 p-2 overflow-hidden";
-          rightColClass = "w-2/5 p-2 overflow-hidden";
+          leftColClass = "w-[44%] border-r border-green-100 p-3 flex flex-col items-stretch justify-start";
+          midColClass = "w-[28%] border-r border-green-100 p-2 overflow-hidden";
+          rightColClass = "w-[28%] p-2 overflow-hidden";
         }
       }
 
@@ -3328,14 +3329,14 @@
         '</div>'
       ].join('');
 
-      const leftContent = createElement('div', 'w-full h-full flex flex-col justify-between p-2', leftContentHTML);
+      const leftContent = createElement('div', 'w-full flex flex-col justify-start p-2', leftContentHTML);
       leftCol.appendChild(leftContent);
       layout.appendChild(leftCol);
 
       const midCol = createElement('div', midColClass);
-      const midContent = createElement('div', 'w-full h-full overflow-hidden flex flex-col p-2');
+      const midContent = createElement('div', 'w-full overflow-hidden flex flex-col p-2');
       midContent.innerHTML = '<div class="text-[9px] font-bold text-slate-400 mb-1">24時間予報</div>';
-      const timelineContainer = createElement('div', 'flex flex-row flex-nowrap overflow-x-auto custom-scroll space-x-1 pb-1 flex-grow items-stretch w-full');
+      const timelineContainer = createElement('div', 'flex flex-row flex-nowrap overflow-x-auto custom-scroll space-x-1 pb-1 items-start w-full');
       midContent.appendChild(timelineContainer);
 
       if (shop.timeline && shop.timeline.length > 0) {
@@ -3370,9 +3371,9 @@
       layout.appendChild(midCol);
 
       const rightCol = createElement('div', rightColClass);
-      const rightContent = createElement('div', 'w-full h-full overflow-hidden flex flex-col p-2');
+      const rightContent = createElement('div', 'w-full overflow-hidden flex flex-col p-2');
       rightContent.innerHTML = '<div class="text-[9px] font-bold text-slate-400 mb-1">週間予報</div>';
-      const weeklyContainer = createElement('div', 'flex flex-row flex-nowrap overflow-x-auto custom-scroll space-x-1 flex-grow items-stretch w-full');
+      const weeklyContainer = createElement('div', 'flex flex-row flex-nowrap overflow-x-auto custom-scroll space-x-1 items-start w-full');
       rightContent.appendChild(weeklyContainer);
 
       if (shop.weekly && shop.weekly.length > 0) {
