@@ -2261,21 +2261,39 @@
     //   サーバーの天気更新は3時間ごとのため10分保持でも常に新鮮。
     // ============================================================
     let _dashClientCache = { data: null, ts: 0 };
+    let _dashInFlight = null; // v73.9: 取得中プロミス（同時呼び出しの相乗り用）
     const DASH_CLIENT_TTL_MS = 10 * 60 * 1000; // 10分
 
     function getDashboardDataCached(forceRefresh) {
       const now = Date.now();
+      // 10分以内の控えがあれば即返す
       if (!forceRefresh && _dashClientCache.data && (now - _dashClientCache.ts) < DASH_CLIENT_TTL_MS) {
         return Promise.resolve(_dashClientCache.data);
       }
-      return runGasTask('getDashboardData').then(function (data) {
+      // v73.9: 既に取得中なら、その通信に相乗り（ヘッダー/先読み/マップが同時でも通信1回に集約）
+      if (!forceRefresh && _dashInFlight) {
+        return _dashInFlight;
+      }
+      const p = runGasTask('getDashboardData').then(function (data) {
         _dashClientCache = { data: data, ts: Date.now() };
+        _dashInFlight = null;
         return data;
+      }).catch(function (e) {
+        _dashInFlight = null;
+        throw e;
       });
+      _dashInFlight = p;
+      return p;
+    }
+
+    // v73.9: ログイン直後などに天気データを裏で先読みして温める（非ブロッキング・失敗は無視）
+    function prefetchDashboardData() {
+      try { getDashboardDataCached().catch(function () {}); } catch (e) {}
     }
 
     function invalidateDashClientCache() {
       _dashClientCache = { data: null, ts: 0 };
+      _dashInFlight = null;
     }
 
     // ============================================================
@@ -2639,6 +2657,8 @@
         window.updateHeaderAlert(); // 完了済みを反映して再描画
       }).catch(() => {});
       window.updateHeaderAlert(); // 初回はすぐ表示（完了フィルタなし）
+      // v73.9: 天気データを裏で先読みして温める（マイ店舗未設定でも・マップ/週間予報を即表示にするため）
+      prefetchDashboardData();
     };
 
     // HQアラートを完了として記録・画面から消す
