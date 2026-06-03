@@ -1331,7 +1331,7 @@
       <button onclick="window.showHelp()"
         class="ml-auto flex items-center gap-1 text-xs font-bold text-blue-600 bg-blue-50 border border-blue-200 px-2.5 py-1.5 rounded-lg active:bg-blue-100"><span
           class="material-icons text-sm">menu_book</span>見方</button>
-      <button onclick="window.refreshDash()"
+      <button onclick="window.refreshDash(true)"
         class="ml-2 p-2 text-blue-600"><span class="material-icons">refresh</span></button>
     </div>
     <div
@@ -2255,6 +2255,30 @@
     }
 
     // ============================================================
+    // v73.8: クライアント側 天気データキャッシュ（10分）
+    //   画面切替時（ヘッダーアラート→マップ→週間予報→店舗選択）の重複通信を集約。
+    //   裏で常駐しない。呼ばれた瞬間に「10分以内の控えがあれば即返す／無ければ取得」するだけ。
+    //   サーバーの天気更新は3時間ごとのため10分保持でも常に新鮮。
+    // ============================================================
+    let _dashClientCache = { data: null, ts: 0 };
+    const DASH_CLIENT_TTL_MS = 10 * 60 * 1000; // 10分
+
+    function getDashboardDataCached(forceRefresh) {
+      const now = Date.now();
+      if (!forceRefresh && _dashClientCache.data && (now - _dashClientCache.ts) < DASH_CLIENT_TTL_MS) {
+        return Promise.resolve(_dashClientCache.data);
+      }
+      return runGasTask('getDashboardData').then(function (data) {
+        _dashClientCache = { data: data, ts: Date.now() };
+        return data;
+      });
+    }
+
+    function invalidateDashClientCache() {
+      _dashClientCache = { data: null, ts: 0 };
+    }
+
+    // ============================================================
     // v73.0: 報告書 UI 閲覧・編集 ヘルパー / モーダル制御
     // ============================================================
 
@@ -2641,8 +2665,8 @@
 
       const area = document.getElementById('header-alert-area');
 
-      // 非同期でデータ取得して更新 (エラーは握りつぶして進行)
-      runGasTask('getDashboardData').then((data) => {
+      // 非同期でデータ取得して更新 (エラーは握りつぶして進行) — v73.8: クライアントキャッシュ経由
+      getDashboardDataCached().then((data) => {
         if (!data || data.length === 0) return;
 
         // 店名正規化比較 (部分一致対応)
@@ -3483,7 +3507,7 @@
 
         , 300);
 
-      doWithLoading("マップデータ取得中...", runGasTask('getDashboardData')).then(drawMapPins);
+      doWithLoading("マップデータ取得中...", getDashboardDataCached()).then(drawMapPins);
     }
 
       ;
@@ -3527,13 +3551,13 @@
 
       ;
 
-    window.refreshDash = function () {
+    window.refreshDash = function (forceRefresh) {
       const div = document.getElementById('dash-content');
       div.innerHTML = '<div class="text-center mt-10 text-slate-400">Loading...</div>';
       const savedShop = localStorage.getItem('my_shop_name');
 
-      // 非同期処理で取得して描画
-      runGasTask('getDashboardData').then((data) => {
+      // 非同期処理で取得して描画 — v73.8: 通常はキャッシュ、♻️更新ボタンは forceRefresh=true で最新取得
+      getDashboardDataCached(forceRefresh).then((data) => {
         renderDash(data);
         const shopToScroll = localStorage.getItem('my_shop_name') || myShopName;
         console.log("RefreshDash - Attempting scroll to:", shopToScroll);
@@ -3620,7 +3644,7 @@
       list.scrollTop = 0; // スクロールリセット
       list.innerHTML = '<div class="text-center py-10 text-slate-400">読み込み中...</div>';
 
-      runGasTask('getDashboardData').then((data) => {
+      getDashboardDataCached().then((data) => {
         if (!data || data.length === 0) {
           list.innerHTML = '<div class="text-center py-10 text-slate-400">店舗データが見つかりません</div>';
           return;
@@ -3899,7 +3923,7 @@
 
       if (confirm("【最終確認】\n全店舗の天気データを再取得して更新します。\n完了まで数分かかる場合がありますが、よろしいですか？")) {
         window.toggleMenu();
-        doWithLoading("天気データ更新中...", runGasTask('manualWeatherUpdate')).then((msg) => alert(msg + "\nダッシュボードをリロードして確認してください。"));
+        doWithLoading("天気データ更新中...", runGasTask('manualWeatherUpdate')).then((msg) => { invalidateDashClientCache(); alert(msg + "\nダッシュボードをリロードして確認してください。"); });
       }
     }
 
