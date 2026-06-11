@@ -1,5 +1,7 @@
 
 <!DOCTYPE html>
+<!-- スマレコ (SmartRecord) PWA Frontend v75.0
+     v75.0: まとめ閲覧の権限表示制御(①②)・巡回まとめ送り先選択UI(③)・認証トークン端末保存+silent強化(④)・送信自動リトライ+エラー記録(⑤) -->
 <html lang="ja">
 
 <head>
@@ -2132,6 +2134,37 @@
     //  - prompt:'' でユーザー操作なしのサイレント更新
     //  - 期限の5分前にタイマーで自動更新
     // ============================================================
+    // ============================================================
+    // v75.0(④): アクセストークンの端末保存（再起動時の再ログイン削減）
+    //   - 保存するのは scope: openid email profile のトークンのみ（本人のメール/氏名の読取専用）
+    //   - 有効期限内（約1時間）なら GIS を介さず即復帰できる
+    // ============================================================
+    const TOKEN_STORE_KEY = 'smareco_oauth_token_v75';
+
+    function persistAccessToken_() {
+      try {
+        if (!currentAccessToken || !accessTokenExpiry) return;
+        localStorage.setItem(TOKEN_STORE_KEY, JSON.stringify({ t: currentAccessToken, e: accessTokenExpiry }));
+      } catch (_) {}
+    }
+
+    function restoreAccessToken_() {
+      try {
+        const raw = localStorage.getItem(TOKEN_STORE_KEY);
+        if (!raw) return false;
+        const o = JSON.parse(raw);
+        if (!o || !o.t || !o.e || Date.now() > o.e - 60 * 1000) return false;
+        currentAccessToken = o.t;
+        accessTokenExpiry = o.e;
+        scheduleAccessTokenRefresh_(Math.floor((o.e - Date.now()) / 1000) + 30);
+        return true;
+      } catch (_) { return false; }
+    }
+
+    function clearStoredToken_() {
+      try { localStorage.removeItem(TOKEN_STORE_KEY); } catch (_) {}
+    }
+
     function ensureOAuthTokenClient_() {
       if (oauthTokenClient) return;
       if (!(window.google && google.accounts && google.accounts.oauth2)) {
@@ -2167,6 +2200,7 @@
           currentAccessToken = resp.access_token;
           const expiresIn = Number(resp.expires_in) || 3600;
           accessTokenExpiry = Date.now() + (expiresIn - 30) * 1000;
+          persistAccessToken_(); // v75.0(④): 端末保存（再起動時の再ログイン削減）
           scheduleAccessTokenRefresh_(expiresIn);
           resolve(resp);
         };
@@ -2244,8 +2278,68 @@
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const json = await res.json();
-      if (json && json.error) throw new Error(json.error);
+      if (json && json.error) {
+        // v75.0(④): サーバー側で認証が通らないトークンは端末保存からも破棄（無限再試行を防止）
+        if (String(json.error).indexOf('認証失敗') >= 0) {
+          currentAccessToken = null;
+          accessTokenExpiry = 0;
+          clearStoredToken_();
+        }
+        throw new Error(json.error);
+      }
       return json;
+    }
+
+    // ============================================================
+    // v75.0(⑤): クライアントエラーの永続記録（真因切り分け用）
+    //   送信失敗などの詳細を GAS の ErrorLog シートへ送る。
+    //   記録自体の失敗は握りつぶす（本処理を妨げない）。認証切れでも送る。
+    // ============================================================
+    function reportClientError_(stage, err, attempts, audioSec, payloadKb) {
+      try {
+        const body = {
+          action: 'logClientError',
+          accessToken: currentAccessToken || '',
+          payload: {
+            stage    : stage,
+            message  : String(err && err.message || err).slice(0, 500),
+            attempts : attempts != null ? String(attempts) : '',
+            audioSec : audioSec != null ? String(audioSec) : '',
+            payloadKb: payloadKb != null ? String(payloadKb) : '',
+            ua       : navigator.userAgent
+          }
+        };
+        fetch(CONFIG.GAS_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: JSON.stringify(body),
+          redirect: 'follow'
+        }).catch(() => {});
+      } catch (_) {}
+    }
+
+    // v75.0(⑤): 音声報告送信の自動リトライ（電波の瞬断・一時エラー対策）
+    //   最大3回（初回＋自動再送2回・2秒→4秒待ち）。認証系エラーはリトライしない。
+    //   全滅した場合のみ ErrorLog へ記録して throw。
+    async function submitVoiceReportWithRetry_(payload, audioSec, payloadKb) {
+      const MAX_TRY = 3;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= MAX_TRY; attempt++) {
+        try {
+          return await runGasTask('submitVoiceReport', payload);
+        } catch (e) {
+          lastErr = e;
+          const msg = String(e && e.message || e);
+          if (msg.indexOf('セッション切れ') >= 0 || msg.indexOf('認証失敗') >= 0) break;
+          if (attempt < MAX_TRY) {
+            const msgEl = document.getElementById('loading-msg');
+            if (msgEl) msgEl.innerText = `通信エラー → 自動再送中 (${attempt}/${MAX_TRY - 1})...`;
+            await new Promise(r => setTimeout(r, 2000 * attempt));
+          }
+        }
+      }
+      reportClientError_('submitVoiceReport', lastErr, MAX_TRY, audioSec, payloadKb);
+      throw lastErr;
     }
 
     // 既存コードとの互換ラッパー
@@ -2354,13 +2448,24 @@
       document.getElementById('rd-title').textContent =
         (d.isEmergency ? '🚨 ' : '') + (d.mode || '報告書');
 
-      const summaryView = editing
-        ? `<textarea id="rd-summary" class="w-full border border-slate-300 rounded p-2 text-sm" rows="5">${esc(d.summary)}</textarea>`
-        : `<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded border border-slate-200">${esc(d.summary || '（要約なし）')}</div>`;
+      // v75.0: 統一編集 — 報告内容は1つ（旧: 要約/原文の2欄編集で、まとめ生成に編集が反映されないズレが発生していた）
+      //   通常（送信時から要約=原文）は1欄のみ表示。旧形式で内容が異なる行のみ参考として原文も表示。
+      const sNorm = String(d.summary || '').trim();
+      const tNorm = String(d.transcript || '').trim();
+      const isUnified = !sNorm || !tNorm || sNorm === tNorm;
+      const contentText = sNorm || tNorm;
 
-      const transcriptView = editing
-        ? `<textarea id="rd-transcript" class="w-full border border-slate-300 rounded p-2 text-sm" rows="10">${esc(d.transcript)}</textarea>`
-        : `<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded border border-slate-200">${esc(d.transcript || '（原文なし）')}</div>`;
+      const contentView = editing
+        ? `<textarea id="rd-content" class="w-full border border-slate-300 rounded p-2 text-sm" rows="12">${esc(contentText)}</textarea>
+           <div class="text-[10px] text-slate-400 mt-1">※ 保存すると、まとめレポート（速報/朝刊/巡回）と Google Doc にもこの内容が使われます</div>`
+        : `<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded border border-slate-200">${esc(contentText || '（内容なし）')}</div>`;
+
+      const legacyTranscriptView = isUnified ? '' : `
+        <div>
+          <div class="text-xs font-bold text-slate-500 mb-1">原文（音声文字起こし・参考）</div>
+          <div class="whitespace-pre-wrap text-xs bg-slate-50 p-3 rounded border border-slate-200 text-slate-500">${esc(d.transcript || '')}</div>
+          ${editing ? '<div class="text-[10px] text-amber-600 mt-1">※ 保存すると上の「報告内容」に統一されます</div>' : ''}
+        </div>`;
 
       const emergencyView = editing
         ? `<label class="flex items-center gap-2 text-sm cursor-pointer"><input id="rd-emergency" type="checkbox" ${d.isEmergency ? 'checked' : ''} class="w-5 h-5"><span class="text-red-600 font-bold">🚨 緊急として扱う</span></label>`
@@ -2394,13 +2499,10 @@
           ${emergencyView}
         </div>
         <div>
-          <div class="text-xs font-bold text-slate-500 mb-1">要約</div>
-          ${summaryView}
+          <div class="text-xs font-bold text-slate-500 mb-1">報告内容</div>
+          ${contentView}
         </div>
-        <div>
-          <div class="text-xs font-bold text-slate-500 mb-1">原文（全文）</div>
-          ${transcriptView}
-        </div>
+        ${legacyTranscriptView}
         <div>
           <div class="text-xs font-bold text-slate-500 mb-1">添付画像 ${d.imageUrls ? '(' + d.imageUrls.length + ')' : ''}</div>
           ${imageHtml}
@@ -2432,9 +2534,9 @@
     window.saveReportDetailV73 = async function () {
       const d = _currentReportDetailV73;
       if (!d) return;
+      // v75.0: 統一編集 — content を要約・全文の両列に反映（まとめレポートにも編集後の内容が使われる）
       const patch = {
-        summary     : document.getElementById('rd-summary').value,
-        transcript  : document.getElementById('rd-transcript').value,
+        content     : document.getElementById('rd-content').value,
         isEmergency : document.getElementById('rd-emergency').checked,
         lastModified: d.lastModified
       };
@@ -2507,9 +2609,22 @@
 
       let originalHtml = '<div class="text-sm text-slate-400">原文データなし</div>';
       if (d.originalRows && d.originalRows.length > 0) {
+        // v75.0(③): 閲覧専用（共有先店舗）は個別報告書モーダルを開けないため、行内で全文を展開表示する
+        const readOnly = (d.canEdit === false);
         originalHtml = '<div class="space-y-1">' + d.originalRows.map(r => {
           const safeId = esc(r.id);
           const sumPreview = (r.summary || '').substring(0, 100) + ((r.summary && r.summary.length > 100) ? '…' : '');
+          if (readOnly) {
+            return `
+              <details class="bg-slate-50 rounded p-2 border border-slate-100">
+                <summary class="cursor-pointer select-none">
+                  <span class="text-xs text-slate-500">${esc(r.time)} · ${esc(r.shop)} · ${esc(r.name)} · ${esc(r.mode)}${r.hasImage ? ' 🖼️' : ''}</span>
+                  <span class="block text-xs text-slate-700 break-words mt-1">${esc(sumPreview)}</span>
+                </summary>
+                <div class="text-xs text-slate-700 whitespace-pre-wrap break-words mt-2 pt-2 border-t border-slate-200">${esc(r.summary || '')}</div>
+              </details>
+            `;
+          }
           return `
             <div class="bg-slate-50 rounded p-2 border border-slate-100 cursor-pointer active:bg-slate-100" onclick="window.openReportDetail('${safeId}')">
               <div class="text-xs text-slate-500">${esc(r.time)} · ${esc(r.shop)} · ${esc(r.name)} · ${esc(r.mode)}${r.hasImage ? ' 🖼️' : ''}</div>
@@ -2519,11 +2634,23 @@
         }).join('') + '</div>';
       }
 
+      // v75.0(③): 共有先店舗の表示（本部/作成者にのみサーバーが返す）
+      const sharedShopsHtml = (d.sharedShops && d.sharedShops.length > 0)
+        ? `<div class="bg-indigo-50 rounded-lg p-3 border border-indigo-100">
+             <div class="text-xs font-bold text-indigo-600 mb-1">📨 共有先店舗（${d.sharedShops.length}）</div>
+             <div class="text-xs text-slate-600 leading-relaxed">${d.sharedShops.map(s => esc(s)).join(' / ')}</div>
+           </div>`
+        : '';
+
+      // v75.0(②): Doc 直リンクは本部メンバーのみ（店舗ユーザーは Drive 権限が無いため）
+      const isHqViewer = (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
+
       document.getElementById('ad-body').innerHTML = `
         <div class="bg-white rounded-lg p-3 border border-slate-200">
           <div class="text-xs text-slate-500 mb-1">対象日 / 種別</div>
           <div class="text-sm font-bold text-slate-700">${esc(d.titlePrefix)} · ${esc(d.dateDisplay)}</div>
         </div>
+        ${sharedShopsHtml}
         <div>
           <div class="text-xs font-bold text-slate-500 mb-1">【全体概要】</div>
           ${overallView}
@@ -2537,7 +2664,7 @@
           <div class="text-xs font-bold text-slate-500 mb-1">原文データ（${d.originalRows ? d.originalRows.length : 0}件 · タップで個別報告書を表示）</div>
           ${originalHtml}
         </div>
-        ${d.docUrl ? `<div><a href="${esc(d.docUrl)}" target="_blank" rel="noopener" class="text-xs text-blue-600 underline inline-flex items-center gap-1"><span class="material-icons text-xs">open_in_new</span>Google Doc で開く</a></div>` : ''}
+        ${(d.docUrl && isHqViewer) ? `<div><a href="${esc(d.docUrl)}" target="_blank" rel="noopener" class="text-xs text-blue-600 underline inline-flex items-center gap-1"><span class="material-icons text-xs">open_in_new</span>Google Doc で開く</a></div>` : ''}
       `;
 
       if (editing) {
@@ -2546,9 +2673,13 @@
           <button onclick="window.saveAggregatedDetailV73()" class="flex-1 py-3 bg-teal-700 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">💾 保存</button>
         `;
       } else {
+        // v75.0(①②): 編集ボタンは canEdit（本部メンバー or 作成者）のみ表示。共有先店舗は閲覧専用
+        const editBtn = (d.canEdit !== false)
+          ? `<button onclick="window.startEditAggV73()" class="flex-1 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">✎ AI要約を編集</button>`
+          : '';
         document.getElementById('ad-footer').innerHTML = `
           <button onclick="window.closeAggregatedDetail()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">閉じる</button>
-          <button onclick="window.startEditAggV73()" class="flex-1 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">✎ AI要約を編集</button>
+          ${editBtn}
         `;
       }
     }
@@ -2777,7 +2908,11 @@
         if (loginBtn && !silent) loginBtn.disabled = true;
 
         // 1. アクセストークン取得（silent: false なら同意ポップアップ許容）
-        await requestAccessTokenOnce_({ silent });
+        //    v75.0(④): 有効なトークンを既に持っている（端末保存から復元済み等）なら GIS をスキップ
+        const hasValidToken = currentAccessToken && accessTokenExpiry && Date.now() < accessTokenExpiry - 60 * 1000;
+        if (!hasValidToken) {
+          await requestAccessTokenOnce_({ silent });
+        }
 
         // 2. userinfo でメール・氏名を取得
         const userinfo = await fetchUserInfo_();
@@ -2792,6 +2927,7 @@
           }
           currentAccessToken = null;
           accessTokenExpiry = 0;
+          clearStoredToken_();
           if (tokenRefreshTimer) { clearTimeout(tokenRefreshTimer); tokenRefreshTimer = null; }
           return false;
         }
@@ -2816,6 +2952,7 @@
         if (overlay) overlay.style.display = 'none';
         currentAccessToken = null;
         accessTokenExpiry = 0;
+        clearStoredToken_(); // v75.0(④): 無効になったトークンは端末からも破棄
         if (!silent) {
           console.error('OAuth2 login failed:', e);
           if (errEl) {
@@ -2894,6 +3031,7 @@
       }
       currentAccessToken = null;
       accessTokenExpiry = 0;
+      clearStoredToken_(); // v75.0(④): サインアウト時は端末保存トークンも必ず破棄
       if (tokenRefreshTimer) { clearTimeout(tokenRefreshTimer); tokenRefreshTimer = null; }
       document.getElementById('screen-home').classList.add('hidden');
       document.getElementById('screen-login').classList.remove('hidden');
@@ -3051,6 +3189,7 @@
         }
 
         catch (e) {
+          reportClientError_('recording', e, '', recTime, ''); // v75.0(⑤): 録音段階のエラーも記録（送信系との切り分け用）
           alert("マイクエラー: " + e);
         }
 
@@ -3227,8 +3366,14 @@
               ;
             document.getElementById('loading-msg').innerText = "AI解析・送信中...";
 
+            // v75.0(⑤): エラー切り分け用メタ（録音長・概算ペイロードサイズKB）
+            const audioSecMeta = recTime;
+            const b64Len = (payload.audioBase64 ? payload.audioBase64.length : 0) +
+              imageBase64List.reduce((s, i) => s + (i.data ? i.data.length : 0), 0);
+            const payloadKbMeta = Math.round(b64Len * 0.75 / 1024);
+
             try {
-              let res = await runGasTask('submitVoiceReport', payload);
+              let res = await submitVoiceReportWithRetry_(payload, audioSecMeta, payloadKbMeta);
 
               // v73.2: 聞き取れなかった場合は保存されない → 再録音を促す（捏造の絶対防止）
               if (res && res.inaudible) {
@@ -3251,7 +3396,7 @@
                 // ユーザーが「このまま送信」を選択 → forceSend で再送
                 document.getElementById('loading-msg').innerText = "送信中...";
                 payload.forceSend = true;
-                res = await runGasTask('submitVoiceReport', payload);
+                res = await submitVoiceReportWithRetry_(payload, audioSecMeta, payloadKbMeta);
               }
 
               alert("送信完了！\n\n【要約】\n" + res.summary);
@@ -3788,24 +3933,96 @@
 
       ;
 
-    window.runPatrolAggregation = function () {
-      if (!confirm("【確認】\nあなたのアカウントで送信した本日の「巡回報告」をまとめます。\nよろしいですか？")) return;
+    // v75.0(③): 巡回まとめ作成は送り先選択モーダル経由に変更
+    window.runPatrolAggregation = async function () {
       window.toggleMenu();
+      const modal = document.getElementById('patrol-share-modal');
+      const body  = document.getElementById('psm-body');
+      modal.classList.remove('hidden');
+      body.innerHTML = '<div class="p-6 text-center text-slate-400 text-sm">送り先リストを読み込み中…</div>';
+      try {
+        const targets = await runGasTask('getShareTargets');
+        renderPatrolShareTargets_(targets);
+      } catch (e) {
+        body.innerHTML = '<div class="p-4 text-xs text-red-500">送り先リストを取得できませんでした（' +
+          window.escapeHtmlV73(e.message || String(e)) +
+          '）。<br>このまま「まとめを作成」すると、本部のみ閲覧のまとめが作成されます。</div>';
+      }
+    };
 
-      doWithLoading("巡回まとめ作成中...", new Promise(async (resolve, reject) => {
-        try {
-          await runGasTask('runPatrolReport');
-          alert("巡回まとめを作成しました。");
-          resolve();
-        }
+    window.closePatrolShareModal = function () {
+      document.getElementById('patrol-share-modal').classList.add('hidden');
+    };
 
-        catch (e) {
-          reject(e);
-        }
-      }));
+    // エリアまるごとチェック時は配下店舗をチェック＆固定（収集時はエリア単位で送る）
+    window.psmToggleGroup_ = function (cb) {
+      const wrap = document.getElementById('psm-g-' + cb.dataset.idx);
+      if (!wrap) return;
+      wrap.querySelectorAll('input.psm-shop').forEach(s => { s.checked = cb.checked; s.disabled = cb.checked; });
+    };
+
+    function renderPatrolShareTargets_(targets) {
+      const esc = window.escapeHtmlV73;
+      const groups = (targets && Array.isArray(targets.groups)) ? targets.groups : [];
+      const allShops = (targets && Array.isArray(targets.shops)) ? targets.shops : [];
+      const inGroup = new Set();
+      groups.forEach(g => (g.shops || []).forEach(s => inGroup.add(s)));
+      const otherShops = allShops.filter(s => !inGroup.has(s));
+
+      const groupHtml = groups.map((g, idx) => `
+        <details class="border border-slate-200 rounded-lg mb-2 bg-white">
+          <summary class="px-3 py-2 text-xs font-bold text-slate-600 cursor-pointer select-none flex items-center justify-between">
+            <span>${esc(g.name)}（${(g.shops || []).length}店舗）</span>
+            <label class="flex items-center gap-1 text-[11px] font-normal text-teal-700" onclick="event.stopPropagation()">
+              <input type="checkbox" class="psm-group accent-teal-600" value="${esc(g.name)}" data-idx="${idx}" onchange="window.psmToggleGroup_(this)">エリア全店
+            </label>
+          </summary>
+          <div id="psm-g-${idx}" class="px-3 pb-2 grid grid-cols-1 gap-1">
+            ${(g.shops || []).map(s => `
+              <label class="flex items-center gap-2 text-xs text-slate-700 py-1">
+                <input type="checkbox" class="psm-shop accent-teal-600" value="${esc(s)}" data-group="${esc(g.name)}">${esc(s)}
+              </label>`).join('')}
+          </div>
+        </details>`).join('');
+
+      const otherHtml = otherShops.length ? `
+        <details class="border border-slate-200 rounded-lg mb-2 bg-white">
+          <summary class="px-3 py-2 text-xs font-bold text-slate-600 cursor-pointer select-none">その他の店舗（${otherShops.length}）</summary>
+          <div class="px-3 pb-2 grid grid-cols-1 gap-1">
+            ${otherShops.map(s => `
+              <label class="flex items-center gap-2 text-xs text-slate-700 py-1">
+                <input type="checkbox" class="psm-shop accent-teal-600" value="${esc(s)}" data-group="">${esc(s)}
+              </label>`).join('')}
+          </div>
+        </details>` : '';
+
+      document.getElementById('psm-body').innerHTML = `
+        <div class="text-[10px] font-bold text-slate-400 mb-1">送り先（任意・複数選択可）</div>
+        ${groupHtml}${otherHtml}`;
     }
 
-      ;
+    window.submitPatrolAggregation = async function () {
+      const body = document.getElementById('psm-body');
+      const groups = [...body.querySelectorAll('input.psm-group:checked')].map(el => el.value);
+      const groupSet = new Set(groups);
+      const shops = [...body.querySelectorAll('input.psm-shop:checked')]
+        .filter(el => !groupSet.has(el.dataset.group || ''))
+        .map(el => el.value);
+      window.closePatrolShareModal();
+
+      doWithLoading("巡回まとめ作成中...", (async () => {
+        const res = await runGasTask('runPatrolReport', { shareTargets: { groups: groups, shops: shops } });
+        if (res && res.noData) {
+          alert("本日のあなたの「巡回報告」が見つかりませんでした。\n先に巡回報告を送信してから、まとめを作成してください。");
+          return;
+        }
+        const total = res && res.totalShared ? res.totalShared : 0;
+        const sharedMsg = total > 0
+          ? `\n📨 送り先: ${total} 店舗のマイレポートに表示されます。`
+          : "\n（送り先未指定のため、本部のみ閲覧できます）";
+        alert("巡回まとめを作成しました。" + sharedMsg);
+      })());
+    };
 
     // v73.2: 「マイレポート」統合ビュー — 個別報告 + 集計レポートを1画面で確認（全ユーザーの入口）
     window.openMyReports = function () {
@@ -3827,13 +4044,20 @@
         const history = Array.isArray(results[0]) ? results[0] : [];
         const aggregated = Array.isArray(results[1]) ? results[1] : [];
 
+        // v75.0(①②): まとめレポートはサーバー側で権限フィルタ済み。
+        //   本部メンバー＝全まとめ／それ以外＝自分が作成した巡回まとめ＋自店舗宛に共有された巡回まとめのみ
+        const isHqViewer = (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
+        const aggExplain = isHqViewer
+          ? '・<b>まとめレポート</b>（巡回まとめ/速報/朝刊）＝下の「まとめレポート」一覧。複数の報告を1つに集約したものです。'
+          : '・<b>巡回まとめ・受信レポート</b>＝自分が作成した巡回まとめと、本部から自店舗宛に共有された巡回レポートが表示されます。';
+
         const explainer = `
           <details class="bg-slate-50 border border-slate-200 rounded-lg mb-3 mx-1">
             <summary class="px-3 py-2 text-xs font-bold text-slate-500 cursor-pointer select-none">📁 報告書はどこに保存される？</summary>
             <div class="px-3 pb-3 text-[11px] text-slate-500 leading-relaxed space-y-1">
-              <div>・<b>自分の報告</b>（日報/巡回/苦情/提案など）＝下の「自分の報告」一覧。1件ずつ記録され、Google Doc にも保存されます。</div>
-              <div>・<b>まとめレポート</b>（巡回まとめ/速報/朝刊）＝下の「まとめレポート」一覧。複数の報告を1つに集約したものです。</div>
-              <div>・どちらも「詳細」ボタンから<b>この画面内で中身の確認・修正</b>ができます（共有ドライブを開く必要はありません）。</div>
+              <div>・<b>自分の報告</b>（日報/巡回/苦情/提案など）＝下の「自分の報告」一覧。1件ずつ記録され、自分だけが閲覧・修正できます。</div>
+              <div>${aggExplain}</div>
+              <div>・「詳細」ボタンから<b>この画面内で中身の確認</b>ができます（共有ドライブを開く必要はありません）。</div>
             </div>
           </details>`;
 
@@ -3843,11 +4067,13 @@
           </div>
           ${history.length ? window.renderHistoryRows_(history) : '<div class="px-3 py-4 text-center text-slate-400 text-xs">まだ報告がありません</div>'}`;
 
+        const aggTitle = isHqViewer ? 'まとめレポート' : '巡回まとめ・受信レポート';
+        const aggEmpty = isHqViewer ? '今月のまとめはまだありません' : '巡回まとめ・共有されたレポートはありません';
         const aggregatedSection = `
           <div class="px-1 pt-4 pb-1 text-xs font-bold text-slate-600 flex items-center gap-1">
-            <span class="material-icons text-sm text-teal-600">summarize</span>まとめレポート（${aggregated.length}）
+            <span class="material-icons text-sm text-teal-600">summarize</span>${aggTitle}（${aggregated.length}）
           </div>
-          ${aggregated.length ? window.renderAggregatedRows_(aggregated) : '<div class="px-3 py-4 text-center text-slate-400 text-xs">今月のまとめはまだありません</div>'}`;
+          ${aggregated.length ? window.renderAggregatedRows_(aggregated) : '<div class="px-3 py-4 text-center text-slate-400 text-xs">' + aggEmpty + '</div>'}`;
 
         body.innerHTML = explainer + historySection + aggregatedSection;
       }).catch(function (e) {
@@ -3879,21 +4105,25 @@
 
     // 集計レポート 行レンダラ（showReportsList / openMyReports 共用）
     window.renderAggregatedRows_ = function (list) {
+      // v75.0(②): Doc 直リンクは本部メンバーのみ（店舗ユーザーは Drive 権限が無く開けないため。閲覧は「詳細」で完結）
+      const isHqViewer = (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
       return list.map(function (i) {
         const safeId   = window.escapeHtmlV73(i.id   || '');
         const safeName = window.escapeHtmlV73(i.name || '');
         const safeDate = window.escapeHtmlV73(i.date || '');
         const safeUrl  = window.escapeHtmlV73(i.url  || '');
+        const sharedBadge = i.shared ? '<span class="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded px-1 ml-1">📨 本部から共有</span>' : '';
+        const docLink = isHqViewer ? `<a href="${safeUrl}" target="_blank" class="text-xs text-slate-500 px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-center">Doc</a>` : '';
         return `
           <div class="p-3 border-b bg-white">
             <div class="flex justify-between items-start gap-2">
               <div class="flex-1 min-w-0">
-                <div class="font-bold text-sm text-slate-700 break-words">${safeName}</div>
+                <div class="font-bold text-sm text-slate-700 break-words">${safeName}${sharedBadge}</div>
                 <div class="text-xs text-slate-400 mt-1">${safeDate}</div>
               </div>
               <div class="flex flex-col gap-1 flex-shrink-0">
                 <button onclick="window.openAggregatedDetail('${safeId}')" class="text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 active:bg-blue-100">詳細 ›</button>
-                <a href="${safeUrl}" target="_blank" class="text-xs text-slate-500 px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-center">Doc</a>
+                ${docLink}
               </div>
             </div>
           </div>`;
@@ -4244,23 +4474,62 @@
     }
 
     // v2.x: OAuth2 ボタン配線 + サイレント自動ログイン
+    // v75.0(④): ①端末保存トークンで即復帰 → ②GIS サイレント（1回リトライ付き）の順で試行
     window.addEventListener('load', function () {
       const loginBtn = document.getElementById('google-login-btn');
       if (loginBtn) {
         loginBtn.addEventListener('click', () => window.loginWithOAuth2_({ silent: false }));
       }
-      // GIS oauth2 ロード後にサイレントログインを試行（同意済セッションなら自動遷移）
+      // GIS サイレントログイン（瞬断・読み込みタイミング起因の失敗に備えて1回だけ再試行）
       const trySilent = (retries = 10) => {
         if (window.google && google.accounts && google.accounts.oauth2) {
-          window.loginWithOAuth2_({ silent: true }).catch(() => {/* サイレント失敗時は静か */});
+          window.loginWithOAuth2_({ silent: true }).then(ok => {
+            if (!ok) setTimeout(() => { window.loginWithOAuth2_({ silent: true }).catch(() => {}); }, 1500);
+          }).catch(() => {
+            setTimeout(() => { window.loginWithOAuth2_({ silent: true }).catch(() => {}); }, 1500);
+          });
         } else if (retries > 0) {
           setTimeout(() => trySilent(retries - 1), 300);
         }
       };
-      trySilent();
+      // まず端末保存トークンでの即復帰を試す（GIS 不要・ポップアップなし）
+      if (restoreAccessToken_()) {
+        window.loginWithOAuth2_({ silent: true }).then(ok => { if (!ok) trySilent(); }).catch(() => trySilent());
+      } else {
+        trySilent();
+      }
+    });
+
+    // v75.0(④): アプリ復帰時（PWA切替・画面ON等）にトークン期限を先回りチェックして無音更新
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      if (!currentAccessToken) return; // ログイン前は何もしない
+      const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 5 * 60 * 1000;
+      if (nearExpiry) {
+        requestAccessTokenOnce_({ silent: true }).catch(() => {/* 失敗時は callGAS 側の再取得に任せる */});
+      }
     });
 
   </script>
+
+  <!-- v75.0(③): 巡回まとめ 送り先選択モーダル -->
+  <div id="patrol-share-modal" class="hidden fixed inset-0 bg-black/40 z-[6000] flex items-end sm:items-center justify-center">
+    <div class="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl max-h-[85vh] flex flex-col shadow-2xl">
+      <header class="px-4 py-3 border-b border-slate-200 flex items-center justify-between flex-shrink-0">
+        <div class="font-bold text-sm text-slate-700">📋 本日の巡回まとめ作成</div>
+        <button onclick="window.closePatrolShareModal()" class="p-1 text-slate-400 active:bg-slate-100 rounded"><span class="material-icons">close</span></button>
+      </header>
+      <div class="px-4 pt-3 pb-1 text-[11px] text-slate-500 leading-relaxed flex-shrink-0">
+        あなたが本日送信した「巡回報告」を1つのまとめレポートにします。<br>
+        送り先（エリア・店舗）をチェックすると、その店舗のマイレポートにも表示されます。<b>選ばない場合は本部のみ閲覧できます。</b>
+      </div>
+      <div id="psm-body" class="flex-1 overflow-y-auto px-4 py-2 custom-scroll">読み込み中…</div>
+      <footer class="px-4 py-3 border-t border-slate-200 flex gap-2 flex-shrink-0">
+        <button onclick="window.closePatrolShareModal()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">キャンセル</button>
+        <button id="psm-submit" onclick="window.submitPatrolAggregation()" class="flex-1 py-3 bg-teal-700 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">まとめを作成</button>
+      </footer>
+    </div>
+  </div>
 
   <!-- v73.0: 報告書詳細モーダル（個人報告書） -->
   <div id="report-detail-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
