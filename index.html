@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v75.0
+<!-- スマレコ (SmartRecord) PWA Frontend v76.0
+     v76.0: 店舗内情報共有（店内ミーティング）。記録→まとめ（部門別）→部門別印刷→本部提出→全店ハイライト。
+            録音・写真パネルは1組だけ持ち店内画面へDOMごと移設。submit() を submitReport_(mode,opts) に共通化
      v75.0: まとめ閲覧の権限表示制御(①②)・巡回まとめ送り先選択UI(③)・認証トークン端末保存+silent強化(④)・送信自動リトライ+エラー記録(⑤) -->
 <html lang="ja">
 
@@ -596,6 +598,32 @@
         font-size: 2.2rem;
       }
     }
+
+    /* ============================================================
+       v76.0: 印刷（店内ミーティング資料を部門別に紙で配る）
+       画面表示は隠し、#print-root だけを A4 で印刷する
+       ============================================================ */
+    #print-root { display: none; }
+
+    @media print {
+      body { padding-bottom: 0 !important; background: #fff !important; }
+      body > *:not(#print-root) { display: none !important; }
+      #print-root { display: block !important; }
+      .print-doc { font-size: 11pt; color: #000; line-height: 1.6; }
+      .print-doc h1 { font-size: 16pt; font-weight: 700; margin: 0 0 3mm; border-bottom: 2px solid #0f766e; padding-bottom: 2mm; }
+      .print-doc h2 { font-size: 13pt; font-weight: 700; margin: 6mm 0 2mm; background: #f1f5f9; padding: 1.5mm 2mm; border-left: 4px solid #0f766e; }
+      .print-doc h3 { font-size: 11.5pt; font-weight: 700; margin: 3mm 0 1mm; }
+      .print-doc .meta { font-size: 9pt; color: #475569; margin-bottom: 3mm; }
+      .print-doc .topic { margin: 0 0 4mm; page-break-inside: avoid; }
+      .print-doc .memo { border-left: 3px solid #cbd5e1; padding-left: 3mm; margin: 2mm 0 2mm 4mm; page-break-inside: avoid; }
+      .print-doc .memo-head { font-size: 9pt; color: #64748b; }
+      .print-doc .action { color: #0f766e; font-weight: 700; }
+      .print-doc .imgs { display: flex; flex-wrap: wrap; gap: 3mm; margin-top: 2mm; }
+      .print-doc .imgs img { width: 55mm; height: auto; border: 1px solid #cbd5e1; }
+      .print-doc ul { margin: 0 0 2mm 6mm; }
+      .print-doc .dept-block { page-break-inside: auto; }
+      @page { size: A4; margin: 12mm; }
+    }
   </style>
 
   <script> // Global Error Handler
@@ -651,6 +679,18 @@
         class="w-full text-left px-4 py-3.5 text-sm hover:bg-green-50 text-green-800 flex items-center font-bold bg-green-50/60 border-b border-green-100">
         <span class="material-icons text-lg mr-3">folder_shared</span>マイレポート
         <span class="ml-auto material-icons text-base text-green-400">chevron_right</span>
+      </button>
+
+      <!-- v76.0: 店舗内情報共有 -->
+      <button onclick="window.openInstore()"
+        class="w-full text-left px-4 py-3.5 text-sm hover:bg-teal-50 text-teal-800 flex items-center font-bold bg-teal-50/60 border-b border-teal-100">
+        <span class="material-icons text-lg mr-3">storefront</span>店舗内情報共有
+        <span class="ml-auto material-icons text-base text-teal-400">chevron_right</span>
+      </button>
+      <button id="menu-hq-meetings" onclick="window.openHqMeetings()"
+        class="hidden w-full text-left px-4 py-3.5 text-sm hover:bg-teal-50 text-teal-800 flex items-center font-bold border-b border-teal-100">
+        <span class="material-icons text-lg mr-3">groups</span>店内ミーティング報告（全店）
+        <span class="ml-auto material-icons text-base text-teal-400">chevron_right</span>
       </button>
 
       <!-- 基本（全員） -->
@@ -846,7 +886,10 @@
         onclick="window.showWeatherDashboard()">
         <!-- JSで動的挿入 -->
       </div>
-      <div class="bg-white rounded-2xl shadow-xl p-6 text-center border border-slate-100">
+      <!-- v76.0: 録音・写真パネルは1組だけ持ち、店舗内情報共有の画面へは DOM ごと移設して使う
+           （UIを複製すると録音状態・イベントが二重化してバグの温床になるため） -->
+      <div id="home-recorder-slot" class="space-y-5">
+      <div id="recorder-card" class="bg-white rounded-2xl shadow-xl p-6 text-center border border-slate-100">
         <div class="mb-4"><span id="rec-status"
             class="inline-block px-3 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-full mb-1 tracking-wider">READY</span>
           <div id="timer" class="text-5xl font-mono font-bold text-slate-700 tracking-tighter">00:00</div>
@@ -861,7 +904,7 @@
             class="flex-1 py-2 bg-slate-50 text-slate-400 rounded-lg text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-100 flex items-center justify-center"><span
               class="material-icons text-sm mr-1">delete</span>削除</button></div>
       </div>
-      <div class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100">
+      <div id="photo-card" class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100">
         <div class="flex justify-between items-center mb-3">
           <h3 class="text-sm font-bold text-slate-600 flex items-center"><span
               class="material-icons text-sm mr-1 text-slate-400">photo_camera</span>現場写真</h3><span id="img-count"
@@ -878,6 +921,7 @@
               class="hidden" onchange="window.handleImg(this)"></label></div>
         <div id="img-preview" class="flex space-x-3 overflow-x-auto hidden pb-2 pl-1 no-scrollbar"></div>
       </div>
+      </div><!-- /home-recorder-slot -->
       <div class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100 pb-8">
         <div class="flex justify-between items-center mb-4">
           <h3 class="text-sm font-bold text-slate-600">報告送信</h3><label
@@ -907,13 +951,30 @@
             class="btn-press p-3 bg-teal-50 border border-teal-200 rounded-xl shadow-sm hover:bg-teal-100 text-center h-24 flex flex-col items-center justify-center"><span
               class="material-icons text-teal-600 text-2xl mb-1">fact_check</span><span
               class="text-sm font-bold text-teal-800">巡回報告</span></button></div>
-      </div><button onclick="window.openMyReports()"
+      </div>
+      <!-- v76.0: 店舗内情報共有（店内ミーティング）の入口 -->
+      <button onclick="window.openInstore()"
+        class="btn-press w-full p-4 bg-gradient-to-r from-teal-600 to-cyan-600 text-white rounded-xl shadow-lg flex items-center justify-between">
+        <div class="flex items-center">
+          <div class="bg-white/20 p-2 rounded-lg mr-3"><span class="material-icons text-xl text-white">storefront</span></div>
+          <div class="text-left">
+            <div class="font-bold text-base">店舗内情報共有</div>
+            <div class="text-[11px] text-teal-50 opacity-90">気付きを記録 → まとめてミーティング資料に</div>
+          </div>
+        </div><span class="material-icons opacity-60">arrow_forward_ios</span>
+      </button>
+      <button onclick="window.openMyReports()"
         class="btn-press w-full py-3.5 text-sm font-bold bg-white border border-green-200 text-green-700 rounded-xl flex items-center justify-center shadow-sm active:scale-95"><span
           class="material-icons text-base mr-2">folder_shared</span>マイレポート（自分の報告・まとめを見る）</button>
       <!-- 本部専用ボタン（HQ_ADMINのみ表示） -->
       <button id="btn-hq-admin" onclick="window.showHQAdmin()"
         class="hidden btn-press w-full py-3 text-sm font-bold bg-indigo-700 text-white rounded-xl flex items-center justify-center shadow-lg">
         <span class="material-icons text-sm mr-2">campaign</span>本部配信管理
+      </button>
+      <!-- v76.0: 本部が各店の店内ミーティング報告とハイライトを見る入口 -->
+      <button id="btn-hq-meetings" onclick="window.openHqMeetings()"
+        class="hidden btn-press w-full py-3 text-sm font-bold bg-teal-700 text-white rounded-xl flex items-center justify-center shadow-lg">
+        <span class="material-icons text-sm mr-2">groups</span>店内ミーティング報告（全店）
       </button>
       <div class="h-8"></div>
     </div>
@@ -2100,6 +2161,137 @@
     </div>
     <div id="sub-body" class="flex-grow overflow-y-auto p-4 space-y-3 pb-20"></div>
   </div>
+  <!-- ============================================================
+       v76.0: 店舗内情報共有（店内ミーティング）
+       ============================================================ -->
+  <div id="instore-screen" class="hidden fixed inset-0 bg-slate-50 z-[2500] flex flex-col">
+    <div class="flex items-center p-4 bg-gradient-to-r from-teal-600 to-cyan-600 shadow-sm sticky top-0 z-10">
+      <button onclick="window.closeInstore()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
+      <div class="ml-1 flex-1 min-w-0">
+        <h2 class="text-base font-bold text-white truncate">店舗内情報共有</h2>
+        <p class="text-[11px] text-teal-50"><span id="instore-shop">--</span> ・ <span id="instore-date">--</span></p>
+      </div>
+    </div>
+
+    <div class="flex-grow overflow-y-auto p-4 space-y-5 pb-24">
+      <div id="instore-guard" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-800 leading-relaxed"></div>
+
+      <details class="bg-white border border-slate-200 rounded-xl">
+        <summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">📖 使い方（開店前 → ミーティング → 部門共有 → 本部提出）</summary>
+        <div class="px-4 pb-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
+          <div><b>① 記録する</b>：開店前から気付いたこと・気になること・相談事を、音声と写真でどんどん記録します。</div>
+          <div><b>② まとめる</b>：ミーティング前に「まとめる」を押すと、部門別のミーティング資料ができます。</div>
+          <div><b>③ 更新する</b>：ミーティング中の話し合いや決定事項も録音して記録し、もう一度「まとめる」を押すと資料が最新になります。</div>
+          <div><b>④ 印刷する</b>：資料画面の「印刷」から、部門を選んで印刷できます。翌日の部門ミーティングにそのまま使えます。</div>
+          <div><b>⑤ 本部へ提出</b>：資料画面の「本部へ提出」で、本日のミーティング報告として本部に届きます。<b>提出するまで本部には見えません。</b></div>
+          <div class="pt-1 text-slate-400">※ 記録した内容は同じ店舗のメンバーが閲覧できます。店舗のPCからも同じ画面で確認できます。</div>
+        </div>
+      </details>
+
+      <!-- 録音・写真パネルはホームから移設される -->
+      <div id="instore-recorder-slot" class="space-y-5"></div>
+
+      <div id="instore-post-card" class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100">
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="text-sm font-bold text-slate-600">店内メモとして記録</h3>
+          <label class="flex items-center space-x-2 bg-red-50 px-3 py-1 rounded-full border border-red-100">
+            <input type="checkbox" id="chk-emg-instore" class="w-4 h-4 text-red-600 rounded">
+            <span class="text-xs font-bold text-red-600">重要</span>
+          </label>
+        </div>
+        <button onclick="window.submitInstoreMemo()"
+          class="btn-press w-full p-4 bg-gradient-to-r from-teal-600 to-emerald-600 text-white rounded-xl shadow-lg flex items-center justify-between">
+          <div class="flex items-center">
+            <div class="bg-white/20 p-2 rounded-lg mr-3"><span class="material-icons text-xl text-white">sticky_note_2</span></div>
+            <div class="text-left"><div class="font-bold text-base">この内容を記録する</div></div>
+          </div><span class="material-icons opacity-60">arrow_forward_ios</span>
+        </button>
+        <p class="text-[11px] text-slate-400 mt-3 leading-relaxed">
+          この記録は自分の店舗の中だけで共有されます。本部へは「まとめ」を提出したときに届きます。
+        </p>
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between px-1 mb-2">
+          <h3 class="text-sm font-bold text-slate-600 flex items-center">
+            <span class="material-icons text-sm mr-1 text-teal-600">forum</span>本日の記録（<span id="instore-memo-count">0</span>）
+          </h3>
+          <button onclick="window.loadStoreBoard(true)"
+            class="text-xs text-teal-700 font-bold px-2 py-1 rounded border border-teal-200 bg-teal-50 active:bg-teal-100">♻️ 更新</button>
+        </div>
+        <div id="instore-memo-list" class="space-y-2">
+          <div class="p-6 text-center text-slate-400 text-xs">読み込み中…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="p-3 bg-white border-t flex gap-2 sticky bottom-0 z-10">
+      <button id="btn-instore-summarize" onclick="window.runStoreMeetingSummary(false)"
+        class="btn-press flex-1 py-3.5 bg-teal-700 text-white rounded-xl font-bold text-sm flex items-center justify-center active:scale-95 transition-transform">
+        <span class="material-icons text-base mr-1">summarize</span><span id="btn-summarize-label">まとめる</span>
+      </button>
+      <button id="btn-instore-open" onclick="window.openStoreMeetingFromBoard()"
+        class="hidden btn-press flex-1 py-3.5 bg-white border border-teal-300 text-teal-700 rounded-xl font-bold text-sm flex items-center justify-center active:scale-95 transition-transform">
+        <span class="material-icons text-base mr-1">description</span>資料を見る
+      </button>
+    </div>
+  </div>
+
+  <!-- 店内ミーティング資料（詳細・編集・印刷・提出） -->
+  <div id="store-meeting-modal" class="hidden fixed inset-0 bg-slate-50 z-[3500] flex flex-col">
+    <div class="flex items-center p-4 bg-white border-b shadow-sm sticky top-0 z-10">
+      <button onclick="window.closeStoreMeeting()" class="p-2 -ml-2 text-slate-600"><span class="material-icons">close</span></button>
+      <div class="ml-1 flex-1 min-w-0">
+        <h2 id="sm-title" class="text-sm font-bold text-slate-700 truncate">ミーティング資料</h2>
+        <p id="sm-subtitle" class="text-[11px] text-slate-400"></p>
+      </div>
+      <span id="sm-status-badge" class="text-[10px] font-bold px-2 py-1 rounded border"></span>
+    </div>
+    <div id="sm-body" class="flex-grow overflow-y-auto p-4 space-y-4 pb-24"></div>
+    <div id="sm-footer" class="p-3 bg-white border-t flex gap-2 flex-wrap sticky bottom-0 z-10"></div>
+  </div>
+
+  <!-- 印刷する部門を選ぶ -->
+  <div id="store-print-modal" class="hidden fixed inset-0 bg-black/50 z-[4500] flex items-end sm:items-center justify-center p-0 sm:p-6">
+    <div class="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
+      <div class="p-4 border-b flex items-center justify-between">
+        <h3 class="text-sm font-bold text-slate-700">印刷する部門を選ぶ</h3>
+        <button onclick="window.closeStorePrintModal()" class="text-slate-400 p-1"><span class="material-icons">close</span></button>
+      </div>
+      <div id="spm-body" class="p-4 overflow-y-auto space-y-2"></div>
+      <div class="p-4 border-t flex gap-2">
+        <button onclick="window.closeStorePrintModal()" class="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold text-sm">キャンセル</button>
+        <button onclick="window.doStorePrint()" class="flex-1 py-3 bg-teal-700 text-white rounded-xl font-bold text-sm">🖨 印刷する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 本部: 店内ミーティング報告（全店） -->
+  <div id="hq-meetings-screen" class="hidden fixed inset-0 bg-slate-50 z-[2500] flex flex-col">
+    <div class="flex items-center p-4 bg-teal-700 shadow-sm sticky top-0 z-10">
+      <button onclick="window.closeHqMeetings()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
+      <span class="material-icons text-white ml-1 mr-2">groups</span>
+      <h2 class="text-base font-bold text-white">店内ミーティング報告（全店）</h2>
+    </div>
+    <div class="p-3 bg-white border-b flex items-center gap-2">
+      <label class="text-xs font-bold text-slate-500">対象日</label>
+      <input type="date" id="hqm-date" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
+      <button onclick="window.loadHqMeetings()" class="text-xs font-bold px-3 py-2 rounded-lg bg-slate-100 text-slate-600">表示</button>
+    </div>
+    <div id="hqm-body" class="flex-grow overflow-y-auto p-4 space-y-4 pb-24">
+      <div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>
+    </div>
+    <div class="p-3 bg-white border-t sticky bottom-0 z-10">
+      <button onclick="window.runMeetingHighlights()"
+        class="btn-press w-full py-3.5 bg-indigo-700 text-white rounded-xl font-bold text-sm flex items-center justify-center active:scale-95 transition-transform">
+        <span class="material-icons text-base mr-1">auto_awesome</span>この日の全店ハイライトを作成
+      </button>
+    </div>
+  </div>
+
+  <!-- 印刷用の描画先（画面には出さず、印刷時のみ表示される） -->
+  <div id="print-root"></div>
+
   <script>
     // ===== GitHub Pages 設定 =====
     const CONFIG = {
@@ -2769,6 +2961,13 @@
       // HQ_ADMIN または ADMIN の場合に「本部配信」ボタンを表示
       const hqBtn = document.getElementById('btn-hq-admin');
       if (hqBtn) hqBtn.classList.toggle('hidden', userRole !== 'HQ_ADMIN' && userRole !== 'ADMIN');
+      // v76.0: 本部メンバー（役職 or 所属=本部）には全店ミーティング報告の入口を出す
+      _currentUserShop = String(user.shop || '').trim();
+      const isHqMember = (userRole === 'HQ_ADMIN' || userRole === 'ADMIN' || _currentUserShop === '本部');
+      const hqMeetBtn = document.getElementById('btn-hq-meetings');
+      if (hqMeetBtn) hqMeetBtn.classList.toggle('hidden', !isHqMember);
+      const hqMeetMenu = document.getElementById('menu-hq-meetings');
+      if (hqMeetMenu) hqMeetMenu.classList.toggle('hidden', !isHqMember);
       // v73.2: メニューボタンは全ユーザーに表示（一般ユーザーがマイレポート/天気等に到達できるよう開放）
       const menuBtn = document.getElementById('btn-admin-menu');
       if (menuBtn) menuBtn.classList.remove('hidden');
@@ -3307,43 +3506,36 @@
 
       ;
 
-    window.submit = async function (mode) {
+    // v76.0: 送信処理を共通化。本部向けの報告（日報/苦情/提案/返信/巡回）と
+    //   店舗内情報共有の「店内メモ」で、同じ録音・写真パネルと同じ送信経路を使う。
+    //   opts: { emergencyId, confirmText, quietSuccess, onSuccess }
+    async function submitReport_(mode, opts) {
+      const o = opts || {};
       if (audioChunks.length === 0) {
         alert("音声が録音されていません。");
         return;
       }
 
-      if (mode === '巡回') {
+      if (o.confirmText) {
+        if (!confirm(o.confirmText)) return;
+      } else if (mode === '巡回') {
         if (!confirm("【確認】\nこれは本部巡回者用の報告先ですがよろしいですか？")) return;
-      }
-
-      else {
+      } else {
         if (!confirm(mode + " として送信しますか？")) return;
       }
 
-      doWithLoading("位置情報取得 & 送信中...", new Promise(async (resolve, reject) => {
-        try {
-          let loc = {
-            lat: null, lon: null
-          }
+      const emgEl = document.getElementById(o.emergencyId || 'chk-emg');
 
-            ;
+      return doWithLoading("位置情報取得 & 送信中...", new Promise(async (resolve, reject) => {
+        try {
+          let loc = { lat: null, lon: null };
 
           try {
             const pos = await new Promise((r, j) => {
-              navigator.geolocation.getCurrentPosition(r, j, {
-                timeout: 5000
-              });
+              navigator.geolocation.getCurrentPosition(r, j, { timeout: 5000 });
             });
-
-            loc = {
-              lat: pos.coords.latitude, lon: pos.coords.longitude
-            }
-
-              ;
-          }
-
-          catch (e) {
+            loc = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          } catch (e) {
             console.warn("Geo skipped:", e);
           }
 
@@ -3360,10 +3552,13 @@
             }));
 
             const payload = {
-              audioBase64: reader.result.split(',')[1], mimeType: detectedMime, mode: mode, isEmergency: document.getElementById('chk-emg').checked, imageBase64List: imageBase64List, location: loc
-            }
-
-              ;
+              audioBase64: reader.result.split(',')[1],
+              mimeType: detectedMime,
+              mode: mode,
+              isEmergency: !!(emgEl && emgEl.checked),
+              imageBase64List: imageBase64List,
+              location: loc
+            };
             document.getElementById('loading-msg').innerText = "AI解析・送信中...";
 
             // v75.0(⑤): エラー切り分け用メタ（録音長・概算ペイロードサイズKB）
@@ -3399,32 +3594,35 @@
                 res = await submitVoiceReportWithRetry_(payload, audioSecMeta, payloadKbMeta);
               }
 
-              alert("送信完了！\n\n【要約】\n" + res.summary);
-
               // Reset
               audioChunks = []; recTime = 0; images = [];
               document.getElementById('timer').innerText = "00:00";
               document.getElementById('rec-status').innerText = "READY";
-              document.getElementById('chk-emg').checked = false;
+              if (emgEl) emgEl.checked = false;
               updateBtns(false); updateImagePreview();
-              resolve();
-            }
 
-            catch (e) {
+              if (o.quietSuccess) {
+                alert("記録しました。");
+              } else {
+                alert("送信完了！\n\n【要約】\n" + res.summary);
+              }
+              if (typeof o.onSuccess === 'function') {
+                try { o.onSuccess(res); } catch (e2) { console.warn('onSuccess error:', e2); }
+              }
+              resolve();
+            } catch (e) {
               reject("送信エラー: " + e);
             }
-          }
-
-            ;
-        }
-
-        catch (e) {
+          };
+        } catch (e) {
           reject("処理前エラー: " + e);
         }
       }));
     }
 
-      ;
+    window.submit = function (mode) {
+      return submitReport_(mode, {});
+    };
 
     function createElement(tag, className, innerHTML) {
       const el = document.createElement(tag);
@@ -4509,6 +4707,568 @@
         requestAccessTokenOnce_({ silent: true }).catch(() => {/* 失敗時は callGAS 側の再取得に任せる */});
       }
     });
+
+
+    // ============================================================
+    // v76.0: 店舗内情報共有（店内ミーティング）
+    //   ホームの録音・写真パネルを DOM ごと店内画面へ移して使う（UIを複製しない）
+    // ============================================================
+    let _storeBoard = null;        // 直近の getStoreBoard 結果
+    let _currentMeeting = null;    // 開いているミーティング資料
+    let _isEditingMeeting = false;
+    let _currentUserShop = '';     // ログイン中ユーザーの所属店舗（本部判定・表示用）
+
+    function driveThumbUrl_(url, w) {
+      const id = extractDriveFileIdV73_(url);
+      return id ? ('https://drive.google.com/thumbnail?id=' + id + '&sz=w' + (w || 400)) : url;
+    }
+
+    /** 録音・写真パネルを指定スロットへ移設（状態は1組のまま保つ） */
+    function moveRecorderTo_(slotId) {
+      const slot = document.getElementById(slotId);
+      const rec = document.getElementById('recorder-card');
+      const photo = document.getElementById('photo-card');
+      if (!slot || !rec || !photo) return;
+      slot.appendChild(rec);
+      slot.appendChild(photo);
+    }
+
+    /** 録音中の画面移動は取りこぼしのもとなので止める */
+    function guardWhileRecording_() {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        alert('録音中です。停止してから画面を切り替えてください。');
+        return true;
+      }
+      return false;
+    }
+
+    window.openInstore = function () {
+      if (guardWhileRecording_()) return;
+      const menu = document.getElementById('admin-menu');
+      if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
+      moveRecorderTo_('instore-recorder-slot');
+      document.getElementById('instore-screen').classList.remove('hidden');
+      window.loadStoreBoard(false);
+    };
+
+    window.closeInstore = function () {
+      if (guardWhileRecording_()) return;
+      moveRecorderTo_('home-recorder-slot');
+      document.getElementById('instore-screen').classList.add('hidden');
+    };
+
+    /** 文章と写真をセットで見せるカード（画面表示用） */
+    function memoCardHtml_(m) {
+      const esc = window.escapeHtmlV73;
+      const badge = m.isEmergency
+        ? '<span class="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1 ml-1">重要</span>' : '';
+      const imgs = (m.imageUrls && m.imageUrls.length)
+        ? '<div class="grid grid-cols-3 gap-1.5 mt-2">' + m.imageUrls.map(u =>
+            '<a href="' + esc(u) + '" target="_blank" rel="noopener" class="block rounded overflow-hidden border border-slate-200 bg-white">' +
+            '<img src="' + esc(driveThumbUrl_(u, 400)) + '" class="w-full h-20 object-cover" alt="記録写真" loading="lazy" ' +
+            'onerror="this.style.display=&quot;none&quot;">' +
+            '</a>').join('') + '</div>'
+        : '';
+      return '<div class="bg-white rounded-xl p-3 border ' + (m.isEmergency ? 'border-red-200' : 'border-slate-200') + '">' +
+        '<div class="text-[11px] text-slate-500">' + esc(m.time) + ' ・ ' + esc(m.name) + badge + '</div>' +
+        '<div class="text-sm text-slate-700 whitespace-pre-wrap break-words mt-1">' + esc(m.content || '（内容なし）') + '</div>' +
+        imgs + '</div>';
+    }
+
+    /** ① 本日の店内メモと、まとめの状態を読み込む */
+    window.loadStoreBoard = async function (silent) {
+      const list = document.getElementById('instore-memo-list');
+      if (!silent) list.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs">読み込み中…</div>';
+      try {
+        const board = await runGasTask('getStoreBoard');
+        _storeBoard = board;
+        _currentUserShop = board.shop || _currentUserShop;
+        document.getElementById('instore-shop').innerText = board.shop || '--';
+        document.getElementById('instore-date').innerText = board.dateDisplay || '--';
+        document.getElementById('instore-memo-count').innerText = (board.memos || []).length;
+
+        // 本部所属など、店内共有を使えない場合の案内
+        const guard = document.getElementById('instore-guard');
+        const postCard = document.getElementById('instore-post-card');
+        const slot = document.getElementById('instore-recorder-slot');
+        if (board.canPost === false) {
+          guard.innerHTML = window.escapeHtmlV73(board.message || 'この機能は店舗所属のユーザー向けです。');
+          guard.classList.remove('hidden');
+          postCard.classList.add('hidden');
+          slot.classList.add('hidden');
+        } else {
+          guard.classList.add('hidden');
+          postCard.classList.remove('hidden');
+          slot.classList.remove('hidden');
+        }
+
+        list.innerHTML = (board.memos && board.memos.length)
+          ? board.memos.map(memoCardHtml_).join('')
+          : '<div class="bg-white rounded-xl p-6 text-center text-slate-400 text-xs border border-slate-200">まだ記録がありません。マイクボタンで録音して「この内容を記録する」を押してください。</div>';
+
+        // まとめの有無でボタン表示を切り替える
+        const label = document.getElementById('btn-summarize-label');
+        const openBtn = document.getElementById('btn-instore-open');
+        if (board.meeting) {
+          label.innerText = 'まとめを更新する';
+          openBtn.classList.remove('hidden');
+        } else {
+          label.innerText = 'まとめる';
+          openBtn.classList.add('hidden');
+        }
+      } catch (e) {
+        list.innerHTML = '<div class="p-6 text-center text-red-500 text-xs">読み込みエラー: ' +
+          window.escapeHtmlV73(e.message || String(e)) + '</div>';
+      }
+    };
+
+    /** ①③ 店内メモとして記録（本部へは飛ばない） */
+    window.submitInstoreMemo = function () {
+      return submitReport_('店内', {
+        emergencyId : 'chk-emg-instore',
+        confirmText : '店内メモとして記録しますか？\n（この内容は自分の店舗の中だけで共有されます）',
+        quietSuccess: true,
+        onSuccess   : function () { window.loadStoreBoard(true); }
+      });
+    };
+
+    /** ②③ まとめを作成／更新する */
+    window.runStoreMeetingSummary = async function (force) {
+      try {
+        const res = await doWithLoading(
+          force ? 'AIがミーティング資料を作り直しています…' : 'AIがミーティング資料を作成中…',
+          runGasTask('generateStoreMeeting', { force: !!force })
+        );
+        if (!res) return;
+        if (res.noData) { alert(res.message || '本日の記録がまだありません。'); return; }
+        if (res.needsConfirm) {
+          if (confirm(res.message + '\n\nAIで作り直しますか？\n（「キャンセル」＝今の資料をそのまま開く）')) {
+            return window.runStoreMeetingSummary(true);
+          }
+          return window.openStoreMeeting(res.docId);
+        }
+        await window.loadStoreBoard(true);
+        window.openStoreMeeting(res.docId);
+      } catch (e) {
+        console.error('runStoreMeetingSummary error:', e);
+      }
+    };
+
+    window.openStoreMeetingFromBoard = function () {
+      if (_storeBoard && _storeBoard.meeting && _storeBoard.meeting.docId) {
+        window.openStoreMeeting(_storeBoard.meeting.docId);
+      } else {
+        alert('まだミーティング資料がありません。「まとめる」を押して作成してください。');
+      }
+    };
+
+    // ====== ミーティング資料（詳細・編集・印刷・提出） ======
+
+    window.openStoreMeeting = async function (docId) {
+      const modal = document.getElementById('store-meeting-modal');
+      const body = document.getElementById('sm-body');
+      modal.classList.remove('hidden');
+      body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
+      document.getElementById('sm-footer').innerHTML = '';
+      try {
+        _currentMeeting = await runGasTask('getStoreMeetingDetail', { docId: docId });
+        _isEditingMeeting = false;
+        renderStoreMeeting_();
+      } catch (e) {
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">エラー: ' +
+          window.escapeHtmlV73(e.message || String(e)) + '</div>';
+      }
+    };
+
+    window.closeStoreMeeting = function () {
+      if (_isEditingMeeting && !confirm('編集中の内容は破棄されます。閉じますか？')) return;
+      document.getElementById('store-meeting-modal').classList.add('hidden');
+      _currentMeeting = null;
+      _isEditingMeeting = false;
+    };
+
+    function splitLines_(v) {
+      return String(v || '').split('\n').map(s => s.trim()).filter(Boolean);
+    }
+
+    function renderStoreMeeting_() {
+      const d = _currentMeeting;
+      if (!d) return;
+      const esc = window.escapeHtmlV73;
+      const ai = d.ai || {};
+      const editing = _isEditingMeeting;
+      const memoById = {};
+      (d.memos || []).forEach(m => { memoById[m.id] = m; });
+
+      document.getElementById('sm-title').textContent = d.fileName || 'ミーティング資料';
+      document.getElementById('sm-subtitle').textContent =
+        (d.shop || '') + ' ・ ' + (d.dateDisplay || '') + ' ・ 記録' + (d.memoCount || 0) + '件';
+      const badge = document.getElementById('sm-status-badge');
+      const submitted = d.status === '提出済';
+      badge.textContent = submitted ? '📤 提出済' : '📝 下書き';
+      badge.className = 'text-[10px] font-bold px-2 py-1 rounded border ' +
+        (submitted ? 'text-teal-700 bg-teal-50 border-teal-200' : 'text-slate-500 bg-slate-50 border-slate-200');
+
+      const overallView = editing
+        ? '<textarea id="sm-overall" class="w-full border border-slate-300 rounded p-2 text-sm" rows="5">' + esc(ai.overall_summary || '') + '</textarea>'
+        : '<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded-lg border border-slate-200">' + esc(ai.overall_summary || '（概要なし）') + '</div>';
+
+      const decisionsView = editing
+        ? '<textarea id="sm-decisions" class="w-full border border-slate-300 rounded p-2 text-sm" rows="4" placeholder="1行に1件">' +
+          esc((ai.decisions || []).join('\n')) + '</textarea>'
+        : ((ai.decisions && ai.decisions.length)
+            ? '<ul class="bg-white rounded-lg border border-slate-200 p-3 space-y-1 text-sm text-slate-700 list-disc list-inside">' +
+              ai.decisions.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>'
+            : '<div class="text-xs text-slate-400">（決定事項の記録はありません）</div>');
+
+      const todosView = editing
+        ? '<textarea id="sm-todos" class="w-full border border-slate-300 rounded p-2 text-sm" rows="4" placeholder="1行に1件。担当を書く場合は「内容 | 担当者」">' +
+          esc((ai.todos || []).map(t => t.owner ? (t.text + ' | ' + t.owner) : t.text).join('\n')) + '</textarea>'
+        : ((ai.todos && ai.todos.length)
+            ? '<ul class="bg-white rounded-lg border border-slate-200 p-3 space-y-1 text-sm text-slate-700 list-disc list-inside">' +
+              ai.todos.map(t => '<li>' + esc(t.text) + (t.owner ? ' <span class="text-xs text-slate-400">（担当: ' + esc(t.owner) + '）</span>' : '') + '</li>').join('') + '</ul>'
+            : '<div class="text-xs text-slate-400">（やることの記録はありません）</div>');
+
+      const deptList = d.departmentList || [];
+      let deptHtml = '';
+      (ai.departments || []).forEach((dept, di) => {
+        const topics = (dept.topics || []).map((t, ti) => {
+          const key = di + '-' + ti;
+          const memos = (t.related_ids || []).map(id => memoById[id]).filter(Boolean);
+          const memoHtml = memos.length
+            ? '<div class="space-y-2 mt-2">' + memos.map(memoCardHtml_).join('') + '</div>'
+            : '';
+          if (editing) {
+            const opts = deptList.map(n =>
+              '<option value="' + esc(n) + '"' + (n === dept.name ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+            return '<div class="bg-slate-50 rounded-lg border border-slate-200 p-3 space-y-2">' +
+              '<div class="flex gap-2 items-center"><span class="text-[10px] font-bold text-slate-400">部門</span>' +
+              '<select id="sm-dept-' + key + '" class="border border-slate-300 rounded px-2 py-1 text-xs">' + opts + '</select></div>' +
+              '<input id="sm-title-' + key + '" class="w-full border border-slate-300 rounded p-2 text-sm font-bold" value="' + esc(t.title || '') + '">' +
+              '<textarea id="sm-detail-' + key + '" class="w-full border border-slate-300 rounded p-2 text-sm" rows="3">' + esc(t.detail || '') + '</textarea>' +
+              '<input id="sm-action-' + key + '" class="w-full border border-slate-300 rounded p-2 text-sm" placeholder="対応・確認事項（任意）" value="' + esc(t.action || '') + '">' +
+              memoHtml + '</div>';
+          }
+          return '<div class="bg-slate-50 rounded-lg border border-slate-200 p-3">' +
+            '<div class="text-sm font-bold text-slate-700">・' + esc(t.title || '') + '</div>' +
+            (t.detail ? '<div class="text-sm text-slate-600 whitespace-pre-wrap mt-1">' + esc(t.detail) + '</div>' : '') +
+            (t.action ? '<div class="text-sm text-teal-700 font-bold mt-1">→ 対応: ' + esc(t.action) + '</div>' : '') +
+            memoHtml + '</div>';
+        }).join('');
+        deptHtml += '<div class="mt-3">' +
+          '<div class="text-xs font-bold text-white bg-teal-600 rounded px-2 py-1 inline-block mb-2">' + esc(dept.name) + '</div>' +
+          '<div class="space-y-2">' + topics + '</div></div>';
+      });
+      if (!deptHtml) deptHtml = '<div class="text-xs text-slate-400">（部門別の内容がありません）</div>';
+
+      const archivedNote = d.memosArchived
+        ? '<div class="bg-amber-50 border border-amber-200 rounded-lg p-2 text-[11px] text-amber-700">元の記録は保存期間（30日）を過ぎたため、作成時点の内容を表示しています。</div>'
+        : '';
+
+      document.getElementById('sm-body').innerHTML =
+        archivedNote +
+        '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 全体概要</div>' + overallView + '</div>' +
+        '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 決定事項</div>' + decisionsView + '</div>' +
+        '<div><div class="text-xs font-bold text-slate-500 mb-1">■ やること</div>' + todosView + '</div>' +
+        '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 部門別</div>' + deptHtml + '</div>' +
+        (d.docUrl ? '<div class="pt-2"><a href="' + esc(d.docUrl) + '" target="_blank" rel="noopener" class="text-xs text-blue-600 underline">Google Doc で開く</a></div>' : '') +
+        '<div class="text-[10px] text-slate-400 pt-2 border-t border-slate-200">作成: ' + esc(d.author || '') +
+        (d.submittedAt ? ' ／ 提出: ' + esc(d.submittedAt) : '') + '</div>';
+
+      const footer = document.getElementById('sm-footer');
+      if (editing) {
+        footer.innerHTML =
+          '<button onclick="window.cancelEditStoreMeeting()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm">キャンセル</button>' +
+          '<button onclick="window.saveStoreMeeting()" class="flex-1 py-3 bg-teal-700 text-white rounded-lg font-bold text-sm">💾 保存</button>';
+      } else {
+        const editBtn = d.canEdit
+          ? '<button onclick="window.startEditStoreMeeting()" class="flex-1 min-w-[30%] py-3 bg-blue-600 text-white rounded-lg font-bold text-sm">✎ 編集</button>' : '';
+        const submitBtn = (d.canSubmit && !submitted)
+          ? '<button onclick="window.submitStoreMeetingToHq()" class="flex-1 min-w-[30%] py-3 bg-indigo-700 text-white rounded-lg font-bold text-sm">📤 本部へ提出</button>' : '';
+        footer.innerHTML =
+          '<button onclick="window.closeStoreMeeting()" class="flex-1 min-w-[30%] py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm">閉じる</button>' +
+          '<button onclick="window.openStorePrintModal()" class="flex-1 min-w-[30%] py-3 bg-white border border-teal-300 text-teal-700 rounded-lg font-bold text-sm">🖨 印刷</button>' +
+          editBtn + submitBtn;
+      }
+    }
+
+    window.startEditStoreMeeting = function () { _isEditingMeeting = true; renderStoreMeeting_(); };
+    window.cancelEditStoreMeeting = function () { _isEditingMeeting = false; renderStoreMeeting_(); };
+
+    window.saveStoreMeeting = async function () {
+      const d = _currentMeeting;
+      if (!d) return;
+      const departments = [];
+      (d.ai.departments || []).forEach((dept, di) => {
+        (dept.topics || []).forEach((t, ti) => {
+          const key = di + '-' + ti;
+          const nameEl = document.getElementById('sm-dept-' + key);
+          const titleEl = document.getElementById('sm-title-' + key);
+          const detailEl = document.getElementById('sm-detail-' + key);
+          const actionEl = document.getElementById('sm-action-' + key);
+          if (!titleEl) return;
+          departments.push({
+            name: nameEl ? nameEl.value : dept.name,
+            topics: [{
+              title      : titleEl.value,
+              detail     : detailEl ? detailEl.value : '',
+              action     : actionEl ? actionEl.value : '',
+              related_ids: t.related_ids || []
+            }]
+          });
+        });
+      });
+      const patch = {
+        overallSummary: document.getElementById('sm-overall').value,
+        departments   : departments,
+        decisions     : splitLines_(document.getElementById('sm-decisions').value),
+        todos         : splitLines_(document.getElementById('sm-todos').value).map(line => {
+          const parts = line.split('|');
+          return { text: (parts[0] || '').trim(), owner: (parts[1] || '').trim() };
+        }),
+        lastModified  : d.lastModified
+      };
+      try {
+        await doWithLoading('保存中・資料を作り直しています…', runGasTask('updateStoreMeeting', { docId: d.docId, patch: patch }));
+        _currentMeeting = await runGasTask('getStoreMeetingDetail', { docId: d.docId });
+        _isEditingMeeting = false;
+        renderStoreMeeting_();
+        alert('保存しました。');
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (msg.indexOf('CONFLICT') >= 0) {
+          if (confirm('他の人が先に更新しました。\n最新版を読み込みますか？（あなたの編集内容は破棄されます）')) {
+            _currentMeeting = await runGasTask('getStoreMeetingDetail', { docId: d.docId });
+            _isEditingMeeting = false;
+            renderStoreMeeting_();
+          }
+        } else {
+          alert('保存エラー: ' + msg);
+        }
+      }
+    };
+
+    /** ⑤ 本部へ提出 */
+    window.submitStoreMeetingToHq = async function () {
+      const d = _currentMeeting;
+      if (!d) return;
+      if (!confirm('本日のミーティング報告として本部へ提出しますか？\n\n提出すると本部がこの資料を閲覧できるようになります。\n（提出後に内容を更新した場合、最新の内容が本部に表示されます）')) return;
+      try {
+        const res = await doWithLoading('提出中…', runGasTask('submitStoreMeeting', { docId: d.docId }));
+        _currentMeeting = await runGasTask('getStoreMeetingDetail', { docId: d.docId });
+        renderStoreMeeting_();
+        window.loadStoreBoard(true);
+        alert(res && res.already ? 'この資料はすでに提出済みです。' : '本部へ提出しました。');
+      } catch (e) {
+        alert('提出エラー: ' + (e.message || e));
+      }
+    };
+
+    // ====== ④ 印刷（部門を選んで紙で配る） ======
+
+    window.openStorePrintModal = function () {
+      const d = _currentMeeting;
+      if (!d) return;
+      const esc = window.escapeHtmlV73;
+      const depts = (d.ai && d.ai.departments) ? d.ai.departments.map(x => x.name) : [];
+      if (depts.length === 0) { alert('印刷できる内容がありません。'); return; }
+      document.getElementById('spm-body').innerHTML =
+        '<label class="flex items-center gap-2 text-xs font-bold text-slate-600 pb-2 border-b border-slate-200">' +
+        '<input type="checkbox" id="spm-all" class="w-4 h-4 accent-teal-600" checked onchange="window.spmToggleAll_(this)">すべての部門</label>' +
+        depts.map((n, i) =>
+          '<label class="flex items-center gap-2 text-sm text-slate-700 py-1">' +
+          '<input type="checkbox" class="spm-dept w-4 h-4 accent-teal-600" value="' + esc(n) + '" checked>' + esc(n) + '</label>').join('') +
+        '<label class="flex items-center gap-2 text-xs text-slate-600 pt-2 mt-2 border-t border-slate-200">' +
+        '<input type="checkbox" id="spm-memos" class="w-4 h-4 accent-teal-600" checked>元の記録（写真つき）も印刷する</label>';
+      document.getElementById('store-print-modal').classList.remove('hidden');
+    };
+
+    window.spmToggleAll_ = function (cb) {
+      document.querySelectorAll('#spm-body input.spm-dept').forEach(el => { el.checked = cb.checked; });
+    };
+
+    window.closeStorePrintModal = function () {
+      document.getElementById('store-print-modal').classList.add('hidden');
+    };
+
+    function buildPrintHtml_(d, deptNames, includeMemos) {
+      const esc = window.escapeHtmlV73;
+      const ai = d.ai || {};
+      const memoById = {};
+      (d.memos || []).forEach(m => { memoById[m.id] = m; });
+      const wanted = {};
+      deptNames.forEach(n => { wanted[n] = true; });
+
+      const memoBlock = (ids) => {
+        if (!includeMemos) return '';
+        const memos = (ids || []).map(id => memoById[id]).filter(Boolean);
+        if (!memos.length) return '';
+        return memos.map(m =>
+          '<div class="memo"><div class="memo-head">' + esc(m.time) + '　' + esc(m.name) +
+          (m.isEmergency ? '　★重要' : '') + '</div>' +
+          '<div>' + esc(m.content || '') + '</div>' +
+          ((m.imageUrls && m.imageUrls.length)
+            ? '<div class="imgs">' + m.imageUrls.map(u =>
+                '<img src="' + esc(driveThumbUrl_(u, 800)) + '" alt="記録写真">').join('') + '</div>'
+            : '') +
+          '</div>').join('');
+      };
+
+      const deptHtml = (ai.departments || []).filter(x => wanted[x.name]).map(dept =>
+        '<div class="dept-block"><h2>' + esc(dept.name) + '</h2>' +
+        (dept.topics || []).map(t =>
+          '<div class="topic"><h3>・' + esc(t.title || '') + '</h3>' +
+          (t.detail ? '<div>' + esc(t.detail) + '</div>' : '') +
+          (t.action ? '<div class="action">→ 対応: ' + esc(t.action) + '</div>' : '') +
+          memoBlock(t.related_ids) + '</div>').join('') +
+        '</div>').join('');
+
+      const decisions = (ai.decisions && ai.decisions.length)
+        ? '<h2>決定事項</h2><ul>' + ai.decisions.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
+      const todos = (ai.todos && ai.todos.length)
+        ? '<h2>やること</h2><ul>' + ai.todos.map(t =>
+            '<li>' + esc(t.text) + (t.owner ? '（担当: ' + esc(t.owner) + '）' : '') + '</li>').join('') + '</ul>' : '';
+
+      return '<div class="print-doc">' +
+        '<h1>' + esc(d.fileName || '店内ミーティング資料') + '</h1>' +
+        '<div class="meta">' + esc(d.shop || '') + '　／　対象日: ' + esc(d.dateDisplay || '') +
+        '　／　作成: ' + esc(d.author || '') + '　／　印刷部門: ' + esc(deptNames.join('・')) + '</div>' +
+        '<h2>全体概要</h2><div>' + esc((ai.overall_summary || '（概要なし）')) + '</div>' +
+        decisions + todos + deptHtml + '</div>';
+    }
+
+    window.doStorePrint = async function () {
+      const d = _currentMeeting;
+      if (!d) return;
+      const deptNames = Array.prototype.slice.call(document.querySelectorAll('#spm-body input.spm-dept:checked')).map(el => el.value);
+      if (deptNames.length === 0) { alert('印刷する部門を選んでください。'); return; }
+      const includeMemos = document.getElementById('spm-memos').checked;
+      const root = document.getElementById('print-root');
+      root.innerHTML = buildPrintHtml_(d, deptNames, includeMemos);
+      window.closeStorePrintModal();
+
+      // 写真が読み込まれる前に印刷ダイアログが出ると空欄で刷られるため、読み込みを待つ
+      const imgs = Array.prototype.slice.call(root.querySelectorAll('img'));
+      if (imgs.length > 0) {
+        document.getElementById('loading-msg').innerText = '印刷の準備中…';
+        const overlay = document.getElementById('loading-overlay');
+        overlay.style.opacity = '1'; overlay.style.display = 'flex';
+        await Promise.all(imgs.map(img => img.complete
+          ? Promise.resolve()
+          : new Promise(r => { img.onload = r; img.onerror = r; setTimeout(r, 8000); })));
+        overlay.style.opacity = '0';
+        setTimeout(() => { overlay.style.display = 'none'; }, 200);
+      }
+      setTimeout(() => window.print(), 100);
+    };
+
+    // ====== 本部: 店内ミーティング報告（全店）＋ ハイライト ======
+
+    function dateInputToKey_(v) { return String(v || '').replace(/-/g, ''); }
+
+    function todayInputValue_() {
+      const d = new Date();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return d.getFullYear() + '-' + mm + '-' + dd;
+    }
+
+    window.openHqMeetings = function () {
+      const menu = document.getElementById('admin-menu');
+      if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
+      const dateEl = document.getElementById('hqm-date');
+      if (!dateEl.value) dateEl.value = todayInputValue_();
+      document.getElementById('hq-meetings-screen').classList.remove('hidden');
+      window.loadHqMeetings();
+    };
+
+    window.closeHqMeetings = function () {
+      document.getElementById('hq-meetings-screen').classList.add('hidden');
+    };
+
+    function highlightsHtml_(h) {
+      const esc = window.escapeHtmlV73;
+      if (!h || !h.exists) {
+        return '<div class="bg-white rounded-xl border border-slate-200 p-4 text-xs text-slate-500">' +
+          'この日のハイライトはまだ作成されていません。下の「全店ハイライトを作成」を押すと、提出された報告をまとめて表示します。' +
+          '（提出済み: ' + ((h && h.submittedCount) || 0) + '店）</div>';
+      }
+      const r = h.result || {};
+      const typeLabel = { good: '横展開', risk: '注意', share: '共有' };
+      const typeClass = { good: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+                          risk: 'text-red-700 bg-red-50 border-red-200',
+                          share: 'text-slate-600 bg-slate-50 border-slate-200' };
+      const hl = (r.highlights || []).map(x =>
+        '<div class="bg-white rounded-lg border border-slate-200 p-3">' +
+        '<div class="flex items-start gap-2"><span class="text-[10px] font-bold px-1.5 py-0.5 rounded border ' +
+        (typeClass[x.type] || typeClass.share) + '">' + (typeLabel[x.type] || '共有') + '</span>' +
+        '<div class="flex-1 min-w-0"><div class="text-sm font-bold text-slate-700">' + esc(x.title) + '</div>' +
+        '<div class="text-sm text-slate-600 whitespace-pre-wrap mt-1">' + esc(x.detail) + '</div>' +
+        ((x.shops && x.shops.length) ? '<div class="text-[11px] text-slate-400 mt-1">' + esc(x.shops.join(' / ')) + '</div>' : '') +
+        '</div></div></div>').join('');
+      const watch = (r.watchouts && r.watchouts.length)
+        ? '<div class="bg-amber-50 border border-amber-200 rounded-lg p-3"><div class="text-xs font-bold text-amber-700 mb-1">本部として手を打つこと</div>' +
+          '<ul class="text-sm text-amber-800 list-disc list-inside space-y-1">' +
+          r.watchouts.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul></div>' : '';
+      const shops = (r.shops || []).map(s =>
+        '<div class="flex items-start gap-2 bg-white rounded-lg border border-slate-200 p-2">' +
+        '<div class="flex-1 min-w-0"><div class="text-xs font-bold text-slate-700">' + esc(s.shop) + '</div>' +
+        '<div class="text-xs text-slate-500 break-words">' + esc(s.oneline) + '</div></div>' +
+        (s.docId ? '<button onclick="window.openStoreMeeting(\'' + esc(s.docId) + '\')" class="text-[11px] text-blue-600 font-bold px-2 py-1 rounded border border-blue-200 bg-blue-50 flex-shrink-0">詳細 ›</button>' : '') +
+        '</div>').join('');
+
+      return '<div class="space-y-2">' +
+        '<div class="text-xs font-bold text-indigo-700 flex items-center gap-1"><span class="material-icons text-sm">auto_awesome</span>全店ハイライト（' +
+        esc(h.dateDisplay) + '・' + (h.shopCount || 0) + '店）</div>' +
+        '<div class="bg-white rounded-lg border border-slate-200 p-3 text-sm text-slate-700 whitespace-pre-wrap">' +
+        esc(r.overall_summary || '') + '</div>' + hl + watch +
+        (shops ? '<div class="text-xs font-bold text-slate-500 pt-2">店舗別</div>' + '<div class="space-y-1">' + shops + '</div>' : '') +
+        (h.docUrl ? '<div class="pt-1"><a href="' + esc(h.docUrl) + '" target="_blank" rel="noopener" class="text-xs text-blue-600 underline">ハイライトを Google Doc で開く</a></div>' : '') +
+        '</div>';
+    }
+
+    window.loadHqMeetings = async function () {
+      const body = document.getElementById('hqm-body');
+      body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
+      const dateKey = dateInputToKey_(document.getElementById('hqm-date').value);
+      try {
+        const results = await Promise.all([
+          runGasTask('getStoreMeetings').catch(() => []),
+          runGasTask('getMeetingHighlights', { dateStr: dateKey }).catch(() => null)
+        ]);
+        const all = Array.isArray(results[0]) ? results[0] : [];
+        const list = all.filter(x => !dateKey || x.dateKey === dateKey);
+        const esc = window.escapeHtmlV73;
+        const rows = list.length ? list.map(x =>
+          '<div class="bg-white rounded-xl border border-slate-200 p-3">' +
+          '<div class="flex justify-between items-start gap-2">' +
+          '<div class="flex-1 min-w-0"><div class="text-sm font-bold text-slate-700">' + esc(x.shop) + '</div>' +
+          '<div class="text-xs text-slate-500 break-words mt-1">' + esc((x.overallSummary || '').substring(0, 120)) +
+          ((x.overallSummary || '').length > 120 ? '…' : '') + '</div>' +
+          '<div class="text-[11px] text-slate-400 mt-1">記録' + (x.memoCount || 0) + '件 ・ 提出 ' + esc(x.submittedAt || '-') + '</div></div>' +
+          '<button onclick="window.openStoreMeeting(\'' + esc(x.docId) + '\')" class="text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 flex-shrink-0">詳細 ›</button>' +
+          '</div></div>').join('')
+          : '<div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-400 text-sm">この日に提出された報告はありません</div>';
+
+        body.innerHTML = highlightsHtml_(results[1]) +
+          '<div class="text-xs font-bold text-slate-500 pt-3 pb-1">提出された報告（' + list.length + '）</div>' + rows;
+      } catch (e) {
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' +
+          window.escapeHtmlV73(e.message || String(e)) + '</div>';
+      }
+    };
+
+    window.runMeetingHighlights = async function () {
+      const dateKey = dateInputToKey_(document.getElementById('hqm-date').value);
+      try {
+        const res = await doWithLoading('提出された報告をAIが集約中…', runGasTask('generateMeetingHighlights', { dateStr: dateKey }));
+        if (res && res.noData) { alert(res.message || '提出された報告がありません。'); return; }
+        await window.loadHqMeetings();
+        document.getElementById('hqm-body').scrollTop = 0;
+      } catch (e) {
+        console.error('runMeetingHighlights error:', e);
+      }
+    };
 
   </script>
 
