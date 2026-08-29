@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.0
+<!-- スマレコ (SmartRecord) PWA Frontend v76.1
+     v76.1: 画面の重なり管理（全画面ナビゲーションは同時に1つ）。z-index を既存階層へ整合。
+            メニューを無条件トグルしていた7箇所を「開いている時だけ閉じる」に統一
      v76.0: 店舗内情報共有（店内ミーティング）。記録→まとめ（部門別）→部門別印刷→本部提出→全店ハイライト。
             録音・写真パネルは1組だけ持ち店内画面へDOMごと移設。submit() を submitReport_(mode,opts) に共通化
      v75.0: まとめ閲覧の権限表示制御(①②)・巡回まとめ送り先選択UI(③)・認証トークン端末保存+silent強化(④)・送信自動リトライ+エラー記録(⑤) -->
@@ -2164,7 +2166,7 @@
   <!-- ============================================================
        v76.0: 店舗内情報共有（店内ミーティング）
        ============================================================ -->
-  <div id="instore-screen" class="hidden fixed inset-0 bg-slate-50 z-[2500] flex flex-col">
+  <div id="instore-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 bg-gradient-to-r from-teal-600 to-cyan-600 shadow-sm sticky top-0 z-10">
       <button onclick="window.closeInstore()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
       <div class="ml-1 flex-1 min-w-0">
@@ -2238,7 +2240,7 @@
   </div>
 
   <!-- 店内ミーティング資料（詳細・編集・印刷・提出） -->
-  <div id="store-meeting-modal" class="hidden fixed inset-0 bg-slate-50 z-[3500] flex flex-col">
+  <div id="store-meeting-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
     <div class="flex items-center p-4 bg-white border-b shadow-sm sticky top-0 z-10">
       <button onclick="window.closeStoreMeeting()" class="p-2 -ml-2 text-slate-600"><span class="material-icons">close</span></button>
       <div class="ml-1 flex-1 min-w-0">
@@ -2252,7 +2254,7 @@
   </div>
 
   <!-- 印刷する部門を選ぶ -->
-  <div id="store-print-modal" class="hidden fixed inset-0 bg-black/50 z-[4500] flex items-end sm:items-center justify-center p-0 sm:p-6">
+  <div id="store-print-modal" class="hidden fixed inset-0 bg-black/50 z-[6000] flex items-end sm:items-center justify-center p-0 sm:p-6">
     <div class="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
       <div class="p-4 border-b flex items-center justify-between">
         <h3 class="text-sm font-bold text-slate-700">印刷する部門を選ぶ</h3>
@@ -2267,7 +2269,7 @@
   </div>
 
   <!-- 本部: 店内ミーティング報告（全店） -->
-  <div id="hq-meetings-screen" class="hidden fixed inset-0 bg-slate-50 z-[2500] flex flex-col">
+  <div id="hq-meetings-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 bg-teal-700 shadow-sm sticky top-0 z-10">
       <button onclick="window.closeHqMeetings()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
       <span class="material-icons text-white ml-1 mr-2">groups</span>
@@ -3286,7 +3288,7 @@
       ;
 
     window.showManual = function () {
-      window.toggleMenu();
+      closeMenuIfOpen_();
       document.getElementById('manual-screen').classList.remove('hidden');
       const scrollArea = document.getElementById('manual-screen-scroll');
       if (scrollArea) scrollArea.scrollTop = 0;
@@ -3853,7 +3855,7 @@
     }
 
     window.showMap = function () {
-      window.toggleMenu();
+      closeMenuIfOpen_();
       document.getElementById('map-screen').classList.remove('hidden');
 
       if (!mapInstance) {
@@ -3907,7 +3909,7 @@
       ;
 
     window.showWeatherDashboard = function () {
-      window.toggleMenu();
+      closeMenuIfOpen_();
       document.getElementById('dash-screen').classList.remove('hidden');
       window.refreshDash();
     }
@@ -4000,7 +4002,7 @@
       ;
 
     window.setMyShop = function () {
-      window.toggleMenu();
+      closeMenuIfOpen_();
       const screen = document.getElementById('shop-select-screen');
       const list = document.getElementById('shop-select-list');
       screen.classList.remove('hidden');
@@ -4113,8 +4115,7 @@
 
     window.runAggregation = function (t) {
       if (!confirm("作成しますか？")) return;
-      window.toggleMenu();
-
+      closeMenuIfOpen_();
       doWithLoading("集計中...", new Promise(async (resolve, reject) => {
         try {
           if (t === 'flash') await runGasTask('runFlashReport');
@@ -4133,7 +4134,7 @@
 
     // v75.0(③): 巡回まとめ作成は送り先選択モーダル経由に変更
     window.runPatrolAggregation = async function () {
-      window.toggleMenu();
+      closeMenuIfOpen_();
       const modal = document.getElementById('patrol-share-modal');
       const body  = document.getElementById('psm-body');
       modal.classList.remove('hidden');
@@ -4370,7 +4371,7 @@
       if (!confirm("これは開発・管理者用のメニューです。\nあなたは開発者または管理者ですか？")) return;
 
       if (confirm("【最終確認】\n全店舗の天気データを再取得して更新します。\n完了まで数分かかる場合がありますが、よろしいですか？")) {
-        window.toggleMenu();
+        closeMenuIfOpen_();
         doWithLoading("天気データ更新中...", runGasTask('manualWeatherUpdate')).then((msg) => { invalidateDashClientCache(); alert(msg + "\nダッシュボードをリロードして確認してください。"); });
       }
     }
@@ -4733,6 +4734,45 @@
       slot.appendChild(photo);
     }
 
+    // ============================================================
+    // v76.1: 画面の重なり管理
+    //   このアプリは各画面が独立に自分の hidden を出し入れする作りで、
+    //   重なりの管理を持っていない。閉じ忘れると新しく開いた画面が
+    //   古い画面の後ろに隠れる（例: まとめ資料が最前面に居座る）。
+    //   「全画面ナビゲーションは同時に1つ」を保証して事故を断つ。
+    // ============================================================
+    const OVERLAY_SCREENS = ['sub-screen', 'map-screen', 'dash-screen', 'hq-admin-screen',
+                             'help-screen', 'manual-screen', 'shop-select-screen',
+                             'instore-screen', 'hq-meetings-screen'];
+    const OVERLAY_MODALS = ['report-detail-modal', 'aggregated-detail-modal', 'hq-edit-modal',
+                            'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
+
+    /** メニューが開いていれば閉じる（閉じている時に呼んでも開かない） */
+    function closeMenuIfOpen_() {
+      const menu = document.getElementById('admin-menu');
+      if (menu && !menu.classList.contains('hidden')) menu.classList.add('hidden');
+    }
+
+    function hideOverlay_(id) {
+      const el = document.getElementById(id);
+      if (!el || el.classList.contains('hidden')) return;
+      // 店内画面を閉じるときは録音・写真パネルを必ずホームへ戻す
+      //（戻し忘れるとホーム画面から録音できなくなるため、閉じる処理はここに一本化する）
+      if (id === 'instore-screen') moveRecorderTo_('home-recorder-slot');
+      el.classList.add('hidden');
+    }
+
+    /** 全画面を開く前に呼ぶ: 他の全画面とすべてのモーダルを閉じる */
+    function closeOtherOverlays_(keepId) {
+      OVERLAY_MODALS.forEach(id => { if (id !== keepId) hideOverlay_(id); });
+      OVERLAY_SCREENS.forEach(id => { if (id !== keepId) hideOverlay_(id); });
+    }
+
+    /** モーダルを開く前に呼ぶ: 背後の画面は残し、他のモーダルだけ閉じる */
+    function closeOtherModals_(keepId) {
+      OVERLAY_MODALS.forEach(id => { if (id !== keepId) hideOverlay_(id); });
+    }
+
     /** 録音中の画面移動は取りこぼしのもとなので止める */
     function guardWhileRecording_() {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
@@ -4746,6 +4786,7 @@
       if (guardWhileRecording_()) return;
       const menu = document.getElementById('admin-menu');
       if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
+      closeOtherOverlays_('instore-screen');
       moveRecorderTo_('instore-recorder-slot');
       document.getElementById('instore-screen').classList.remove('hidden');
       window.loadStoreBoard(false);
@@ -4753,8 +4794,7 @@
 
     window.closeInstore = function () {
       if (guardWhileRecording_()) return;
-      moveRecorderTo_('home-recorder-slot');
-      document.getElementById('instore-screen').classList.add('hidden');
+      hideOverlay_('instore-screen');
     };
 
     /** 文章と写真をセットで見せるカード（画面表示用） */
@@ -4865,6 +4905,7 @@
     // ====== ミーティング資料（詳細・編集・印刷・提出） ======
 
     window.openStoreMeeting = async function (docId) {
+      closeOtherModals_('store-meeting-modal');
       const modal = document.getElementById('store-meeting-modal');
       const body = document.getElementById('sm-body');
       modal.classList.remove('hidden');
@@ -5176,6 +5217,7 @@
     window.openHqMeetings = function () {
       const menu = document.getElementById('admin-menu');
       if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
+      closeOtherOverlays_('hq-meetings-screen');
       const dateEl = document.getElementById('hqm-date');
       if (!dateEl.value) dateEl.value = todayInputValue_();
       document.getElementById('hq-meetings-screen').classList.remove('hidden');
@@ -5269,6 +5311,26 @@
         console.error('runMeetingHighlights error:', e);
       }
     };
+
+    // v76.1: 既存の画面遷移にも同じガードを適用する（呼び出し側の記述は変えない）。
+    //   画面を開くもの＝他の全画面とモーダルを閉じる／モーダルを開くもの＝他のモーダルだけ閉じる。
+    //   ※ 印刷モーダルはミーティング資料の上に重ねて使うため、ここでは包まない。
+    [['openMyReports', 'sub-screen'], ['showReportsList', 'sub-screen'], ['showHistory', 'sub-screen'],
+     ['showWeatherDashboard', 'dash-screen'], ['showMap', 'map-screen'], ['showHelp', 'help-screen'],
+     ['showManual', 'manual-screen'], ['setMyShop', 'shop-select-screen'], ['showHQAdmin', 'hq-admin-screen']
+    ].forEach(function (pair) {
+      const orig = window[pair[0]];
+      if (typeof orig !== 'function') return;
+      window[pair[0]] = function () { closeOtherOverlays_(pair[1]); return orig.apply(this, arguments); };
+    });
+
+    [['openReportDetail', 'report-detail-modal'], ['openAggregatedDetail', 'aggregated-detail-modal'],
+     ['openEditHQAlert', 'hq-edit-modal'], ['runPatrolAggregation', 'patrol-share-modal']
+    ].forEach(function (pair) {
+      const orig = window[pair[0]];
+      if (typeof orig !== 'function') return;
+      window[pair[0]] = function () { closeOtherModals_(pair[1]); return orig.apply(this, arguments); };
+    });
 
   </script>
 
