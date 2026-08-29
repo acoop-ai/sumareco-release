@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.1
+<!-- スマレコ (SmartRecord) PWA Frontend v76.2
+     v76.2: 端末の戻るで1つ前の画面へ・キャッシュ対策・バージョン表示・資料の読み込み失敗時も閉じられる
+     v76.1
      v76.1: 画面の重なり管理（全画面ナビゲーションは同時に1つ）。z-index を既存階層へ整合。
             メニューを無条件トグルしていた7箇所を「開いている時だけ閉じる」に統一
      v76.0: 店舗内情報共有（店内ミーティング）。記録→まとめ（部門別）→部門別印刷→本部提出→全店ハイライト。
@@ -13,6 +15,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <!-- v76.2: 端末に古い版が残り続けるのを防ぐ（ホーム画面アプリは特にキャッシュが残りやすい） -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>Smart Record</title>
 
   <!-- Libraries -->
@@ -749,6 +755,12 @@
         <button onclick="window.forceWeatherUpdate()"
           class="w-full text-left px-4 py-3 text-sm hover:bg-blue-50 text-blue-700 flex items-center">
           <span class="material-icons text-lg mr-3">cloud_sync</span>全店 天気データ強制更新</button>
+      </div>
+
+      <!-- v76.2: 表示中のバージョン（古い版が端末に残っていないかを現場で確認できるように） -->
+      <div class="px-4 py-3 border-t border-slate-100 text-[10px] text-slate-400 flex items-center justify-between">
+        <span>バージョン <span id="app-version">-</span></span>
+        <button onclick="window.reloadLatest()" class="text-[10px] font-bold text-blue-600 px-2 py-1 rounded border border-blue-200">最新に更新</button>
       </div>
 
     </div>
@@ -2242,7 +2254,7 @@
   <!-- 店内ミーティング資料（詳細・編集・印刷・提出） -->
   <div id="store-meeting-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
     <div class="flex items-center p-4 bg-white border-b shadow-sm sticky top-0 z-10">
-      <button onclick="window.closeStoreMeeting()" class="p-2 -ml-2 text-slate-600"><span class="material-icons">close</span></button>
+      <button onclick="window.closeStoreMeeting()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-slate-600 active:bg-slate-100 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">戻る</span></button>
       <div class="ml-1 flex-1 min-w-0">
         <h2 id="sm-title" class="text-sm font-bold text-slate-700 truncate">ミーティング資料</h2>
         <p id="sm-subtitle" class="text-[11px] text-slate-400"></p>
@@ -2991,6 +3003,10 @@
       window.updateHeaderAlert(); // 初回はすぐ表示（完了フィルタなし）
       // v73.9: 天気データを裏で先読みして温める（マイ店舗未設定でも・マップ/週間予報を即表示にするため）
       prefetchDashboardData();
+      // v76.2: 表示中のバージョンを画面に出す＋端末の戻る操作の起点を1つ積む
+      const verEl = document.getElementById('app-version');
+      if (verEl) verEl.textContent = APP_VERSION;
+      pushOverlayHistory_();
     };
 
     // HQアラートを完了として記録・画面から消す
@@ -4747,6 +4763,40 @@
     const OVERLAY_MODALS = ['report-detail-modal', 'aggregated-detail-modal', 'hq-edit-modal',
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
+    // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
+    const APP_VERSION = 'v76.2';
+
+    /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
+    function pushOverlayHistory_() {
+      try { history.pushState({ smareco: 1 }, ''); } catch (e) { /* 履歴が使えない環境では何もしない */ }
+    }
+
+    /** 今いちばん手前に見えているオーバーレイのIDを返す */
+    function topVisibleOverlay_() {
+      let top = null, topZ = -1;
+      OVERLAY_MODALS.concat(OVERLAY_SCREENS).forEach(function (id) {
+        const el = document.getElementById(id);
+        if (!el || el.classList.contains('hidden')) return;
+        const z = parseInt(getComputedStyle(el).zIndex, 10) || 0;
+        if (z >= topZ) { topZ = z; top = id; }
+      });
+      return top;
+    }
+
+    /** 端末の戻る操作で、アプリを離れるのではなく1つ前の画面へ戻す */
+    window.addEventListener('popstate', function () {
+      const top = topVisibleOverlay_();
+      if (!top) return; // ホーム表示中は通常どおり（アプリを離れられる）
+      hideOverlay_(top);
+      pushOverlayHistory_(); // 続けて戻れるように積み直す
+    });
+
+    /** 端末に残った古い版を捨てて読み直す */
+    window.reloadLatest = function () {
+      const url = location.origin + location.pathname + '?v=' + Date.now();
+      location.replace(url);
+    };
+
     /** メニューが開いていれば閉じる（閉じている時に呼んでも開かない） */
     function closeMenuIfOpen_() {
       const menu = document.getElementById('admin-menu');
@@ -4787,6 +4837,7 @@
       const menu = document.getElementById('admin-menu');
       if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
       closeOtherOverlays_('instore-screen');
+      pushOverlayHistory_();
       moveRecorderTo_('instore-recorder-slot');
       document.getElementById('instore-screen').classList.remove('hidden');
       window.loadStoreBoard(false);
@@ -4874,6 +4925,15 @@
 
     /** ②③ まとめを作成／更新する */
     window.runStoreMeetingSummary = async function (force) {
+      // 画面下部の固定ボタンはスクロール操作で触れやすいため、実行前に確認する
+      if (!force) {
+        const n = (_storeBoard && _storeBoard.memos) ? _storeBoard.memos.length : 0;
+        const isUpdate = !!(_storeBoard && _storeBoard.meeting);
+        const msg = isUpdate
+          ? '本日の記録 ' + n + ' 件で、ミーティング資料を最新の内容に作り直します。よろしいですか？'
+          : '本日の記録 ' + n + ' 件から、ミーティング資料を作成します。よろしいですか？';
+        if (!confirm(msg)) return;
+      }
       try {
         const res = await doWithLoading(
           force ? 'AIがミーティング資料を作り直しています…' : 'AIがミーティング資料を作成中…',
@@ -4906,6 +4966,7 @@
 
     window.openStoreMeeting = async function (docId) {
       closeOtherModals_('store-meeting-modal');
+      pushOverlayHistory_();
       const modal = document.getElementById('store-meeting-modal');
       const body = document.getElementById('sm-body');
       modal.classList.remove('hidden');
@@ -4918,6 +4979,9 @@
       } catch (e) {
         body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">エラー: ' +
           window.escapeHtmlV73(e.message || String(e)) + '</div>';
+        // 読み込みに失敗しても必ず閉じられるようにする（フッターが空だと操作不能に見えるため）
+        document.getElementById('sm-footer').innerHTML =
+          '<button onclick="window.closeStoreMeeting()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm">閉じる</button>';
       }
     };
 
@@ -5121,6 +5185,7 @@
           '<input type="checkbox" class="spm-dept w-4 h-4 accent-teal-600" value="' + esc(n) + '" checked>' + esc(n) + '</label>').join('') +
         '<label class="flex items-center gap-2 text-xs text-slate-600 pt-2 mt-2 border-t border-slate-200">' +
         '<input type="checkbox" id="spm-memos" class="w-4 h-4 accent-teal-600" checked>元の記録（写真つき）も印刷する</label>';
+      pushOverlayHistory_();
       document.getElementById('store-print-modal').classList.remove('hidden');
     };
 
@@ -5218,6 +5283,7 @@
       const menu = document.getElementById('admin-menu');
       if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
       closeOtherOverlays_('hq-meetings-screen');
+      pushOverlayHistory_();
       const dateEl = document.getElementById('hqm-date');
       if (!dateEl.value) dateEl.value = todayInputValue_();
       document.getElementById('hq-meetings-screen').classList.remove('hidden');
@@ -5321,7 +5387,7 @@
     ].forEach(function (pair) {
       const orig = window[pair[0]];
       if (typeof orig !== 'function') return;
-      window[pair[0]] = function () { closeOtherOverlays_(pair[1]); return orig.apply(this, arguments); };
+      window[pair[0]] = function () { closeOtherOverlays_(pair[1]); pushOverlayHistory_(); return orig.apply(this, arguments); };
     });
 
     [['openReportDetail', 'report-detail-modal'], ['openAggregatedDetail', 'aggregated-detail-modal'],
@@ -5329,7 +5395,7 @@
     ].forEach(function (pair) {
       const orig = window[pair[0]];
       if (typeof orig !== 'function') return;
-      window[pair[0]] = function () { closeOtherModals_(pair[1]); return orig.apply(this, arguments); };
+      window[pair[0]] = function () { closeOtherModals_(pair[1]); pushOverlayHistory_(); return orig.apply(this, arguments); };
     });
 
   </script>
