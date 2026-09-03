@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.2
+<!-- スマレコ (SmartRecord) PWA Frontend v76.3
+     v76.3: 下部固定バーの誤タップ対策（資料への入口を上部カードへ・下端に余白）・
+            ホーム画面ヘッダにバージョン表示・起動時の自動更新チェック
+     v76.2
      v76.2: 端末の戻るで1つ前の画面へ・キャッシュ対策・バージョン表示・資料の読み込み失敗時も閉じられる
      v76.1
      v76.1: 画面の重なり管理（全画面ナビゲーションは同時に1つ）。z-index を既存階層へ整合。
@@ -607,6 +610,13 @@
       }
     }
 
+    /* v76.3: 画面下部の固定バーは、ホームに戻るスワイプ操作の開始位置と重なって
+       誤タップされやすい。下端に十分な余白を確保して触れにくくする */
+    .action-bar-safe {
+      /* Tailwind の p-3 に上書きされないよう important を付ける（CDN版のCSSは後から挿入されるため） */
+      padding-bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)) !important;
+    }
+
     /* ============================================================
        v76.0: 印刷（店内ミーティング資料を部門別に紙で配る）
        画面表示は隠し、#print-root だけを A4 で印刷する
@@ -882,7 +892,9 @@
             </button>
             <p class="text-xs text-green-200 mt-0.5 flex items-center"><span id="user-name">--</span><span
                 class="mx-1.5 opacity-50">|</span><span id="account-name"
-                class="font-mono text-[10px] opacity-80">--</span></p>
+                class="font-mono text-[10px] opacity-80">--</span><span
+                class="mx-1.5 opacity-50">|</span><span id="app-version-badge"
+                class="font-mono text-[10px] opacity-70">-</span></p>
           </div>
         </div>
         <div class="flex items-center space-x-2">
@@ -2202,6 +2214,20 @@
         </div>
       </details>
 
+      <!-- v76.3: ミーティング資料への入口は画面上部に置く（下部固定バーは誤タップしやすいため） -->
+      <div id="instore-meeting-card" class="hidden bg-teal-50 border border-teal-200 rounded-xl p-4">
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div class="text-xs font-bold text-teal-800 flex items-center gap-1">
+              <span class="material-icons text-sm">description</span>本日のミーティング資料
+            </div>
+            <div id="instore-meeting-status" class="text-[11px] text-teal-700 mt-1 break-words"></div>
+          </div>
+          <button onclick="window.openStoreMeetingFromBoard()"
+            class="btn-press flex-shrink-0 text-xs font-bold px-4 py-2.5 rounded-lg bg-teal-700 text-white active:scale-95 transition-transform">開く</button>
+        </div>
+      </div>
+
       <!-- 録音・写真パネルはホームから移設される -->
       <div id="instore-recorder-slot" class="space-y-5"></div>
 
@@ -2239,14 +2265,10 @@
       </div>
     </div>
 
-    <div class="p-3 bg-white border-t flex gap-2 sticky bottom-0 z-10">
+    <div class="p-3 bg-white border-t flex gap-2 sticky bottom-0 z-10 action-bar-safe">
       <button id="btn-instore-summarize" onclick="window.runStoreMeetingSummary(false)"
         class="btn-press flex-1 py-3.5 bg-teal-700 text-white rounded-xl font-bold text-sm flex items-center justify-center active:scale-95 transition-transform">
         <span class="material-icons text-base mr-1">summarize</span><span id="btn-summarize-label">まとめる</span>
-      </button>
-      <button id="btn-instore-open" onclick="window.openStoreMeetingFromBoard()"
-        class="hidden btn-press flex-1 py-3.5 bg-white border border-teal-300 text-teal-700 rounded-xl font-bold text-sm flex items-center justify-center active:scale-95 transition-transform">
-        <span class="material-icons text-base mr-1">description</span>資料を見る
       </button>
     </div>
   </div>
@@ -3006,7 +3028,11 @@
       // v76.2: 表示中のバージョンを画面に出す＋端末の戻る操作の起点を1つ積む
       const verEl = document.getElementById('app-version');
       if (verEl) verEl.textContent = APP_VERSION;
+      const verBadge = document.getElementById('app-version-badge');
+      if (verBadge) verBadge.textContent = APP_VERSION;
       pushOverlayHistory_();
+      // v76.3: 端末に古い版が残っていないか確認する（残っていれば入れ替えを促す）
+      checkForUpdate_();
     };
 
     // HQアラートを完了として記録・画面から消す
@@ -4764,7 +4790,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v76.2';
+    const APP_VERSION = 'v76.3';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -4790,6 +4816,25 @@
       hideOverlay_(top);
       pushOverlayHistory_(); // 続けて戻れるように積み直す
     });
+
+    /**
+     * 起動時に配信中の最新版を確認し、端末に古い版が残っていれば入れ替えを促す。
+     * ホーム画面アプリはキャッシュが強く残り、閉じて開き直しても古いまま動くことがあるため。
+     */
+    async function checkForUpdate_() {
+      try {
+        const res = await fetch(location.pathname + '?nocache=' + Date.now(), { cache: 'no-store' });
+        if (!res.ok) return;
+        const text = await res.text();
+        const m = text.match(/APP_VERSION = '([^']+)'/);
+        if (!m || m[1] === APP_VERSION) return;
+        const msg = '新しいバージョン（' + m[1] + '）が公開されています。'
+          + ' お使いの版: ' + APP_VERSION + '。今すぐ最新に更新しますか？';
+        if (confirm(msg)) {
+          window.reloadLatest();
+        }
+      } catch (e) { /* 通信できないときは何もしない */ }
+    }
 
     /** 端末に残った古い版を捨てて読み直す */
     window.reloadLatest = function () {
@@ -4897,15 +4942,18 @@
           ? board.memos.map(memoCardHtml_).join('')
           : '<div class="bg-white rounded-xl p-6 text-center text-slate-400 text-xs border border-slate-200">まだ記録がありません。マイクボタンで録音して「この内容を記録する」を押してください。</div>';
 
-        // まとめの有無でボタン表示を切り替える
+        // まとめの有無で表示を切り替える
         const label = document.getElementById('btn-summarize-label');
-        const openBtn = document.getElementById('btn-instore-open');
+        const card = document.getElementById('instore-meeting-card');
+        const status = document.getElementById('instore-meeting-status');
         if (board.meeting) {
           label.innerText = 'まとめを更新する';
-          openBtn.classList.remove('hidden');
+          card.classList.remove('hidden');
+          status.textContent = (board.meeting.status || '下書き') +
+            '（記録 ' + ((board.memos || []).length) + ' 件）';
         } else {
           label.innerText = 'まとめる';
-          openBtn.classList.add('hidden');
+          card.classList.add('hidden');
         }
       } catch (e) {
         list.innerHTML = '<div class="p-6 text-center text-red-500 text-xs">読み込みエラー: ' +
