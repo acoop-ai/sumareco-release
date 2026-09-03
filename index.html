@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.3
+<!-- スマレコ (SmartRecord) PWA Frontend v76.4
+     v76.4: モードの色分け（本部・SVへ送る報告=緑／店舗内だけの記録=ティール）。
+            共用する録音・写真パネルにもモードバッジと枠色を反映し送り先の取り違えを防ぐ
+     v76.3
      v76.3: 下部固定バーの誤タップ対策（資料への入口を上部カードへ・下端に余白）・
             ホーム画面ヘッダにバージョン表示・起動時の自動更新チェック
      v76.2
@@ -610,6 +613,26 @@
       }
     }
 
+    /* ============================================================
+       v76.4: モードの色分け（送り先の取り違えを防ぐ）
+         本部・SVへ送る報告 = 緑 ／ 店舗内だけで共有する記録 = ティール
+         録音・写真パネルは1組を共用するため、店内モードでは見た目を切り替える
+       ============================================================ */
+    .instore-mode {
+      background-color: #f0fdfa !important;   /* teal-50 */
+      border-color: #0d9488 !important;       /* teal-600 */
+      border-width: 2px !important;
+      box-shadow: 0 0 0 4px rgba(13, 148, 136, 0.12) !important;
+    }
+    .instore-mode #timer,
+    .instore-mode h3 {
+      color: #115e59 !important;              /* teal-800 */
+    }
+    /* 店内モードのときは画面全体を淡いティールにして、ホーム（白〜灰）と区別する */
+    .instore-bg {
+      background-color: #ecfdf5 !important;
+    }
+
     /* v76.3: 画面下部の固定バーは、ホームに戻るスワイプ操作の開始位置と重なって
        誤タップされやすい。下端に十分な余白を確保して触れにくくする */
     .action-bar-safe {
@@ -916,6 +939,15 @@
            （UIを複製すると録音状態・イベントが二重化してバグの温床になるため） -->
       <div id="home-recorder-slot" class="space-y-5">
       <div id="recorder-card" class="bg-white rounded-2xl shadow-xl p-6 text-center border border-slate-100">
+        <!-- v76.4: 今どちらのモードで録音しているかを常に示す -->
+        <div id="recorder-mode-badge"
+          class="hidden mb-3 -mt-1 py-2 px-3 rounded-lg bg-teal-600 text-white text-xs font-bold flex items-center justify-center gap-1">
+          <span class="material-icons text-sm">storefront</span>店舗内モード：この記録は自分の店舗の中だけで共有されます
+        </div>
+        <div id="recorder-mode-badge-hq"
+          class="mb-3 -mt-1 py-2 px-3 rounded-lg bg-green-700 text-white text-xs font-bold flex items-center justify-center gap-1">
+          <span class="material-icons text-sm">send</span>本部・SVへ送る報告
+        </div>
         <div class="mb-4"><span id="rec-status"
             class="inline-block px-3 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-full mb-1 tracking-wider">READY</span>
           <div id="timer" class="text-5xl font-mono font-bold text-slate-700 tracking-tighter">00:00</div>
@@ -950,7 +982,8 @@
       </div><!-- /home-recorder-slot -->
       <div class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100 pb-8">
         <div class="flex justify-between items-center mb-4">
-          <h3 class="text-sm font-bold text-slate-600">報告送信</h3><label
+          <h3 class="text-sm font-bold text-green-800 flex items-center gap-1">
+            <span class="material-icons text-sm">send</span>本部・SVへ送る報告</h3><label
             class="flex items-center space-x-2 bg-red-50 px-3 py-1 rounded-full border border-red-100"><input
               type="checkbox" id="chk-emg" class="w-4 h-4 text-red-600 rounded"><span
               class="text-xs font-bold text-red-600">緊急</span></label>
@@ -2190,7 +2223,7 @@
   <!-- ============================================================
        v76.0: 店舗内情報共有（店内ミーティング）
        ============================================================ -->
-  <div id="instore-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
+  <div id="instore-screen" class="hidden fixed inset-0 instore-bg z-[2000] flex flex-col">
     <div class="flex items-center p-4 bg-gradient-to-r from-teal-600 to-cyan-600 shadow-sm sticky top-0 z-10">
       <button onclick="window.closeInstore()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
       <div class="ml-1 flex-1 min-w-0">
@@ -2231,9 +2264,10 @@
       <!-- 録音・写真パネルはホームから移設される -->
       <div id="instore-recorder-slot" class="space-y-5"></div>
 
-      <div id="instore-post-card" class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100">
+      <div id="instore-post-card" class="bg-white rounded-2xl shadow-lg p-5 border-2 border-teal-600">
         <div class="flex justify-between items-center mb-4">
-          <h3 class="text-sm font-bold text-slate-600">店内メモとして記録</h3>
+          <h3 class="text-sm font-bold text-teal-800 flex items-center gap-1">
+            <span class="material-icons text-sm">storefront</span>店内メモとして記録</h3>
           <label class="flex items-center space-x-2 bg-red-50 px-3 py-1 rounded-full border border-red-100">
             <input type="checkbox" id="chk-emg-instore" class="w-4 h-4 text-red-600 rounded">
             <span class="text-xs font-bold text-red-600">重要</span>
@@ -4766,6 +4800,23 @@
       return id ? ('https://drive.google.com/thumbnail?id=' + id + '&sz=w' + (w || 400)) : url;
     }
 
+    /**
+     * v76.4: 録音・写真パネルの見た目をモードで切り替える。
+     *   パネルは1組を共用するため、色とバッジで「今どちらに送る記録か」を常に示し、
+     *   本部への報告と店舗内の記録の取り違えを防ぐ。
+     */
+    function setRecorderMode_(mode) {
+      const isInstore = (mode === 'instore');
+      ['recorder-card', 'photo-card'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('instore-mode', isInstore);
+      });
+      const badge = document.getElementById('recorder-mode-badge');
+      if (badge) badge.classList.toggle('hidden', !isInstore);
+      const badgeHq = document.getElementById('recorder-mode-badge-hq');
+      if (badgeHq) badgeHq.classList.toggle('hidden', isInstore);
+    }
+
     /** 録音・写真パネルを指定スロットへ移設（状態は1組のまま保つ） */
     function moveRecorderTo_(slotId) {
       const slot = document.getElementById(slotId);
@@ -4774,6 +4825,7 @@
       if (!slot || !rec || !photo) return;
       slot.appendChild(rec);
       slot.appendChild(photo);
+      setRecorderMode_(slotId === 'instore-recorder-slot' ? 'instore' : 'home');
     }
 
     // ============================================================
@@ -4790,7 +4842,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v76.3';
+    const APP_VERSION = 'v76.4';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
