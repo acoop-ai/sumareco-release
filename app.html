@@ -3068,7 +3068,9 @@
       if (hqMenuSection) hqMenuSection.classList.toggle('hidden', !isHqMember);
       // v76.5: 本部所属は店舗内情報共有を使えない。入口自体を出さず、誤って開くことを防ぐ
       //   （従来は開けてしまい、案内だけの画面が全画面で居座っていた）
-      const isStoreUser = !!_currentUserShop && _currentUserShop !== '本部';
+      // v77.0: ただし検証用アカウント（スクリプトプロパティで登録）は入口を出す
+      _isDevTester = !!user.devTester;
+      const isStoreUser = (!!_currentUserShop && _currentUserShop !== '本部') || _isDevTester;
       const instoreBtn = document.getElementById('btn-instore-entry');
       if (instoreBtn) instoreBtn.classList.toggle('hidden', !isStoreUser);
       const instoreMenu = document.getElementById('menu-instore');
@@ -3679,6 +3681,8 @@
               imageBase64List: imageBase64List,
               location: loc
             };
+            // v77.0: 店内モードで対象店舗が指定されている場合のみ添える（サーバー側でも権限を確認する）
+            if (o.shopOverride) payload.shopOverride = o.shopOverride;
             document.getElementById('loading-msg').innerText = "AI解析・送信中...";
 
             // v75.0(⑤): エラー切り分け用メタ（録音長・概算ペイロードサイズKB）
@@ -4842,6 +4846,17 @@
     let _currentMeeting = null;    // 開いているミーティング資料
     let _isEditingMeeting = false;
     let _currentUserShop = '';     // ログイン中ユーザーの所属店舗（本部判定・表示用）
+    let _isDevTester = false;      // v77.0: 店内モードの検証を許可されたアカウントか（サーバー判定）
+
+    /**
+     * v77.0: 店内モードの対象店舗。
+     *   通常のユーザーは所属店舗で固定（空文字を送る）。検証用アカウントのみ、
+     *   ホームで設定した「マイ店舗」を対象店舗としてサーバーへ伝える。
+     */
+    function instoreShopParam_() {
+      if (!_isDevTester) return '';
+      return (myShopName && myShopName !== '本部') ? myShopName : '';
+    }
 
     function driveThumbUrl_(url, w) {
       const id = extractDriveFileIdV73_(url);
@@ -4992,8 +5007,8 @@
 
     window.openInstore = function () {
       if (guardWhileRecording_()) return;
-      // v76.5: 本部所属は対象外。画面を開かずに案内する
-      if (_currentUserShop === '本部') {
+      // v76.5: 本部所属は対象外。画面を開かずに案内する（v77.0: 検証用アカウントは通す）
+      if (_currentUserShop === '本部' && !_isDevTester) {
         alert('店舗内情報共有は店舗所属の方が使う機能です。本部は「店内ミーティング報告（全店）」から各店の提出分をご確認ください。');
         return;
       }
@@ -5034,10 +5049,11 @@
       const list = document.getElementById('instore-memo-list');
       if (!silent) list.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs">読み込み中…</div>';
       try {
-        const board = await runGasTask('getStoreBoard');
+        const board = await runGasTask('getStoreBoard', { shop: instoreShopParam_() });
         _storeBoard = board;
         _currentUserShop = board.shop || _currentUserShop;
-        document.getElementById('instore-shop').innerText = board.shop || '--';
+        document.getElementById('instore-shop').innerText =
+          (board.shop || '--') + (board.viewingAsOther ? '（検証用・別店舗として操作中）' : '');
         document.getElementById('instore-date').innerText = board.dateDisplay || '--';
         document.getElementById('instore-memo-count').innerText = (board.memos || []).length;
 
@@ -5046,6 +5062,8 @@
         if (board.canPost === false) {
           window.closeInstore();
           alert(board.message || '店舗内情報共有は店舗所属の方が使う機能です。');
+          // 検証用アカウントで対象店舗が未設定なら、そのまま店舗選択へ案内する
+          if (board.needsShopSelect && typeof window.setMyShop === 'function') window.setMyShop();
           return;
         }
         document.getElementById('instore-post-card').classList.remove('hidden');
@@ -5077,6 +5095,7 @@
     /** ①③ 店内メモとして記録（本部へは飛ばない） */
     window.submitInstoreMemo = function () {
       return submitReport_('店内', {
+        shopOverride: instoreShopParam_(),
         emergencyId : 'chk-emg-instore',
         confirmText : '店内メモとして記録しますか？\n（この内容は自分の店舗の中だけで共有されます）',
         quietSuccess: true,
@@ -5098,7 +5117,7 @@
       try {
         const res = await doWithLoading(
           force ? 'AIがミーティング資料を作り直しています…' : 'AIがミーティング資料を作成中…',
-          runGasTask('generateStoreMeeting', { force: !!force })
+          runGasTask('generateStoreMeeting', { force: !!force, shop: instoreShopParam_() })
         );
         if (!res) return;
         if (res.noData) { alert(res.message || '本日の記録がまだありません。'); return; }
