@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.5
+<!-- スマレコ (SmartRecord) PWA Frontend v76.6
+     v76.6: 起動時に全ての重ね画面を閉じて必ずホームから始める保険。店内画面ヘッダにも
+            バージョン表示。古い版は確認を待たず自動で読み直す（1セッション1回）
+     v76.5
      v76.5: 本部所属には店舗内情報共有の入口を出さない（案内だけの画面が全画面で
             居座り他の操作ができなくなる問題の解消）。開いた場合も留めず閉じて案内する
      v76.4
@@ -2231,7 +2234,7 @@
       <button onclick="window.closeInstore()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-white active:bg-white/20 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">ホーム</span></button>
       <div class="ml-1 flex-1 min-w-0">
         <h2 class="text-base font-bold text-white truncate">店舗内情報共有</h2>
-        <p class="text-[11px] text-teal-50"><span id="instore-shop">--</span> ・ <span id="instore-date">--</span></p>
+        <p class="text-[11px] text-teal-50"><span id="instore-shop">--</span> ・ <span id="instore-date">--</span> ・ <span id="instore-version" class="font-mono opacity-80">-</span></p>
       </div>
     </div>
 
@@ -3058,6 +3061,9 @@
       // ログイン画面を隠してホームを表示
       document.getElementById('screen-login').classList.add('hidden');
       document.getElementById('screen-home').classList.remove('hidden');
+      // v76.6: 起動時はすべての重ね画面を閉じ、必ずホームから始める。
+      //   何かの拍子に画面が開いたままになっても、開き直せば必ず操作可能な状態に戻る保険。
+      closeOtherOverlays_(null);
       // 完了済みアラートをバックグラウンドで取得（updateHeaderAlertより先に取得を試みる）
       window._completedAlertIds = new Set();
       callGAS('getMyCompletedAlerts').then(ids => {
@@ -3072,6 +3078,8 @@
       if (verEl) verEl.textContent = APP_VERSION;
       const verBadge = document.getElementById('app-version-badge');
       if (verBadge) verBadge.textContent = APP_VERSION;
+      const verInstore = document.getElementById('instore-version');
+      if (verInstore) verInstore.textContent = APP_VERSION;
       pushOverlayHistory_();
       // v76.3: 端末に古い版が残っていないか確認する（残っていれば入れ替えを促す）
       checkForUpdate_();
@@ -4850,7 +4858,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v76.5';
+    const APP_VERSION = 'v76.6';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -4888,11 +4896,13 @@
         const text = await res.text();
         const m = text.match(/APP_VERSION = '([^']+)'/);
         if (!m || m[1] === APP_VERSION) return;
-        const msg = '新しいバージョン（' + m[1] + '）が公開されています。'
-          + ' お使いの版: ' + APP_VERSION + '。今すぐ最新に更新しますか？';
-        if (confirm(msg)) {
-          window.reloadLatest();
-        }
+        // 確認を待たずに入れ替える（現場で古い版のまま使い続けるのを防ぐ）。
+        // 取得に失敗し続けても繰り返さないよう、1セッションにつき1回だけ実行する。
+        try {
+          if (sessionStorage.getItem('smareco_auto_reloaded')) return;
+          sessionStorage.setItem('smareco_auto_reloaded', '1');
+        } catch (e) { /* sessionStorage が使えない環境では素通し */ }
+        window.reloadLatest();
       } catch (e) { /* 通信できないときは何もしない */ }
     }
 
