@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.4
+<!-- スマレコ (SmartRecord) PWA Frontend v76.5
+     v76.5: 本部所属には店舗内情報共有の入口を出さない（案内だけの画面が全画面で
+            居座り他の操作ができなくなる問題の解消）。開いた場合も留めず閉じて案内する
+     v76.4
      v76.4: モードの色分け（本部・SVへ送る報告=緑／店舗内だけの記録=ティール）。
             共用する録音・写真パネルにもモードバッジと枠色を反映し送り先の取り違えを防ぐ
      v76.3
@@ -722,8 +725,8 @@
         <span class="ml-auto material-icons text-base text-green-400">chevron_right</span>
       </button>
 
-      <!-- v76.0: 店舗内情報共有 -->
-      <button onclick="window.openInstore()"
+      <!-- v76.0: 店舗内情報共有。v76.5: 本部所属には表示しない -->
+      <button id="menu-instore" onclick="window.openInstore()"
         class="w-full text-left px-4 py-3.5 text-sm hover:bg-teal-50 text-teal-800 flex items-center font-bold bg-teal-50/60 border-b border-teal-100">
         <span class="material-icons text-lg mr-3">storefront</span>店舗内情報共有
         <span class="ml-auto material-icons text-base text-teal-400">chevron_right</span>
@@ -1011,8 +1014,8 @@
               class="material-icons text-teal-600 text-2xl mb-1">fact_check</span><span
               class="text-sm font-bold text-teal-800">巡回報告</span></button></div>
       </div>
-      <!-- v76.0: 店舗内情報共有（店内ミーティング）の入口 -->
-      <button onclick="window.openInstore()"
+      <!-- v76.0: 店舗内情報共有（店内ミーティング）の入口。v76.5: 本部所属には表示しない -->
+      <button id="btn-instore-entry" onclick="window.openInstore()"
         class="btn-press w-full p-4 bg-gradient-to-r from-teal-600 to-cyan-600 text-white rounded-xl shadow-lg flex items-center justify-between">
         <div class="flex items-center">
           <div class="bg-white/20 p-2 rounded-lg mr-3"><span class="material-icons text-xl text-white">storefront</span></div>
@@ -2225,7 +2228,7 @@
        ============================================================ -->
   <div id="instore-screen" class="hidden fixed inset-0 instore-bg z-[2000] flex flex-col">
     <div class="flex items-center p-4 bg-gradient-to-r from-teal-600 to-cyan-600 shadow-sm sticky top-0 z-10">
-      <button onclick="window.closeInstore()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
+      <button onclick="window.closeInstore()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-white active:bg-white/20 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">ホーム</span></button>
       <div class="ml-1 flex-1 min-w-0">
         <h2 class="text-base font-bold text-white truncate">店舗内情報共有</h2>
         <p class="text-[11px] text-teal-50"><span id="instore-shop">--</span> ・ <span id="instore-date">--</span></p>
@@ -2233,8 +2236,6 @@
     </div>
 
     <div class="flex-grow overflow-y-auto p-4 space-y-5 pb-24">
-      <div id="instore-guard" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-800 leading-relaxed"></div>
-
       <details class="bg-white border border-slate-200 rounded-xl">
         <summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">📖 使い方（開店前 → ミーティング → 部門共有 → 本部提出）</summary>
         <div class="px-4 pb-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
@@ -3038,6 +3039,13 @@
       if (hqMeetBtn) hqMeetBtn.classList.toggle('hidden', !isHqMember);
       const hqMeetMenu = document.getElementById('menu-hq-meetings');
       if (hqMeetMenu) hqMeetMenu.classList.toggle('hidden', !isHqMember);
+      // v76.5: 本部所属は店舗内情報共有を使えない。入口自体を出さず、誤って開くことを防ぐ
+      //   （従来は開けてしまい、案内だけの画面が全画面で居座っていた）
+      const isStoreUser = !!_currentUserShop && _currentUserShop !== '本部';
+      const instoreBtn = document.getElementById('btn-instore-entry');
+      if (instoreBtn) instoreBtn.classList.toggle('hidden', !isStoreUser);
+      const instoreMenu = document.getElementById('menu-instore');
+      if (instoreMenu) instoreMenu.classList.toggle('hidden', !isStoreUser);
       // v73.2: メニューボタンは全ユーザーに表示（一般ユーザーがマイレポート/天気等に到達できるよう開放）
       const menuBtn = document.getElementById('btn-admin-menu');
       if (menuBtn) menuBtn.classList.remove('hidden');
@@ -4842,7 +4850,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v76.4';
+    const APP_VERSION = 'v76.5';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -4931,6 +4939,11 @@
 
     window.openInstore = function () {
       if (guardWhileRecording_()) return;
+      // v76.5: 本部所属は対象外。画面を開かずに案内する
+      if (_currentUserShop === '本部') {
+        alert('店舗内情報共有は店舗所属の方が使う機能です。本部は「店内ミーティング報告（全店）」から各店の提出分をご確認ください。');
+        return;
+      }
       const menu = document.getElementById('admin-menu');
       if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
       closeOtherOverlays_('instore-screen');
@@ -4975,20 +4988,15 @@
         document.getElementById('instore-date').innerText = board.dateDisplay || '--';
         document.getElementById('instore-memo-count').innerText = (board.memos || []).length;
 
-        // 本部所属など、店内共有を使えない場合の案内
-        const guard = document.getElementById('instore-guard');
-        const postCard = document.getElementById('instore-post-card');
-        const slot = document.getElementById('instore-recorder-slot');
+        // v76.5: 使えないユーザー（本部所属など）は画面に留めない。
+        //   案内だけの画面が全画面で居座り、他の操作ができなくなるのを防ぐ
         if (board.canPost === false) {
-          guard.innerHTML = window.escapeHtmlV73(board.message || 'この機能は店舗所属のユーザー向けです。');
-          guard.classList.remove('hidden');
-          postCard.classList.add('hidden');
-          slot.classList.add('hidden');
-        } else {
-          guard.classList.add('hidden');
-          postCard.classList.remove('hidden');
-          slot.classList.remove('hidden');
+          window.closeInstore();
+          alert(board.message || '店舗内情報共有は店舗所属の方が使う機能です。');
+          return;
         }
+        document.getElementById('instore-post-card').classList.remove('hidden');
+        document.getElementById('instore-recorder-slot').classList.remove('hidden');
 
         list.innerHTML = (board.memos && board.memos.length)
           ? board.memos.map(memoCardHtml_).join('')
