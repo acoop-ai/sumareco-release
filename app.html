@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.7
+<!-- スマレコ (SmartRecord) PWA Frontend v76.8
+     v76.8: 本部メニューの誤タップ対策（区切り・余白）と、中身が空の画面からも
+            その場でホームへ戻れる導線。戻るボタンを全画面で「← ホーム」に統一
+     v76.7
      v76.7: 配信方式を変更。本体は app.html、index.html は毎回最新を読み込むローダー。
             端末に古い版が残り続ける問題を構造的に解消する
      v76.6
@@ -1034,7 +1037,10 @@
       <button onclick="window.openMyReports()"
         class="btn-press w-full py-3.5 text-sm font-bold bg-white border border-green-200 text-green-700 rounded-xl flex items-center justify-center shadow-sm active:scale-95"><span
           class="material-icons text-base mr-2">folder_shared</span>マイレポート（自分の報告・まとめを見る）</button>
-      <!-- 本部専用ボタン（HQ_ADMINのみ表示） -->
+      <!-- 本部専用ボタン（HQ_ADMINのみ表示）。v76.8: スクロール操作での誤タップを避けるため区切りと余白を置く -->
+      <div id="hq-section-divider" class="hidden pt-4 pb-1 text-[10px] font-bold text-slate-400 border-t border-slate-200 flex items-center gap-1">
+        <span class="material-icons text-[13px]">admin_panel_settings</span>本部メニュー
+      </div>
       <button id="btn-hq-admin" onclick="window.showHQAdmin()"
         class="hidden btn-press w-full py-3 text-sm font-bold bg-indigo-700 text-white rounded-xl flex items-center justify-center shadow-lg">
         <span class="material-icons text-sm mr-2">campaign</span>本部配信管理
@@ -1044,7 +1050,7 @@
         class="hidden btn-press w-full py-3 text-sm font-bold bg-teal-700 text-white rounded-xl flex items-center justify-center shadow-lg">
         <span class="material-icons text-sm mr-2">groups</span>店内ミーティング報告（全店）
       </button>
-      <div class="h-8"></div>
+      <div class="h-20"></div>
     </div>
   </div>
   <!-- HQ Admin Screen -->
@@ -2346,7 +2352,7 @@
   <!-- 本部: 店内ミーティング報告（全店） -->
   <div id="hq-meetings-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 bg-teal-700 shadow-sm sticky top-0 z-10">
-      <button onclick="window.closeHqMeetings()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
+      <button onclick="window.closeHqMeetings()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-white active:bg-white/20 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">ホーム</span></button>
       <span class="material-icons text-white ml-1 mr-2">groups</span>
       <div class="min-w-0">
         <h2 class="text-base font-bold text-white truncate">店内ミーティング報告（全店）</h2>
@@ -3046,6 +3052,8 @@
       const isHqMember = (userRole === 'HQ_ADMIN' || userRole === 'ADMIN' || _currentUserShop === '本部');
       const hqMeetBtn = document.getElementById('btn-hq-meetings');
       if (hqMeetBtn) hqMeetBtn.classList.toggle('hidden', !isHqMember);
+      const hqDivider = document.getElementById('hq-section-divider');
+      if (hqDivider) hqDivider.classList.toggle('hidden', !isHqMember);
       const hqMeetMenu = document.getElementById('menu-hq-meetings');
       if (hqMeetMenu) hqMeetMenu.classList.toggle('hidden', !isHqMember);
       // v76.5: 本部所属は店舗内情報共有を使えない。入口自体を出さず、誤って開くことを防ぐ
@@ -4866,7 +4874,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v76.7';
+    const APP_VERSION = 'v76.8';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -5482,7 +5490,11 @@
           '<div class="text-[11px] text-slate-400 mt-1">記録' + (x.memoCount || 0) + '件 ・ 提出 ' + esc(x.submittedAt || '-') + '</div></div>' +
           '<button onclick="window.openStoreMeeting(\'' + esc(x.docId) + '\')" class="text-xs text-blue-600 font-bold px-3 py-1.5 rounded border border-blue-200 bg-blue-50 flex-shrink-0">詳細 ›</button>' +
           '</div></div>').join('')
-          : '<div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-400 text-sm">この日に提出された報告はありません</div>';
+          : '<div class="bg-white rounded-xl border border-slate-200 p-6 text-center">' +
+            '<div class="text-slate-400 text-sm">この日に提出された報告はありません</div>' +
+            '<div class="text-[11px] text-slate-400 mt-2">店舗がミーティング資料を提出すると、ここに並びます。</div>' +
+            '<button onclick="window.closeHqMeetings()" class="btn-press mt-4 px-5 py-2.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-bold">← ホームへ戻る</button>' +
+            '</div>';
 
         body.innerHTML = highlightsHtml_(results[1]) +
           '<div class="text-xs font-bold text-slate-500 pt-3 pb-1">提出された報告（' + list.length + '）</div>' + rows;
