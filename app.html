@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v76.8
+<!-- スマレコ (SmartRecord) PWA Frontend v76.9
+     v76.9: ページ読み込み直後にも全ての重ね画面を閉じる（ログイン前から素の状態を保証）
+     v76.8
      v76.8: 本部メニューの誤タップ対策（区切り・余白）と、中身が空の画面からも
             その場でホームへ戻れる導線。戻るボタンを全画面で「← ホーム」に統一
      v76.7
@@ -4780,6 +4782,12 @@
       return String(str).normalize('NFKC').replace(/[\s\u3000]+/g, "").trim().toLowerCase();
     }
 
+    // v76.9: 読み込み直後にも重ね画面を全て閉じる。
+    //   initApp（ログイン成功時）だけでなく、ページを開いた時点で必ず素の状態から始める。
+    window.addEventListener('load', function () {
+      try { closeOtherOverlays_(null); } catch (e) { /* 定義前でも起動は止めない */ }
+    });
+
     // v2.x: OAuth2 ボタン配線 + サイレント自動ログイン
     // v75.0(④): ①端末保存トークンで即復帰 → ②GIS サイレント（1回リトライ付き）の順で試行
     window.addEventListener('load', function () {
@@ -4874,7 +4882,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v76.8';
+    const APP_VERSION = 'v76.9';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
