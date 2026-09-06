@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) PWA Frontend v77.0
+<!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v77.2: 店舗内情報共有を店舗ドメインに限定（jaz-acoop2/3 は店舗同格だが店内共有は不可）
+     v77.0
      v77.0: 重ね画面の表示中は背後のホーム画面をスクロールさせない（裏でUIが動くのを解消）。
             メニューの本部向け項目をインディゴ系にして店舗向けと見分けられるように
      v76.9
@@ -3069,8 +3071,11 @@
       // v76.5: 本部所属は店舗内情報共有を使えない。入口自体を出さず、誤って開くことを防ぐ
       //   （従来は開けてしまい、案内だけの画面が全画面で居座っていた）
       // v77.0: ただし検証用アカウント（スクリプトプロパティで登録）は入口を出す
+      // v77.2: 利用可否の判定はサーバーに一本化する（店舗ドメイン or 検証用アカウント）。
+      //   jaz-acoop2/3 は店舗同格のゲストだが、店舗ではないため店内共有は使えない。
       _isDevTester = !!user.devTester;
-      const isStoreUser = (!!_currentUserShop && _currentUserShop !== '本部') || _isDevTester;
+      _canStoreShare = !!user.canStoreShare;
+      const isStoreUser = _canStoreShare && (!!_currentUserShop && _currentUserShop !== '本部' || _isDevTester);
       const instoreBtn = document.getElementById('btn-instore-entry');
       if (instoreBtn) instoreBtn.classList.toggle('hidden', !isStoreUser);
       const instoreMenu = document.getElementById('menu-instore');
@@ -4847,6 +4852,7 @@
     let _isEditingMeeting = false;
     let _currentUserShop = '';     // ログイン中ユーザーの所属店舗（本部判定・表示用）
     let _isDevTester = false;      // v77.0: 店内モードの検証を許可されたアカウントか（サーバー判定）
+    let _canStoreShare = false;    // v77.2: 店舗内情報共有を使えるアカウントか（サーバー判定）
 
     /**
      * v77.0: 店内モードの対象店舗。
@@ -4905,7 +4911,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v77.0';
+    const APP_VERSION = 'v77.2';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -5007,6 +5013,11 @@
 
     window.openInstore = function () {
       if (guardWhileRecording_()) return;
+      // v77.2: 店舗のアカウント以外は画面を開かずに案内する（検証用アカウントは通す）
+      if (!_canStoreShare) {
+        alert('店舗内情報共有は店舗のアカウント向けの機能です。日報・苦情・提案などの報告は通常どおりご利用いただけます。');
+        return;
+      }
       // v76.5: 本部所属は対象外。画面を開かずに案内する（v77.0: 検証用アカウントは通す）
       if (_currentUserShop === '本部' && !_isDevTester) {
         alert('店舗内情報共有は店舗所属の方が使う機能です。本部は「店内ミーティング報告（全店）」から各店の提出分をご確認ください。');
