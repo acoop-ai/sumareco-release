@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v79.1: PC で全画面の画面が横に間延びしていたのを、ホームと同じ幅制限に揃える。
+            写真は高さ固定をやめ縦横比を保つ（広い画面で帯状に潰れていた）
      v79.0: 進む／戻るの規則を1つに統一（画面に階層を持たせ、開くときは同階層と上だけ閉じる）。
             添付写真はリンク共有をやめ、認証を通した経路だけで表示する
      v78.1: まとめ資料は要約のみ（文字起こし原本は出さず写真だけ添える）。報告詳細を閉じたら
@@ -155,6 +157,21 @@
       .container-responsive:has(#manual-screen:not(.hidden)) {
         max-width: 1200px !important;
       }
+    }
+
+    /* v79.1: 全画面で開く画面も、ホームと同じように幅を抑える。
+       これらは position:fixed で、ホーム（container-responsive）の外に出るため、
+       祖先の max-width が効かない。画面ごとに直接持たせる。
+       スマホでは全幅のまま（この指定は広い画面でのみ効く）。 */
+    @media (min-width: 700px) {
+      .app-pane {
+        max-width: 600px;
+        margin-left: auto;
+        margin-right: auto;
+        box-shadow: 0 0 25px rgba(0, 0, 0, 0.1);
+      }
+      /* 一覧・地図・資料など、横に広いほうが読みやすいもの */
+      .app-pane.app-pane-wide { max-width: 1000px; }
     }
 
     #map {
@@ -1087,7 +1104,7 @@
     </div>
   </div>
   <!-- HQ Admin Screen -->
-  <div id="hq-admin-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
+  <div id="hq-admin-screen" class="hidden fixed inset-0 app-pane app-pane-wide bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-indigo-700 shadow-sm sticky top-0 z-30">
       <button onclick="window.closeHQAdmin()" class="p-2 -ml-2 text-white"><span class="material-icons">arrow_back</span></button>
       <span class="material-icons text-white ml-1 mr-2">campaign</span>
@@ -1480,7 +1497,7 @@
   </div>
 
   <!-- Map Screen -->
-  <div id="map-screen" class="hidden fixed inset-0 bg-white z-[2000] flex flex-col">
+  <div id="map-screen" class="hidden fixed inset-0 app-pane app-pane-wide bg-white z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm z-10"><button onclick="window.closeMap()"
         class="p-2 -ml-2 text-slate-600"><span class="material-icons">arrow_back</span></button>
       <h2 class="text-lg font-bold ml-2 text-slate-700">全店天気マップ</h2>
@@ -1493,7 +1510,7 @@
     <div id="map" class="flex-grow bg-slate-200"></div>
   </div>
   <!-- Dashboard Screen -->
-  <div id="dash-screen" class="hidden fixed inset-0 bg-white z-[2000] flex flex-col">
+  <div id="dash-screen" class="hidden fixed inset-0 app-pane app-pane-wide bg-white z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-30"><button
         onclick="window.closeDash()" class="p-2 -ml-2 text-slate-600"><span
           class="material-icons">arrow_back</span></button>
@@ -1526,7 +1543,7 @@
     <div id="dash-content" class="flex-grow overflow-y-auto p-4 pb-20"></div>
   </div>
   <!-- Help Screen -->
-  <div id="help-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
+  <div id="help-screen" class="hidden fixed inset-0 app-pane bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-10"><button
         onclick="window.closeHelp()" class="p-2 -ml-2 text-slate-600"><span
           class="material-icons">arrow_back</span></button>
@@ -1589,7 +1606,7 @@
     </div>
   </div>
   <!-- Manual Screen -->
-  <div id="manual-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
+  <div id="manual-screen" class="hidden fixed inset-0 app-pane app-pane-wide bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-10"><button
         onclick="window.closeManual()" class="p-2 -ml-2 text-slate-600"><span
           class="material-icons">arrow_back</span></button>
@@ -1601,7 +1618,7 @@
   </div>
   </div>
   <!-- Store Selection Screen -->
-  <div id="shop-select-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
+  <div id="shop-select-screen" class="hidden fixed inset-0 app-pane bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-10"><button
         onclick="window.closeShopSelect()" class="p-2 -ml-2 text-slate-600"><span
           class="material-icons">arrow_back</span></button>
@@ -1614,7 +1631,7 @@
         class="w-full py-3 bg-slate-100 text-slate-600 rounded-xl font-bold text-sm">設定をリセット（解除）</button>
     </div>
   </div>
-  <div id="sub-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
+  <div id="sub-screen" class="hidden fixed inset-0 app-pane bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-10"><button onclick="window.closeSub()"
         class="p-2 -ml-2 text-slate-600"><span class="material-icons">arrow_back</span></button>
       <h2 id="sub-title" class="text-lg font-bold ml-2 text-slate-700"></h2>
@@ -1624,7 +1641,7 @@
   <!-- ============================================================
        v76.0: 店舗内情報共有（店内ミーティング）
        ============================================================ -->
-  <div id="instore-screen" class="hidden fixed inset-0 instore-bg z-[2000] flex flex-col">
+  <div id="instore-screen" class="hidden fixed inset-0 app-pane instore-bg z-[2000] flex flex-col">
     <div class="flex items-center p-4 bg-gradient-to-r from-teal-600 to-cyan-600 shadow-sm sticky top-0 z-10">
       <button onclick="window.closeInstore()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-white active:bg-white/20 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">ホーム</span></button>
       <div class="ml-1 flex-1 min-w-0">
@@ -1734,7 +1751,7 @@
   </div>
 
   <!-- 店内ミーティング資料（詳細・編集・印刷・提出） -->
-  <div id="store-meeting-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
+  <div id="store-meeting-modal" class="hidden fixed inset-0 app-pane app-pane-wide bg-slate-50 z-[5000] flex flex-col">
     <div class="flex items-center p-4 bg-white border-b shadow-sm sticky top-0 z-10">
       <button onclick="window.closeStoreMeeting()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-slate-600 active:bg-slate-100 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">戻る</span></button>
       <div class="ml-1 flex-1 min-w-0">
@@ -1763,7 +1780,7 @@
   </div>
 
   <!-- 本部: 店内ミーティング報告（全店） -->
-  <div id="hq-meetings-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
+  <div id="hq-meetings-screen" class="hidden fixed inset-0 app-pane app-pane-wide bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 bg-teal-700 shadow-sm sticky top-0 z-10">
       <button onclick="window.closeHqMeetings()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-white active:bg-white/20 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">ホーム</span></button>
       <span class="material-icons text-white ml-1 mr-2">groups</span>
@@ -2160,8 +2177,8 @@
       let imageHtml = '';
       if (d.imageUrls && d.imageUrls.length > 0) {
         imageHtml = '<div class="grid grid-cols-2 gap-2">' + d.imageUrls.map(function (url, i) {
-          return '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="block bg-white rounded border border-slate-200 overflow-hidden">' +
-            reportImageHtml_(url, d.id, i, 'w-full h-32 object-cover') + '</a>';
+          return '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="block bg-white rounded border border-slate-200 overflow-hidden" title="タップで大きく表示">' +
+            reportImageHtml_(url, d.id, i, 'w-full object-cover', false, '4/3') + '</a>';
         }).join('') + '</div>';
       } else {
         imageHtml = '<div class="text-sm text-slate-400">添付画像なし</div>';
@@ -4489,9 +4506,12 @@
      * 報告書の添付画像の <img>（中身は後から入れる）。
      * eager=true は印刷用。紙に出すものは画面に現れないため、その場で読み込む。
      */
-    function reportImageHtml_(url, reportId, index, cls, eager) {
+    function reportImageHtml_(url, reportId, index, cls, eager, ratio) {
       const esc = window.escapeHtmlV73;
-      return '<img src="' + BLANK_PX + '" ' +
+      // 縦横比は style で直接指定する。高さを固定すると、画面が広いときに
+      // 幅だけ伸びて写真が細長い帯に潰れるため
+      const style = ratio ? ' style="aspect-ratio:' + esc(ratio) + '"' : '';
+      return '<img src="' + BLANK_PX + '"' + style + ' ' +
         'data-report-id="' + esc(reportId || '') + '" data-img-index="' + (Number(index) || 0) + '"' +
         (eager ? ' data-eager="1"' : '') +
         ' class="' + cls + ' bg-slate-100 animate-pulse" alt="記録写真">';
@@ -4615,7 +4635,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v79.0';
+    const APP_VERSION = 'v79.1';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -4749,11 +4769,11 @@
       if (!m || !m.imageUrls || !m.imageUrls.length) return '';
       return '<div class="mt-2">' +
         '<div class="text-[10px] text-slate-400 mb-1">' + esc(m.time) + ' ・ ' + esc(m.name) + ' の写真</div>' +
-        '<div class="grid grid-cols-3 gap-1.5">' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">' +
         m.imageUrls.map(function (u, i) {
           return '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" ' +
-            'class="block rounded overflow-hidden border border-slate-200 bg-white">' +
-            reportImageHtml_(u, m.id, i, 'w-full h-20 object-cover') + '</a>';
+            'class="block rounded overflow-hidden border border-slate-200 bg-white" title="タップで大きく表示">' +
+            reportImageHtml_(u, m.id, i, 'w-full object-cover', false, '4/3') + '</a>';
         }).join('') + '</div></div>';
     }
 
@@ -4763,9 +4783,9 @@
       const badge = m.isEmergency
         ? '<span class="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1 ml-1">重要</span>' : '';
       const imgs = (m.imageUrls && m.imageUrls.length)
-        ? '<div class="grid grid-cols-3 gap-1.5 mt-2">' + m.imageUrls.map(function (u, i) {
+        ? '<div class="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-2">' + m.imageUrls.map(function (u, i) {
             return '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="block rounded overflow-hidden border border-slate-200 bg-white">' +
-              reportImageHtml_(u, m.id, i, 'w-full h-20 object-cover') + '</a>';
+              reportImageHtml_(u, m.id, i, 'w-full object-cover', false, '4/3') + '</a>';
           }).join('') + '</div>'
         : '';
       // v78.0: カード自体を押せるようにして、原文・写真を報告書の詳細で読めるようにする
@@ -5445,7 +5465,7 @@
   </div>
 
   <!-- v73.0: 報告書詳細モーダル（個人報告書） -->
-  <div id="report-detail-modal" class="hidden fixed inset-0 bg-slate-50 z-[5500] flex flex-col">
+  <div id="report-detail-modal" class="hidden fixed inset-0 app-pane bg-slate-50 z-[5500] flex flex-col">
     <header class="bg-green-700 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
       <button onclick="window.closeReportDetail()" class="p-1 active:bg-white/20 rounded">
         <span class="material-icons">close</span>
@@ -5458,7 +5478,7 @@
   </div>
 
   <!-- v73.0: 集計レポート詳細モーダル -->
-  <div id="aggregated-detail-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
+  <div id="aggregated-detail-modal" class="hidden fixed inset-0 app-pane app-pane-wide bg-slate-50 z-[5000] flex flex-col">
     <header class="bg-teal-700 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
       <button onclick="window.closeAggregatedDetail()" class="p-1 active:bg-white/20 rounded">
         <span class="material-icons">close</span>
