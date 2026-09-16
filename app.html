@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v82.0: まとめ資料の写真を、資料の閲覧権限で取りに行く（本部・保存期間切れでも出る）。
+            取れなかったときは理由を画面に出し、30秒で時間切れにする
      v81.2: 巡回の送信ボタンと巡回まとめのメニューは本部（SV）にだけ出す。
             版の自動更新を「1セッション1回」から「更新のたび」に改め、
             自動で入れ替わらないときは画面で知らせて手動の手段を渡す
@@ -4614,28 +4616,50 @@
     //   画面に入ったものから順に、同じ報告書の写真は1回の通信でまとめて取る。
     // ============================================================
     const BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-    const _reportImageCache = {}; // 報告書ID -> Promise<dataURL[]>
+    const _reportImageCache = {}; // 「記録ID|資料ID」-> Promise<{urls, error}>
+    const IMAGE_TIMEOUT_MS = 30000;
 
-    function fetchReportImages_(reportId) {
-      if (!_reportImageCache[reportId]) {
-        _reportImageCache[reportId] = runGasTask('getReportImages', { id: reportId })
-          .then(function (r) { return (r && r.dataUrls) || []; })
-          .catch(function (e) { console.warn('写真を取得できませんでした:', e); return []; });
+    /**
+     * v82.0: 写真を取りに行く。資料の中から開いているときは資料ID（docId）も添える。
+     *   権限は「その写真が載っている資料を読めるか」でサーバーが判断する。
+     *   取れなかった理由は捨てずに持ち帰り、画面に出す（黙って空欄にしない）。
+     */
+    function fetchReportImages_(reportId, docId) {
+      const key = String(reportId) + '|' + String(docId || '');
+      if (!_reportImageCache[key]) {
+        const req = runGasTask('getReportImages', { id: reportId, docId: docId || '' })
+          .then(function (r) { return { urls: (r && r.dataUrls) || [], error: '' }; });
+        const timeout = new Promise(function (resolve) {
+          setTimeout(function () {
+            resolve({ urls: [], error: '時間内に読み込めませんでした（通信が遅い可能性があります）' });
+          }, IMAGE_TIMEOUT_MS);
+        });
+        _reportImageCache[key] = Promise.race([req, timeout]).catch(function (e) {
+          console.warn('写真を取得できませんでした:', e);
+          return { urls: [], error: (e && e.message) ? e.message : String(e) };
+        });
       }
-      return _reportImageCache[reportId];
+      return _reportImageCache[key];
     }
 
     async function loadReportImage_(img) {
       const rid = img.getAttribute('data-report-id');
+      const did = img.getAttribute('data-doc-id') || '';
       const idx = Number(img.getAttribute('data-img-index')) || 0;
       if (!rid) return;
-      const urls = await fetchReportImages_(rid);
-      if (urls[idx]) {
-        img.src = urls[idx];
+      const res = await fetchReportImages_(rid, did);
+      if (res.urls[idx]) {
+        img.src = res.urls[idx];
         img.classList.remove('animate-pulse');
-      } else {
-        img.outerHTML = '<div class="p-3 text-[10px] text-slate-400 text-center bg-slate-50">写真を読み込めません</div>';
+        return;
       }
+      const esc = window.escapeHtmlV73;
+      const reason = res.error || 'この写真は見つかりませんでした';
+      img.outerHTML =
+        '<div class="p-3 bg-slate-50 border border-slate-200 rounded text-center">' +
+        '<div class="text-[11px] font-bold text-slate-500">写真を読み込めません</div>' +
+        '<div class="text-[10px] text-slate-400 mt-1 break-words">' + esc(reason) + '</div>' +
+        '</div>';
     }
 
     const _reportImageObserver = ('IntersectionObserver' in window)
@@ -4652,13 +4676,14 @@
      * 報告書の添付画像の <img>（中身は後から入れる）。
      * eager=true は印刷用。紙に出すものは画面に現れないため、その場で読み込む。
      */
-    function reportImageHtml_(url, reportId, index, cls, eager, ratio) {
+    function reportImageHtml_(url, reportId, index, cls, eager, ratio, docId) {
       const esc = window.escapeHtmlV73;
       // 縦横比は style で直接指定する。高さを固定すると、画面が広いときに
       // 幅だけ伸びて写真が細長い帯に潰れるため
       const style = ratio ? ' style="aspect-ratio:' + esc(ratio) + '"' : '';
       return '<img src="' + BLANK_PX + '"' + style + ' ' +
         'data-report-id="' + esc(reportId || '') + '" data-img-index="' + (Number(index) || 0) + '"' +
+        (docId ? ' data-doc-id="' + esc(docId) + '"' : '') +
         (eager ? ' data-eager="1"' : '') +
         ' class="' + cls + ' bg-slate-100 animate-pulse" alt="記録写真">';
     }
@@ -4785,13 +4810,13 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v81.2';
+    const APP_VERSION = 'v82.0';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
     //   GAS は人が貼り替えて手動でデプロイする層で、version を画面で確かめられないと
     //   「貼ったつもりで貼れていない」に症状が出るまで気づけないため。
-    const REQUIRED_GAS_VERSION = 'v81.0';
+    const REQUIRED_GAS_VERSION = 'v82.0';
     let _gasVersion = '';
 
     /** 'v79.1' → 79001 のように比べられる数にする（文字列比較だと v79.10 < v79.9 になる） */
@@ -5004,7 +5029,8 @@
         m.imageUrls.map(function (u, i) {
           return '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" ' +
             'class="block rounded overflow-hidden border border-slate-200 bg-white" title="タップで大きく表示">' +
-            reportImageHtml_(u, m.id, i, 'w-full object-cover', false, '4/3') + '</a>';
+            reportImageHtml_(u, m.id, i, 'w-full object-cover', false, '4/3',
+              (_currentMeeting && _currentMeeting.docId) || '') + '</a>';
         }).join('') + '</div></div>';
     }
 
@@ -5718,7 +5744,8 @@
             (o.text ? '<div>' + esc(m.content || '') + '</div>' : '') +
             ((o.photos && hasImg)
               ? '<div class="imgs">' + m.imageUrls.map(function (u, i) {
-                  return reportImageHtml_(u, m.id, i, '', true); // 紙に出すので遅延読み込みにしない
+                  // 紙に出すので遅延読み込みにしない。資料の文脈で取りに行く
+                  return reportImageHtml_(u, m.id, i, '', true, '', d.docId || '');
                 }).join('') + '</div>'
               : '') +
             '</div>';
