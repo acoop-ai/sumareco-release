@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v79.0: 進む／戻るの規則を1つに統一（画面に階層を持たせ、開くときは同階層と上だけ閉じる）。
+            添付写真はリンク共有をやめ、認証を通した経路だけで表示する
      v78.1: まとめ資料は要約のみ（文字起こし原本は出さず写真だけ添える）。報告詳細を閉じたら
             一つ前の画面へ戻す。PC で写真が出ない件を、表示経路の多段化＋サーバー取得で解消。
             店内画面のヘッダにもホームと同じ操作（プロフィール/サインアウト/メニュー）を置く
@@ -1524,7 +1526,7 @@
     <div id="dash-content" class="flex-grow overflow-y-auto p-4 pb-20"></div>
   </div>
   <!-- Help Screen -->
-  <div id="help-screen" class="hidden fixed inset-0 bg-slate-50 z-[3000] flex flex-col">
+  <div id="help-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-10"><button
         onclick="window.closeHelp()" class="p-2 -ml-2 text-slate-600"><span
           class="material-icons">arrow_back</span></button>
@@ -1587,7 +1589,7 @@
     </div>
   </div>
   <!-- Manual Screen -->
-  <div id="manual-screen" class="hidden fixed inset-0 bg-slate-50 z-[3000] flex flex-col">
+  <div id="manual-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-10"><button
         onclick="window.closeManual()" class="p-2 -ml-2 text-slate-600"><span
           class="material-icons">arrow_back</span></button>
@@ -1599,7 +1601,7 @@
   </div>
   </div>
   <!-- Store Selection Screen -->
-  <div id="shop-select-screen" class="hidden fixed inset-0 bg-slate-50 z-[4000] flex flex-col">
+  <div id="shop-select-screen" class="hidden fixed inset-0 bg-slate-50 z-[2000] flex flex-col">
     <div class="flex items-center p-4 border-b bg-white shadow-sm sticky top-0 z-10"><button
         onclick="window.closeShopSelect()" class="p-2 -ml-2 text-slate-600"><span
           class="material-icons">arrow_back</span></button>
@@ -2089,16 +2091,6 @@
       return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     };
 
-    // Drive 共有 URL から fileId を抽出（サムネイル URL 構築用）
-    function extractDriveFileIdV73_(url) {
-      if (!url) return '';
-      const m1 = String(url).match(/\/d\/([a-zA-Z0-9_-]+)/);
-      if (m1) return m1[1];
-      const m2 = String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/);
-      if (m2) return m2[1];
-      return '';
-    }
-
     // ====== 個人報告書 詳細モーダル ======
     let _currentReportDetailV73 = null;
     let _isEditingReportV73 = false;
@@ -2107,10 +2099,7 @@
       const modal  = document.getElementById('report-detail-modal');
       const body   = document.getElementById('rd-body');
       const footer = document.getElementById('rd-footer');
-      // v78.1: 下の画面（まとめ資料など）は閉じずに重ねる。閉じれば必ず一つ前へ戻る
-      pushOverlayHistory_();
       modal.classList.remove('hidden');
-      updateBodyScrollLock_();
       body.innerHTML   = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
       footer.innerHTML = '';
       try {
@@ -2200,6 +2189,7 @@
         ${d.docUrl ? `<div><a href="${esc(d.docUrl)}" target="_blank" rel="noopener" class="text-xs text-blue-600 underline inline-flex items-center gap-1"><span class="material-icons text-xs">open_in_new</span>Google Doc で開く</a></div>` : ''}
         <div class="text-[10px] text-slate-400 pt-2 border-t border-slate-200">最終更新: ${esc(d.lastModified || '-')}</div>
       `;
+      hydrateReportImages_('rd-body');
 
       if (!d.canEdit) {
         document.getElementById('rd-footer').innerHTML = `
@@ -4451,65 +4441,81 @@
     }
 
     // ============================================================
-    // v78.1: 写真が「スマホでは見えるのに PC では出ない」件への対処
-    //   drive.google.com の画像は、見ている人のブラウザで既定になっている
-    //   Google アカウントの権限で取りに行く。PC で複数のアカウントにログイン
-    //   していると、店舗のアカウントではない側で判定されて出ない。
-    //   そこで表示できる形を順に試し、最後はサーバー経由（＝このアプリで
-    //   認証済みの経路）で取りに行く。Drive の共有設定にも左右されない。
+    // v79.0: 添付写真の表示
+    //   Drive の画像URLを <img> にそのまま渡すと、取得は「見ている人のブラウザで
+    //   既定になっている Google アカウント」の権限で行われる。PC で複数の
+    //   アカウントにログインしていると、店舗のアカウントではない側で判定されて
+    //   写真が出ない（スマホは1アカウントなので出る）。
+    //   そこで画像は必ずサーバー経由で取る。スマレコの認証を通るため、端末の
+    //   ログイン状態にも Drive の共有設定にも左右されない。
+    //   画面に入ったものから順に、同じ報告書の写真は1回の通信でまとめて取る。
     // ============================================================
-    function imageSrcCandidates_(url) {
-      const id = extractDriveFileIdV73_(url);
-      const list = [];
-      if (id) {
-        list.push('https://lh3.googleusercontent.com/d/' + id + '=w800');
-        list.push('https://drive.google.com/thumbnail?id=' + id + '&sz=w800');
+    const BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const _reportImageCache = {}; // 報告書ID -> Promise<dataURL[]>
+
+    function fetchReportImages_(reportId) {
+      if (!_reportImageCache[reportId]) {
+        _reportImageCache[reportId] = runGasTask('getReportImages', { id: reportId })
+          .then(function (r) { return (r && r.dataUrls) || []; })
+          .catch(function (e) { console.warn('写真を取得できませんでした:', e); return []; });
       }
-      if (url) list.push(url);
-      return list;
+      return _reportImageCache[reportId];
     }
 
+    async function loadReportImage_(img) {
+      const rid = img.getAttribute('data-report-id');
+      const idx = Number(img.getAttribute('data-img-index')) || 0;
+      if (!rid) return;
+      const urls = await fetchReportImages_(rid);
+      if (urls[idx]) {
+        img.src = urls[idx];
+        img.classList.remove('animate-pulse');
+      } else {
+        img.outerHTML = '<div class="p-3 text-[10px] text-slate-400 text-center bg-slate-50">写真を読み込めません</div>';
+      }
+    }
+
+    const _reportImageObserver = ('IntersectionObserver' in window)
+      ? new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (!e.isIntersecting) return;
+            _reportImageObserver.unobserve(e.target);
+            loadReportImage_(e.target);
+          });
+        }, { rootMargin: '300px' })
+      : null;
+
     /**
-     * 報告書の添付画像の <img>。reportId があれば最後にサーバー経由で取り直せる。
-     * eager=true は印刷用。画面に出ない要素の画像は lazy だと読み込まれず、
-     * 読み込みが始まらなければ取り直しも走らないため、紙に出すときは必ず eager にする。
+     * 報告書の添付画像の <img>（中身は後から入れる）。
+     * eager=true は印刷用。紙に出すものは画面に現れないため、その場で読み込む。
      */
     function reportImageHtml_(url, reportId, index, cls, eager) {
       const esc = window.escapeHtmlV73;
-      const cand = imageSrcCandidates_(url);
-      return '<img src="' + esc(cand[0] || '') + '" ' +
-        'data-alt-srcs="' + esc(cand.slice(1).join(' ')) + '" ' +
-        'data-report-id="' + esc(reportId || '') + '" data-img-index="' + (Number(index) || 0) + '" ' +
-        'class="' + cls + '" alt="記録写真"' + (eager ? '' : ' loading="lazy"') +
-        ' onerror="window.onReportImageError(this)">';
+      return '<img src="' + BLANK_PX + '" ' +
+        'data-report-id="' + esc(reportId || '') + '" data-img-index="' + (Number(index) || 0) + '"' +
+        (eager ? ' data-eager="1"' : '') +
+        ' class="' + cls + ' bg-slate-100 animate-pulse" alt="記録写真">';
     }
 
-    window.onReportImageError = async function (img) {
-      const rest = String(img.getAttribute('data-alt-srcs') || '').split(' ').filter(Boolean);
-      if (rest.length) {
-        img.setAttribute('data-alt-srcs', rest.slice(1).join(' '));
-        img.src = rest[0];
-        return;
-      }
-      const rid = img.getAttribute('data-report-id');
-      if (rid && !img.dataset.gasTried) {
-        img.dataset.gasTried = '1';
-        try {
-          const res = await runGasTask('getReportImage',
-            { id: rid, index: Number(img.getAttribute('data-img-index')) || 0 });
-          if (res && res.dataUrl) { img.src = res.dataUrl; return; }
-        } catch (e) { console.warn('画像をサーバー経由で取得できませんでした:', e); }
-      }
-      img.outerHTML = '<div class="p-3 text-[10px] text-slate-400 text-center bg-slate-50">画像を読み込めません</div>';
-    };
-
-    /** 印刷用：紙に出す前に画像を実体（dataURL）にしておく */
-    async function resolveImageDataUrl_(reportId, index) {
-      if (!reportId) return '';
-      try {
-        const res = await runGasTask('getReportImage', { id: reportId, index: Number(index) || 0 });
-        return (res && res.dataUrl) || '';
-      } catch (e) { return ''; }
+    /**
+     * 描画のあとに呼ぶ。中にある写真を読み込む（画面に入ったものから順に）。
+     * @param {string|Element} root 対象の入れ物
+     * @returns {Promise} 印刷など、読み込みの完了を待ちたいときに使う
+     */
+    function hydrateReportImages_(root) {
+      const scope = (typeof root === 'string') ? document.getElementById(root) : root;
+      if (!scope) return Promise.resolve();
+      const waits = [];
+      Array.prototype.forEach.call(scope.querySelectorAll('img[data-report-id]'), function (img) {
+        if (img.dataset.hydrated) return;
+        img.dataset.hydrated = '1';
+        // すでに見えている写真は待たせない。画面より下にあるものだけ、近づいてから読む
+        const box = img.getBoundingClientRect();
+        const nearView = box.top < (window.innerHeight + 300) && box.bottom > -300;
+        if (img.dataset.eager || nearView || !_reportImageObserver) waits.push(loadReportImage_(img));
+        else _reportImageObserver.observe(img);
+      });
+      return Promise.all(waits);
     }
 
     /**
@@ -4553,8 +4559,63 @@
     const OVERLAY_MODALS = ['report-detail-modal', 'aggregated-detail-modal', 'hq-edit-modal',
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
+    // ============================================================
+    // v79.0: 進む／戻るの規則（このアプリ全体で1つ）
+    //
+    //   画面は「階層」を持つ。開くときは自分と同じか上の階層だけを閉じ、
+    //   下の階層はそのまま残す。だから閉じれば必ず一つ前の画面が現れる。
+    //   端末の戻る操作も、いちばん手前の1枚だけを閉じる。
+    //
+    //     階層1 … ホームから行く先（同時に1つだけ）
+    //     階層2 … その中身を開く（ミーティング資料・集計報告の詳細・配信の編集）
+    //     階層3 … さらにその中の1件を開く（報告書の詳細）
+    //     階層4 … 操作を助ける小窓（印刷する部門の選択・共有先の選択）
+    //
+    //   z-index は階層と一致させる。階層をまたいで同じ値を使わない
+    //   （どちらが上かが DOM の並び順任せになり、見えている画面と
+    //     閉じる画面が食い違うため。v78.1 の不具合はこれが原因だった）
+    //     階層1 = 2000 ／ 階層2 = 5000 ／ 階層3 = 5500 ／ 階層4 = 6000
+    //   メニュー(9000)・読み込み中(9999)・接続エラー(10000) は常に最前面で別枠。
+    // ============================================================
+    const OVERLAY_LEVEL = {
+      'sub-screen': 1, 'map-screen': 1, 'dash-screen': 1, 'hq-admin-screen': 1,
+      'help-screen': 1, 'manual-screen': 1, 'shop-select-screen': 1,
+      'instore-screen': 1, 'hq-meetings-screen': 1,
+      'store-meeting-modal': 2, 'aggregated-detail-modal': 2, 'hq-edit-modal': 2,
+      'report-detail-modal': 3,
+      'store-print-modal': 4, 'patrol-share-modal': 4
+    };
+
+    /** 画面を開く直前に呼ぶ：同じ階層と、それより上を閉じ、戻り先を1つ積む */
+    function prepareOpenOverlay_(id) {
+      const lv = OVERLAY_LEVEL[id] || 1;
+      Object.keys(OVERLAY_LEVEL).forEach(function (other) {
+        if (other !== id && OVERLAY_LEVEL[other] >= lv) hideOverlay_(other);
+      });
+      pushOverlayHistory_();
+    }
+
+    /** どの関数がどの画面を開く／閉じるか（増やすときはここに1行足す） */
+    const OVERLAY_OPENERS = {
+      openMyReports: 'sub-screen', showReportsList: 'sub-screen', showHistory: 'sub-screen',
+      showWeatherDashboard: 'dash-screen', showMap: 'map-screen', showHelp: 'help-screen',
+      showManual: 'manual-screen', setMyShop: 'shop-select-screen', showHQAdmin: 'hq-admin-screen',
+      openInstore: 'instore-screen', openHqMeetings: 'hq-meetings-screen',
+      openStoreMeeting: 'store-meeting-modal', openAggregatedDetail: 'aggregated-detail-modal',
+      openEditHQAlert: 'hq-edit-modal', openReportDetail: 'report-detail-modal',
+      openStorePrintModal: 'store-print-modal', runPatrolAggregation: 'patrol-share-modal'
+    };
+    const OVERLAY_CLOSERS = {
+      closeSub: 'sub-screen', closeMap: 'map-screen', closeDash: 'dash-screen',
+      closeHelp: 'help-screen', closeManual: 'manual-screen', closeShopSelect: 'shop-select-screen',
+      closeHQAdmin: 'hq-admin-screen', closeInstore: 'instore-screen',
+      closeHqMeetings: 'hq-meetings-screen', closeStoreMeeting: 'store-meeting-modal',
+      closeAggregatedDetail: 'aggregated-detail-modal', closeReportDetail: 'report-detail-modal',
+      closeStorePrintModal: 'store-print-modal', closePatrolShareModal: 'patrol-share-modal'
+    };
+
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v78.1';
+    const APP_VERSION = 'v79.0';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -4645,10 +4706,6 @@
     }
 
     /** モーダルを開く前に呼ぶ: 背後の画面は残し、他のモーダルだけ閉じる */
-    function closeOtherModals_(keepId) {
-      OVERLAY_MODALS.forEach(id => { if (id !== keepId) hideOverlay_(id); });
-    }
-
     /** 録音中の画面移動は取りこぼしのもとなので止める */
     function guardWhileRecording_() {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
@@ -4672,8 +4729,6 @@
       }
       const menu = document.getElementById('admin-menu');
       if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
-      closeOtherOverlays_('instore-screen');
-      pushOverlayHistory_();
       moveRecorderTo_('instore-recorder-slot');
       document.getElementById('instore-screen').classList.remove('hidden');
       window.loadStoreBoard(false);
@@ -4758,6 +4813,7 @@
       list.innerHTML = memos.length
         ? memos.map(memoCardHtml_).join('')
         : '<div class="bg-white rounded-xl p-6 text-center text-slate-400 text-xs border border-slate-200">まだ記録がありません。マイクボタンで録音して「この内容を記録する」を押してください。</div>';
+      hydrateReportImages_(list);
 
       // まとめの有無で見せ方を変える（カード自体は常に出す）
       const label = document.getElementById('btn-summarize-label');
@@ -4893,8 +4949,6 @@
     // ====== ミーティング資料（詳細・編集・印刷・提出） ======
 
     window.openStoreMeeting = async function (docId) {
-      closeOtherModals_('store-meeting-modal');
-      pushOverlayHistory_();
       const modal = document.getElementById('store-meeting-modal');
       const body = document.getElementById('sm-body');
       modal.classList.remove('hidden');
@@ -5007,6 +5061,7 @@
         (d.docUrl ? '<div class="pt-2"><a href="' + esc(d.docUrl) + '" target="_blank" rel="noopener" class="text-xs text-blue-600 underline">Google Doc で開く</a></div>' : '') +
         '<div class="text-[10px] text-slate-400 pt-2 border-t border-slate-200">作成: ' + esc(d.author || '') +
         (d.submittedAt ? ' ／ 提出: ' + esc(d.submittedAt) : '') + '</div>';
+      hydrateReportImages_('sm-body');
 
       const footer = document.getElementById('sm-footer');
       if (editing) {
@@ -5117,7 +5172,6 @@
         '<label class="flex items-center gap-2 text-xs text-slate-600">' +
         '<input type="checkbox" id="spm-memos" class="w-4 h-4 accent-teal-600">文字起こしの本文も印刷する（要約と同じ内容が並びます）</label>' +
         '</div>';
-      pushOverlayHistory_();
       document.getElementById('store-print-modal').classList.remove('hidden');
     };
 
@@ -5194,6 +5248,8 @@
       const root = document.getElementById('print-root');
       root.innerHTML = buildPrintHtml_(d, deptNames, printOpts);
       window.closeStorePrintModal();
+      // v79.0: 紙に出す写真はサーバーから実体を取る（画面に現れないため、その場で読み込む）
+      const photoWait = hydrateReportImages_(root);
 
       // 写真が読み込まれる前に印刷ダイアログが出ると空欄で刷られるため、読み込みを待つ。
       // v78.1: 待ち方を addEventListener にする。img.onerror を上書きすると
@@ -5203,14 +5259,16 @@
         document.getElementById('loading-msg').innerText = '印刷の準備中…';
         const overlay = document.getElementById('loading-overlay');
         overlay.style.opacity = '1'; overlay.style.display = 'flex';
-        await Promise.all(imgs.map(img => (img.complete && img.naturalWidth > 0)
-          ? Promise.resolve()
-          : new Promise(r => {
-              img.addEventListener('load', r, { once: true });
-              // 失敗しても取り直しが走るので、少し待ってから諦める
-              img.addEventListener('error', function () { setTimeout(r, 4000); }, { once: true });
-              setTimeout(r, 15000);
-            })));
+        await photoWait;
+        // 実体が入ってから描画が終わるのを待つ
+        await Promise.all(Array.prototype.slice.call(root.querySelectorAll('img')).map(img =>
+          (img.complete && img.naturalWidth > 0)
+            ? Promise.resolve()
+            : new Promise(r => {
+                img.addEventListener('load', r, { once: true });
+                img.addEventListener('error', r, { once: true });
+                setTimeout(r, 8000);
+              })));
         overlay.style.opacity = '0';
         setTimeout(() => { overlay.style.display = 'none'; }, 200);
       }
@@ -5231,8 +5289,7 @@
     window.openHqMeetings = function () {
       const menu = document.getElementById('admin-menu');
       if (menu && !menu.classList.contains('hidden')) window.toggleMenu();
-      closeOtherOverlays_('hq-meetings-screen');
-      pushOverlayHistory_();
+
       const dateEl = document.getElementById('hqm-date');
       if (!dateEl.value) dateEl.value = todayInputValue_();
       document.getElementById('hq-meetings-screen').classList.remove('hidden');
@@ -5331,27 +5388,20 @@
       }
     };
 
-    // v76.1: 既存の画面遷移にも同じガードを適用する（呼び出し側の記述は変えない）。
-    //   画面を開くもの＝他の全画面とモーダルを閉じる／モーダルを開くもの＝他のモーダルだけ閉じる。
-    //   ※ 印刷モーダルはミーティング資料の上に重ねて使うため、ここでは包まない。
-    [['openMyReports', 'sub-screen'], ['showReportsList', 'sub-screen'], ['showHistory', 'sub-screen'],
-     ['showWeatherDashboard', 'dash-screen'], ['showMap', 'map-screen'], ['showHelp', 'help-screen'],
-     ['showManual', 'manual-screen'], ['setMyShop', 'shop-select-screen'], ['showHQAdmin', 'hq-admin-screen']
-    ].forEach(function (pair) {
-      const orig = window[pair[0]];
+    // v79.0: 画面を開く／閉じる関数すべてに、同じ規則を後付けする（呼び出し側は変えない）。
+    //   開く側は「同じ階層と、それより上」を閉じてから戻り先を1つ積む。
+    //   閉じる側は自分だけを閉じる（本体の実装）＋背後スクロールの解除。
+    //   新しい画面を足すときは OVERLAY_LEVEL と この表に1行ずつ足せば、
+    //   進む／戻るは自動的に他の画面と同じ挙動になる。
+    Object.keys(OVERLAY_OPENERS).forEach(function (fn) {
+      const orig = window[fn];
       if (typeof orig !== 'function') return;
-      window[pair[0]] = function () { closeOtherOverlays_(pair[1]); pushOverlayHistory_(); return orig.apply(this, arguments); };
-    });
-
-    // v78.1: 報告書の詳細は、まとめ資料の中の記録から開く経路がある。
-    //   ここで包むと開いた瞬間に下の資料が閉じてしまい、詳細を閉じたときに
-    //   資料ではなく店内画面へ戻ってしまうため、対象から外す（重ねて使う）。
-    [['openAggregatedDetail', 'aggregated-detail-modal'],
-     ['openEditHQAlert', 'hq-edit-modal'], ['runPatrolAggregation', 'patrol-share-modal']
-    ].forEach(function (pair) {
-      const orig = window[pair[0]];
-      if (typeof orig !== 'function') return;
-      window[pair[0]] = function () { closeOtherModals_(pair[1]); pushOverlayHistory_(); return orig.apply(this, arguments); };
+      window[fn] = function () {
+        prepareOpenOverlay_(OVERLAY_OPENERS[fn]);
+        const r = orig.apply(this, arguments);
+        updateBodyScrollLock_();
+        return r;
+      };
     });
 
     // v77.0: 画面の開閉すべてに、背後スクロールの制御を後付けする（呼び出し側は変えない）
