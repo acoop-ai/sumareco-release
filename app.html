@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v78.1: まとめ資料は要約のみ（文字起こし原本は出さず写真だけ添える）。報告詳細を閉じたら
+            一つ前の画面へ戻す。PC で写真が出ない件を、表示経路の多段化＋サーバー取得で解消。
+            店内画面のヘッダにもホームと同じ操作（プロフィール/サインアウト/メニュー）を置く
      v78.0: 店舗内情報共有の導線と保全。①本部/店内の切替を上部タブへ（メニューの奥から出す）
             ②まとめ・過去のまとめ・記録の原文へ画面から直接たどれるようにし、記録件数は
               保存の応答に同梱されたボードで即反映（取得の1往復に依存しない）
@@ -1626,6 +1629,12 @@
         <h2 class="text-base font-bold text-white truncate">店舗内情報共有</h2>
         <p class="text-[11px] text-teal-50"><span id="instore-shop">--</span> ・ <span id="instore-date">--</span> ・ <span id="instore-version" class="font-mono opacity-80">-</span></p>
       </div>
+      <!-- v78.1: ホームと同じ操作をここにも置く。モードを変えても道具の場所が変わらないようにする -->
+      <div class="flex items-center space-x-1 flex-shrink-0">
+        <button onclick="window.openEditProfile()" class="p-2 bg-white/10 active:bg-white/30 rounded-full transition-colors" title="プロフィール編集"><span class="material-icons text-white text-sm">manage_accounts</span></button>
+        <button onclick="window.signOut()" class="p-2 bg-white/10 active:bg-white/30 rounded-full transition-colors" title="サインアウト"><span class="material-icons text-white text-sm">logout</span></button>
+        <button onclick="window.toggleMenu()" class="p-2 bg-white/10 active:bg-white/30 rounded-full transition-colors" title="メニュー"><span class="material-icons text-white">settings</span></button>
+      </div>
     </div>
 
     <!-- v78.0: ホームと同じ位置・同じ形のタブ。押せば本部への報告画面へ戻る -->
@@ -2098,7 +2107,10 @@
       const modal  = document.getElementById('report-detail-modal');
       const body   = document.getElementById('rd-body');
       const footer = document.getElementById('rd-footer');
+      // v78.1: 下の画面（まとめ資料など）は閉じずに重ねる。閉じれば必ず一つ前へ戻る
+      pushOverlayHistory_();
       modal.classList.remove('hidden');
+      updateBodyScrollLock_();
       body.innerHTML   = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
       footer.innerHTML = '';
       try {
@@ -2115,7 +2127,9 @@
       if (_isEditingReportV73) {
         if (!confirm('編集中の内容は破棄されます。閉じますか？')) return;
       }
-      document.getElementById('report-detail-modal').classList.add('hidden');
+      // v78.1: 自分だけを閉じる。下にまとめ資料が開いていれば、そこへ戻る
+      hideOverlay_('report-detail-modal');
+      updateBodyScrollLock_();
       _currentReportDetailV73 = null;
       _isEditingReportV73 = false;
     };
@@ -2156,13 +2170,9 @@
       // 画像プレビュー
       let imageHtml = '';
       if (d.imageUrls && d.imageUrls.length > 0) {
-        imageHtml = '<div class="grid grid-cols-2 gap-2">' + d.imageUrls.map(url => {
-          const fileId = extractDriveFileIdV73_(url);
-          const thumb  = fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w400` : url;
-          return `<a href="${esc(url)}" target="_blank" rel="noopener" class="block bg-white rounded border border-slate-200 overflow-hidden">
-            <img src="${esc(thumb)}" class="w-full h-32 object-cover" alt="添付画像" loading="lazy"
-              onerror="this.outerHTML='<div class=\\'p-3 text-xs text-slate-400 text-center\\'>画像を読込めません</div>'">
-          </a>`;
+        imageHtml = '<div class="grid grid-cols-2 gap-2">' + d.imageUrls.map(function (url, i) {
+          return '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="block bg-white rounded border border-slate-200 overflow-hidden">' +
+            reportImageHtml_(url, d.id, i, 'w-full h-32 object-cover') + '</a>';
         }).join('') + '</div>';
       } else {
         imageHtml = '<div class="text-sm text-slate-400">添付画像なし</div>';
@@ -4440,9 +4450,66 @@
       return (myShopName && myShopName !== '本部') ? myShopName : '';
     }
 
-    function driveThumbUrl_(url, w) {
+    // ============================================================
+    // v78.1: 写真が「スマホでは見えるのに PC では出ない」件への対処
+    //   drive.google.com の画像は、見ている人のブラウザで既定になっている
+    //   Google アカウントの権限で取りに行く。PC で複数のアカウントにログイン
+    //   していると、店舗のアカウントではない側で判定されて出ない。
+    //   そこで表示できる形を順に試し、最後はサーバー経由（＝このアプリで
+    //   認証済みの経路）で取りに行く。Drive の共有設定にも左右されない。
+    // ============================================================
+    function imageSrcCandidates_(url) {
       const id = extractDriveFileIdV73_(url);
-      return id ? ('https://drive.google.com/thumbnail?id=' + id + '&sz=w' + (w || 400)) : url;
+      const list = [];
+      if (id) {
+        list.push('https://lh3.googleusercontent.com/d/' + id + '=w800');
+        list.push('https://drive.google.com/thumbnail?id=' + id + '&sz=w800');
+      }
+      if (url) list.push(url);
+      return list;
+    }
+
+    /**
+     * 報告書の添付画像の <img>。reportId があれば最後にサーバー経由で取り直せる。
+     * eager=true は印刷用。画面に出ない要素の画像は lazy だと読み込まれず、
+     * 読み込みが始まらなければ取り直しも走らないため、紙に出すときは必ず eager にする。
+     */
+    function reportImageHtml_(url, reportId, index, cls, eager) {
+      const esc = window.escapeHtmlV73;
+      const cand = imageSrcCandidates_(url);
+      return '<img src="' + esc(cand[0] || '') + '" ' +
+        'data-alt-srcs="' + esc(cand.slice(1).join(' ')) + '" ' +
+        'data-report-id="' + esc(reportId || '') + '" data-img-index="' + (Number(index) || 0) + '" ' +
+        'class="' + cls + '" alt="記録写真"' + (eager ? '' : ' loading="lazy"') +
+        ' onerror="window.onReportImageError(this)">';
+    }
+
+    window.onReportImageError = async function (img) {
+      const rest = String(img.getAttribute('data-alt-srcs') || '').split(' ').filter(Boolean);
+      if (rest.length) {
+        img.setAttribute('data-alt-srcs', rest.slice(1).join(' '));
+        img.src = rest[0];
+        return;
+      }
+      const rid = img.getAttribute('data-report-id');
+      if (rid && !img.dataset.gasTried) {
+        img.dataset.gasTried = '1';
+        try {
+          const res = await runGasTask('getReportImage',
+            { id: rid, index: Number(img.getAttribute('data-img-index')) || 0 });
+          if (res && res.dataUrl) { img.src = res.dataUrl; return; }
+        } catch (e) { console.warn('画像をサーバー経由で取得できませんでした:', e); }
+      }
+      img.outerHTML = '<div class="p-3 text-[10px] text-slate-400 text-center bg-slate-50">画像を読み込めません</div>';
+    };
+
+    /** 印刷用：紙に出す前に画像を実体（dataURL）にしておく */
+    async function resolveImageDataUrl_(reportId, index) {
+      if (!reportId) return '';
+      try {
+        const res = await runGasTask('getReportImage', { id: reportId, index: Number(index) || 0 });
+        return (res && res.dataUrl) || '';
+      } catch (e) { return ''; }
     }
 
     /**
@@ -4487,7 +4554,7 @@
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v78.0';
+    const APP_VERSION = 'v78.1';
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
@@ -4496,12 +4563,15 @@
 
     /** 今いちばん手前に見えているオーバーレイのIDを返す */
     function topVisibleOverlay_() {
+      // v78.1: z-index が同じ画面が複数あるため、DOM に現れる順（＝ブラウザが実際に
+      //   上に描く順）で判定する。配列の並び順で決めると、見えている画面と
+      //   閉じる画面が食い違い、戻る操作で下の画面のほうが閉じてしまう
+      const sel = OVERLAY_MODALS.concat(OVERLAY_SCREENS).map(function (id) { return '#' + id; }).join(',');
       let top = null, topZ = -1;
-      OVERLAY_MODALS.concat(OVERLAY_SCREENS).forEach(function (id) {
-        const el = document.getElementById(id);
-        if (!el || el.classList.contains('hidden')) return;
+      Array.prototype.forEach.call(document.querySelectorAll(sel), function (el) {
+        if (el.classList.contains('hidden')) return;
         const z = parseInt(getComputedStyle(el).zIndex, 10) || 0;
-        if (z >= topZ) { topZ = z; top = id; }
+        if (z >= topZ) { topZ = z; top = el.id; }
       });
       return top;
     }
@@ -4614,17 +4684,34 @@
       hideOverlay_('instore-screen');
     };
 
+    /**
+     * v78.1: まとめ資料に添える「記録の写真」。
+     *   文字起こしの本文は要約に取り込まれているため資料には出さない（同じ話が二度並ぶため）。
+     *   ただし写真は要約からは得られない情報なので、いつ・誰の記録かを添えて残す。
+     */
+    function memoPhotosHtml_(m) {
+      const esc = window.escapeHtmlV73;
+      if (!m || !m.imageUrls || !m.imageUrls.length) return '';
+      return '<div class="mt-2">' +
+        '<div class="text-[10px] text-slate-400 mb-1">' + esc(m.time) + ' ・ ' + esc(m.name) + ' の写真</div>' +
+        '<div class="grid grid-cols-3 gap-1.5">' +
+        m.imageUrls.map(function (u, i) {
+          return '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" ' +
+            'class="block rounded overflow-hidden border border-slate-200 bg-white">' +
+            reportImageHtml_(u, m.id, i, 'w-full h-20 object-cover') + '</a>';
+        }).join('') + '</div></div>';
+    }
+
     /** 文章と写真をセットで見せるカード（画面表示用） */
     function memoCardHtml_(m) {
       const esc = window.escapeHtmlV73;
       const badge = m.isEmergency
         ? '<span class="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1 ml-1">重要</span>' : '';
       const imgs = (m.imageUrls && m.imageUrls.length)
-        ? '<div class="grid grid-cols-3 gap-1.5 mt-2">' + m.imageUrls.map(u =>
-            '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="block rounded overflow-hidden border border-slate-200 bg-white">' +
-            '<img src="' + esc(driveThumbUrl_(u, 400)) + '" class="w-full h-20 object-cover" alt="記録写真" loading="lazy" ' +
-            'onerror="this.style.display=&quot;none&quot;">' +
-            '</a>').join('') + '</div>'
+        ? '<div class="grid grid-cols-3 gap-1.5 mt-2">' + m.imageUrls.map(function (u, i) {
+            return '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="block rounded overflow-hidden border border-slate-200 bg-white">' +
+              reportImageHtml_(u, m.id, i, 'w-full h-20 object-cover') + '</a>';
+          }).join('') + '</div>'
         : '';
       // v78.0: カード自体を押せるようにして、原文・写真を報告書の詳細で読めるようにする
       //   （写真のリンクは個別に開くため、カードのタップへ伝播させない）
@@ -4828,7 +4915,8 @@
 
     window.closeStoreMeeting = function () {
       if (_isEditingMeeting && !confirm('編集中の内容は破棄されます。閉じますか？')) return;
-      document.getElementById('store-meeting-modal').classList.add('hidden');
+      hideOverlay_('store-meeting-modal');
+      updateBodyScrollLock_();
       _currentMeeting = null;
       _isEditingMeeting = false;
     };
@@ -4881,9 +4969,8 @@
         const topics = (dept.topics || []).map((t, ti) => {
           const key = di + '-' + ti;
           const memos = (t.related_ids || []).map(id => memoById[id]).filter(Boolean);
-          const memoHtml = memos.length
-            ? '<div class="space-y-2 mt-2">' + memos.map(memoCardHtml_).join('') + '</div>'
-            : '';
+          // v78.1: 資料には要約だけを載せる。元の記録は写真のみ添える
+          const memoHtml = memos.map(memoPhotosHtml_).join('');
           if (editing) {
             const opts = deptList.map(n =>
               '<option value="' + esc(n) + '"' + (n === dept.name ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
@@ -5024,8 +5111,12 @@
         depts.map((n, i) =>
           '<label class="flex items-center gap-2 text-sm text-slate-700 py-1">' +
           '<input type="checkbox" class="spm-dept w-4 h-4 accent-teal-600" value="' + esc(n) + '" checked>' + esc(n) + '</label>').join('') +
-        '<label class="flex items-center gap-2 text-xs text-slate-600 pt-2 mt-2 border-t border-slate-200">' +
-        '<input type="checkbox" id="spm-memos" class="w-4 h-4 accent-teal-600" checked>元の記録（写真つき）も印刷する</label>';
+        '<div class="pt-2 mt-2 border-t border-slate-200 space-y-1">' +
+        '<label class="flex items-center gap-2 text-xs text-slate-600">' +
+        '<input type="checkbox" id="spm-photos" class="w-4 h-4 accent-teal-600" checked>記録の写真も印刷する</label>' +
+        '<label class="flex items-center gap-2 text-xs text-slate-600">' +
+        '<input type="checkbox" id="spm-memos" class="w-4 h-4 accent-teal-600">文字起こしの本文も印刷する（要約と同じ内容が並びます）</label>' +
+        '</div>';
       pushOverlayHistory_();
       document.getElementById('store-print-modal').classList.remove('hidden');
     };
@@ -5038,27 +5129,34 @@
       document.getElementById('store-print-modal').classList.add('hidden');
     };
 
-    function buildPrintHtml_(d, deptNames, includeMemos) {
+    function buildPrintHtml_(d, deptNames, opts) {
       const esc = window.escapeHtmlV73;
+      const o = opts || {};
       const ai = d.ai || {};
       const memoById = {};
       (d.memos || []).forEach(m => { memoById[m.id] = m; });
       const wanted = {};
       deptNames.forEach(n => { wanted[n] = true; });
 
+      // v78.1: 写真と文字起こしの本文を分けて選べるようにした。
+      //   既定は「写真だけ」。本文は要約と同じ内容が並ぶため、要るときだけ載せる
       const memoBlock = (ids) => {
-        if (!includeMemos) return '';
+        if (!o.photos && !o.text) return '';
         const memos = (ids || []).map(id => memoById[id]).filter(Boolean);
         if (!memos.length) return '';
-        return memos.map(m =>
-          '<div class="memo"><div class="memo-head">' + esc(m.time) + '　' + esc(m.name) +
-          (m.isEmergency ? '　★重要' : '') + '</div>' +
-          '<div>' + esc(m.content || '') + '</div>' +
-          ((m.imageUrls && m.imageUrls.length)
-            ? '<div class="imgs">' + m.imageUrls.map(u =>
-                '<img src="' + esc(driveThumbUrl_(u, 800)) + '" alt="記録写真">').join('') + '</div>'
-            : '') +
-          '</div>').join('');
+        return memos.map(m => {
+          const hasImg = m.imageUrls && m.imageUrls.length;
+          if (!o.text && !hasImg) return '';
+          return '<div class="memo"><div class="memo-head">' + esc(m.time) + '　' + esc(m.name) +
+            (m.isEmergency ? '　★重要' : '') + '</div>' +
+            (o.text ? '<div>' + esc(m.content || '') + '</div>' : '') +
+            ((o.photos && hasImg)
+              ? '<div class="imgs">' + m.imageUrls.map(function (u, i) {
+                  return reportImageHtml_(u, m.id, i, '', true); // 紙に出すので遅延読み込みにしない
+                }).join('') + '</div>'
+              : '') +
+            '</div>';
+        }).join('');
       };
 
       const deptHtml = (ai.departments || []).filter(x => wanted[x.name]).map(dept =>
@@ -5089,20 +5187,30 @@
       if (!d) return;
       const deptNames = Array.prototype.slice.call(document.querySelectorAll('#spm-body input.spm-dept:checked')).map(el => el.value);
       if (deptNames.length === 0) { alert('印刷する部門を選んでください。'); return; }
-      const includeMemos = document.getElementById('spm-memos').checked;
+      const printOpts = {
+        photos: document.getElementById('spm-photos').checked,
+        text  : document.getElementById('spm-memos').checked
+      };
       const root = document.getElementById('print-root');
-      root.innerHTML = buildPrintHtml_(d, deptNames, includeMemos);
+      root.innerHTML = buildPrintHtml_(d, deptNames, printOpts);
       window.closeStorePrintModal();
 
-      // 写真が読み込まれる前に印刷ダイアログが出ると空欄で刷られるため、読み込みを待つ
+      // 写真が読み込まれる前に印刷ダイアログが出ると空欄で刷られるため、読み込みを待つ。
+      // v78.1: 待ち方を addEventListener にする。img.onerror を上書きすると
+      //   「別の経路で取り直す」仕組み（onReportImageError）が消えてしまうため
       const imgs = Array.prototype.slice.call(root.querySelectorAll('img'));
       if (imgs.length > 0) {
         document.getElementById('loading-msg').innerText = '印刷の準備中…';
         const overlay = document.getElementById('loading-overlay');
         overlay.style.opacity = '1'; overlay.style.display = 'flex';
-        await Promise.all(imgs.map(img => img.complete
+        await Promise.all(imgs.map(img => (img.complete && img.naturalWidth > 0)
           ? Promise.resolve()
-          : new Promise(r => { img.onload = r; img.onerror = r; setTimeout(r, 8000); })));
+          : new Promise(r => {
+              img.addEventListener('load', r, { once: true });
+              // 失敗しても取り直しが走るので、少し待ってから諦める
+              img.addEventListener('error', function () { setTimeout(r, 4000); }, { once: true });
+              setTimeout(r, 15000);
+            })));
         overlay.style.opacity = '0';
         setTimeout(() => { overlay.style.display = 'none'; }, 200);
       }
@@ -5235,7 +5343,10 @@
       window[pair[0]] = function () { closeOtherOverlays_(pair[1]); pushOverlayHistory_(); return orig.apply(this, arguments); };
     });
 
-    [['openReportDetail', 'report-detail-modal'], ['openAggregatedDetail', 'aggregated-detail-modal'],
+    // v78.1: 報告書の詳細は、まとめ資料の中の記録から開く経路がある。
+    //   ここで包むと開いた瞬間に下の資料が閉じてしまい、詳細を閉じたときに
+    //   資料ではなく店内画面へ戻ってしまうため、対象から外す（重ねて使う）。
+    [['openAggregatedDetail', 'aggregated-detail-modal'],
      ['openEditHQAlert', 'hq-edit-modal'], ['runPatrolAggregation', 'patrol-share-modal']
     ].forEach(function (pair) {
       const orig = window[pair[0]];
@@ -5284,7 +5395,7 @@
   </div>
 
   <!-- v73.0: 報告書詳細モーダル（個人報告書） -->
-  <div id="report-detail-modal" class="hidden fixed inset-0 bg-slate-50 z-[5000] flex flex-col">
+  <div id="report-detail-modal" class="hidden fixed inset-0 bg-slate-50 z-[5500] flex flex-col">
     <header class="bg-green-700 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
       <button onclick="window.closeReportDetail()" class="p-1 active:bg-white/20 rounded">
         <span class="material-icons">close</span>
