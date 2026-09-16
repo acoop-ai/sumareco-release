@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v80.0: 店内共有の削除（記録・資料）、本部への提出の取り下げ、みんなのナレッジ
+            （本部が選んだ提出済み資料を全店に公開）。まとめ一覧は常に新しい順
      v79.1: PC で全画面の画面が横に間延びしていたのを、ホームと同じ幅制限に揃える。
             写真は高さ固定をやめ縦横比を保つ（広い画面で帯状に潰れていた）
      v79.0: 進む／戻るの規則を1つに統一（画面に階層を持たせ、開くときは同階層と上だけ閉じる）。
@@ -783,6 +785,12 @@
         <span class="ml-auto material-icons text-base text-indigo-400">chevron_right</span>
       </button>
 
+      <button onclick="window.openKnowledge()"
+        class="w-full text-left px-4 py-3.5 text-sm hover:bg-amber-50 text-amber-800 flex items-center font-bold bg-amber-50/60 border-b border-amber-100">
+        <span class="material-icons text-lg mr-3">auto_stories</span>みんなのナレッジ
+        <span class="ml-auto material-icons text-base text-amber-400">chevron_right</span>
+      </button>
+
       <!-- 基本（全員） -->
       <button onclick="window.showManual()"
         class="w-full text-left px-4 py-3 text-sm hover:bg-blue-50 text-blue-700 flex items-center font-bold">
@@ -1090,6 +1098,10 @@
       <button onclick="window.openMyReports()"
         class="btn-press w-full py-3.5 text-sm font-bold bg-white border border-green-200 text-green-700 rounded-xl flex items-center justify-center shadow-sm active:scale-95"><span
           class="material-icons text-base mr-2">folder_shared</span>マイレポート（自分の報告・まとめを見る）</button>
+      <!-- v80.0: 本部が公開した他店のミーティング資料を見る -->
+      <button onclick="window.openKnowledge()"
+        class="btn-press w-full py-3.5 text-sm font-bold bg-white border border-amber-300 text-amber-700 rounded-xl flex items-center justify-center shadow-sm active:scale-95"><span
+          class="material-icons text-base mr-2">auto_stories</span>みんなのナレッジ（他店の取り組みを見る）</button>
       <!-- 本部専用ボタン（HQ_ADMINのみ表示）。v76.8: スクロール操作での誤タップを避けるため区切りと余白を置く -->
       <div id="hq-section-divider" class="hidden pt-4 pb-1 text-[10px] font-bold text-slate-400 border-t border-slate-200 flex items-center gap-1">
         <span class="material-icons text-[13px]">admin_panel_settings</span>本部メニュー
@@ -1808,6 +1820,32 @@
     </div>
   </div>
 
+  <!-- v80.0: みんなのナレッジ（本部が公開した提出済み資料を全店で共有する） -->
+  <div id="knowledge-screen" class="hidden fixed inset-0 app-pane app-pane-wide bg-slate-50 z-[2000] flex flex-col">
+    <div class="flex items-center p-4 bg-gradient-to-r from-amber-600 to-orange-600 shadow-sm sticky top-0 z-10">
+      <button onclick="window.closeKnowledge()" class="flex items-center gap-1 px-2 py-2 -ml-2 text-white active:bg-white/20 rounded"><span class="material-icons">arrow_back</span><span class="text-xs font-bold">ホーム</span></button>
+      <div class="ml-1 flex-1 min-w-0">
+        <h2 class="text-base font-bold text-white truncate">みんなのナレッジ</h2>
+        <p class="text-[11px] text-amber-50 truncate">本部が選んだ他店の資料</p>
+      </div>
+      <div class="flex items-center space-x-1 flex-shrink-0">
+        <button onclick="window.openEditProfile()" class="p-2 bg-white/10 active:bg-white/30 rounded-full" title="プロフィール編集"><span class="material-icons text-white text-sm">manage_accounts</span></button>
+        <button onclick="window.signOut()" class="p-2 bg-white/10 active:bg-white/30 rounded-full" title="サインアウト"><span class="material-icons text-white text-sm">logout</span></button>
+        <button onclick="window.toggleMenu()" class="p-2 bg-white/10 active:bg-white/30 rounded-full" title="メニュー"><span class="material-icons text-white">settings</span></button>
+      </div>
+    </div>
+    <div class="p-3 bg-white border-b flex items-center gap-2">
+      <input type="text" id="kn-keyword" placeholder="キーワードで探す（例：品切れ、陳列、催事）"
+        class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500"
+        onkeydown="if(event.key==='Enter'){window.loadKnowledge();}">
+      <button onclick="window.loadKnowledge()"
+        class="btn-press text-xs font-bold px-4 py-2.5 rounded-lg bg-amber-600 text-white active:scale-95 transition-transform">探す</button>
+    </div>
+    <div id="kn-body" class="flex-grow overflow-y-auto p-4 space-y-3 pb-24">
+      <div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>
+    </div>
+  </div>
+
   <!-- 印刷用の描画先（画面には出さず、印刷時のみ表示される） -->
   <div id="print-root"></div>
 
@@ -2211,9 +2249,14 @@
       `;
       hydrateReportImages_('rd-body');
 
+      // v80.0: 店内の記録は同じ店舗の人なら消せる（本部へ送った報告はここでは消せない）
+      const delBtn = d.canDelete
+        ? `<button onclick="window.deleteStoreMemoNow()" class="flex-1 py-3 bg-white border border-red-300 text-red-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">🗑 削除</button>`
+        : '';
       if (!d.canEdit) {
         document.getElementById('rd-footer').innerHTML = `
           <button onclick="window.closeReportDetail()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">閉じる</button>
+          ${delBtn}
         `;
       } else if (editing) {
         document.getElementById('rd-footer').innerHTML = `
@@ -2224,9 +2267,29 @@
         document.getElementById('rd-footer').innerHTML = `
           <button onclick="window.closeReportDetail()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm active:scale-95 transition-transform">閉じる</button>
           <button onclick="window.startEditReportV73()" class="flex-1 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm active:scale-95 transition-transform">✎ 編集</button>
+          ${delBtn}
         `;
       }
     }
+
+    /** v80.0: 店内の記録を削除する（同じ店舗の人なら誰でも） */
+    window.deleteStoreMemoNow = async function () {
+      const d = _currentReportDetailV73;
+      if (!d) return;
+      if (!confirm('この記録を削除しますか？\n\n' +
+                   '【' + (d.tsDisplay || '') + '　' + (d.name || '') + '】\n' +
+                   (d.summary || '').slice(0, 60) + '\n\n' +
+                   '・音声と写真も一緒に消えます\n' +
+                   '・作成済みのミーティング資料には残るため、必要なら「まとめる」で作り直してください\n' +
+                   '・誰がいつ削除したかは記録されます')) return;
+      if (!confirm('本当に削除します。よろしいですか？')) return;
+      try {
+        await doWithLoading('削除しています…', runGasTask('deleteStoreMemo', { id: d.id }));
+        window.closeReportDetail();
+        alert('削除しました。');
+        if (typeof window.loadStoreBoard === 'function') window.loadStoreBoard(true);
+      } catch (e) { console.error('deleteStoreMemo error:', e); }
+    };
 
     window.startEditReportV73 = function () { _isEditingReportV73 = true;  renderReportDetailV73_(); };
     window.cancelEditReportV73 = function () { _isEditingReportV73 = false; renderReportDetailV73_(); };
@@ -4583,7 +4646,7 @@
     // ============================================================
     const OVERLAY_SCREENS = ['sub-screen', 'map-screen', 'dash-screen', 'hq-admin-screen',
                              'help-screen', 'manual-screen', 'shop-select-screen',
-                             'instore-screen', 'hq-meetings-screen'];
+                             'instore-screen', 'hq-meetings-screen', 'knowledge-screen'];
     const OVERLAY_MODALS = ['report-detail-modal', 'aggregated-detail-modal', 'hq-edit-modal',
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
 
@@ -4608,7 +4671,7 @@
     const OVERLAY_LEVEL = {
       'sub-screen': 1, 'map-screen': 1, 'dash-screen': 1, 'hq-admin-screen': 1,
       'help-screen': 1, 'manual-screen': 1, 'shop-select-screen': 1,
-      'instore-screen': 1, 'hq-meetings-screen': 1,
+      'instore-screen': 1, 'hq-meetings-screen': 1, 'knowledge-screen': 1,
       'store-meeting-modal': 2, 'aggregated-detail-modal': 2, 'hq-edit-modal': 2,
       'report-detail-modal': 3,
       'store-print-modal': 4, 'patrol-share-modal': 4
@@ -4629,6 +4692,7 @@
       showWeatherDashboard: 'dash-screen', showMap: 'map-screen', showHelp: 'help-screen',
       showManual: 'manual-screen', setMyShop: 'shop-select-screen', showHQAdmin: 'hq-admin-screen',
       openInstore: 'instore-screen', openHqMeetings: 'hq-meetings-screen',
+      openKnowledge: 'knowledge-screen',
       openStoreMeeting: 'store-meeting-modal', openAggregatedDetail: 'aggregated-detail-modal',
       openEditHQAlert: 'hq-edit-modal', openReportDetail: 'report-detail-modal',
       openStorePrintModal: 'store-print-modal', runPatrolAggregation: 'patrol-share-modal'
@@ -4637,19 +4701,20 @@
       closeSub: 'sub-screen', closeMap: 'map-screen', closeDash: 'dash-screen',
       closeHelp: 'help-screen', closeManual: 'manual-screen', closeShopSelect: 'shop-select-screen',
       closeHQAdmin: 'hq-admin-screen', closeInstore: 'instore-screen',
-      closeHqMeetings: 'hq-meetings-screen', closeStoreMeeting: 'store-meeting-modal',
+      closeHqMeetings: 'hq-meetings-screen', closeKnowledge: 'knowledge-screen',
+      closeStoreMeeting: 'store-meeting-modal',
       closeAggregatedDetail: 'aggregated-detail-modal', closeReportDetail: 'report-detail-modal',
       closeStorePrintModal: 'store-print-modal', closePatrolShareModal: 'patrol-share-modal'
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v79.1';
+    const APP_VERSION = 'v80.0';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
     //   GAS は人が貼り替えて手動でデプロイする層で、version を画面で確かめられないと
     //   「貼ったつもりで貼れていない」に症状が出るまで気づけないため。
-    const REQUIRED_GAS_VERSION = 'v79.1';
+    const REQUIRED_GAS_VERSION = 'v80.0';
     let _gasVersion = '';
 
     /** 'v79.1' → 79001 のように比べられる数にする（文字列比較だと v79.10 < v79.9 になる） */
@@ -5124,7 +5189,8 @@
         '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 部門別</div>' + deptHtml + '</div>' +
         (d.docUrl ? '<div class="pt-2"><a href="' + esc(d.docUrl) + '" target="_blank" rel="noopener" class="text-xs text-blue-600 underline">Google Doc で開く</a></div>' : '') +
         '<div class="text-[10px] text-slate-400 pt-2 border-t border-slate-200">作成: ' + esc(d.author || '') +
-        (d.submittedAt ? ' ／ 提出: ' + esc(d.submittedAt) : '') + '</div>';
+        (d.submittedAt ? ' ／ 提出: ' + esc(d.submittedAt) : '') + '</div>' +
+        storeMeetingAdminHtml_(d, editing);
       hydrateReportImages_('sm-body');
 
       const footer = document.getElementById('sm-footer');
@@ -5133,9 +5199,10 @@
           '<button onclick="window.cancelEditStoreMeeting()" class="flex-1 py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm">キャンセル</button>' +
           '<button onclick="window.saveStoreMeeting()" class="flex-1 py-3 bg-teal-700 text-white rounded-lg font-bold text-sm">💾 保存</button>';
       } else {
-        const editBtn = d.canEdit
+        // v80.0: 他店の資料（ナレッジ経由）は読むだけ。編集・提出は出さない
+        const editBtn = (d.canEdit && !d.readOnly)
           ? '<button onclick="window.startEditStoreMeeting()" class="flex-1 min-w-[30%] py-3 bg-blue-600 text-white rounded-lg font-bold text-sm">✎ 編集</button>' : '';
-        const submitBtn = (d.canSubmit && !submitted)
+        const submitBtn = (d.canSubmit && !submitted && !d.readOnly)
           ? '<button onclick="window.submitStoreMeetingToHq()" class="flex-1 min-w-[30%] py-3 bg-indigo-700 text-white rounded-lg font-bold text-sm">📤 本部へ提出</button>' : '';
         footer.innerHTML =
           '<button onclick="window.closeStoreMeeting()" class="flex-1 min-w-[30%] py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm">閉じる</button>' +
@@ -5143,6 +5210,145 @@
           editBtn + submitBtn;
       }
     }
+
+    /**
+     * v80.0: この資料に対してできること（取り下げ・削除・ナレッジ公開）。
+     *   取り消しのきかない操作なので、下部の固定バーではなく本文の末尾に置く
+     *   （固定バーはスクロール中に触れやすく、押し間違いが起きる）。
+     *   何ができるかの判断はサーバーが返す（画面では判定しない）。
+     */
+    function storeMeetingAdminHtml_(d, editing) {
+      if (editing) return '';
+      const esc = window.escapeHtmlV73;
+      const rows = [];
+
+      if (d.knowledge) {
+        rows.push('<div class="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">' +
+          '<span class="material-icons text-sm">auto_stories</span>' +
+          '<div>この資料は<b>みんなのナレッジ</b>として全店に公開されています。</div></div>');
+      }
+      if (d.canPublish) {
+        rows.push(d.knowledge
+          ? '<button onclick="window.setMeetingKnowledge(false)" class="btn-press w-full py-2.5 rounded-lg border border-amber-300 bg-white text-amber-700 text-xs font-bold">★ ナレッジの公開をやめる</button>'
+          : '<button onclick="window.setMeetingKnowledge(true)" class="btn-press w-full py-2.5 rounded-lg bg-amber-600 text-white text-xs font-bold">★ みんなのナレッジに公開する（全店が読めます）</button>');
+      }
+      if (d.canWithdraw) {
+        rows.push('<button onclick="window.withdrawStoreMeeting()" class="btn-press w-full py-2.5 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-bold">↩ 本部への提出を取り下げる</button>');
+      }
+      if (d.canDelete) {
+        rows.push('<button onclick="window.deleteStoreMeetingNow()" class="btn-press w-full py-2.5 rounded-lg border border-red-300 bg-white text-red-700 text-xs font-bold">🗑 この資料を削除する</button>');
+      }
+      if (!rows.length) return '';
+      return '<details class="mt-4 bg-white border border-slate-200 rounded-xl">' +
+        '<summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">⚙ この資料の管理（提出の取り下げ・削除' +
+        (d.canPublish ? '・ナレッジ公開' : '') + '）</summary>' +
+        '<div class="px-4 pb-4 space-y-2">' + rows.join('') + '</div></details>';
+    }
+
+    /** ②③ 本部への提出を取り下げる（本部の一覧からもナレッジからも外れる） */
+    window.withdrawStoreMeeting = async function () {
+      const d = _currentMeeting;
+      if (!d) return;
+      if (!confirm('本部への提出を取り下げますか？\n\n' +
+                   '・本部の一覧から見えなくなります\n' +
+                   '・ナレッジに公開されていた場合も外れます\n' +
+                   '・資料そのものは残るので、直してから出し直せます')) return;
+      try {
+        await doWithLoading('取り下げています…', runGasTask('withdrawStoreMeeting', { docId: d.docId }));
+        _storeHistoryLoaded = false;
+        alert('提出を取り下げました。');
+        await window.openStoreMeeting(d.docId); // 状態を読み直す
+        if (typeof window.loadStoreBoard === 'function') window.loadStoreBoard(true);
+      } catch (e) { console.error('withdrawStoreMeeting error:', e); }
+    };
+
+    /** ② ミーティング資料を削除する */
+    window.deleteStoreMeetingNow = async function () {
+      const d = _currentMeeting;
+      if (!d) return;
+      if (!confirm('このミーティング資料を削除しますか？\n\n' +
+                   '【' + (d.dateDisplay || '') + '　' + (d.shop || '') + '】\n\n' +
+                   '・元になった記録（音声・写真）は消えません\n' +
+                   '・資料はもう一度「まとめる」で作り直せます\n' +
+                   '・誰がいつ削除したかは記録されます')) return;
+      if (!confirm('本当に削除します。よろしいですか？')) return;
+      try {
+        await doWithLoading('削除しています…', runGasTask('deleteStoreMeeting', { docId: d.docId }));
+        _storeHistoryLoaded = false;
+        window.closeStoreMeeting();
+        alert('削除しました。');
+        if (typeof window.loadStoreBoard === 'function') window.loadStoreBoard(true);
+      } catch (e) { console.error('deleteStoreMeeting error:', e); }
+    };
+
+    /** ③ 本部がナレッジとして全店に公開する／やめる */
+    window.setMeetingKnowledge = async function (publish) {
+      const d = _currentMeeting;
+      if (!d) return;
+      const msg = publish
+        ? 'この資料を「みんなのナレッジ」に公開しますか？\n\nすべての店舗から読めるようになります。'
+        : 'ナレッジの公開をやめますか？\n\n他店からは読めなくなります。';
+      if (!confirm(msg)) return;
+      try {
+        await doWithLoading(publish ? '公開しています…' : '公開をやめています…',
+          runGasTask('setMeetingKnowledge', { docId: d.docId, publish: !!publish }));
+        alert(publish ? 'みんなのナレッジに公開しました。' : 'ナレッジの公開をやめました。');
+        await window.openStoreMeeting(d.docId); // 状態を読み直す
+      } catch (e) { console.error('setMeetingKnowledge error:', e); }
+    };
+
+    // ====== v80.0: みんなのナレッジ ======
+
+    window.openKnowledge = function () {
+      document.getElementById('knowledge-screen').classList.remove('hidden');
+      window.loadKnowledge();
+    };
+
+    window.closeKnowledge = function () { hideOverlay_('knowledge-screen'); };
+
+    window.loadKnowledge = async function () {
+      const body = document.getElementById('kn-body');
+      const kw = (document.getElementById('kn-keyword').value || '').trim();
+      body.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>';
+      try {
+        const list = await runGasTask('getKnowledgeMeetings', { keyword: kw });
+        const esc = window.escapeHtmlV73;
+        const rows = Array.isArray(list) ? list : [];
+        if (!rows.length) {
+          body.innerHTML = '<div class="bg-white rounded-xl border border-slate-200 p-8 text-center">' +
+            '<span class="material-icons text-4xl text-slate-300">auto_stories</span>' +
+            '<div class="text-slate-500 text-sm mt-2 font-bold">' +
+            (kw ? '「' + esc(kw) + '」に当てはまる資料はありませんでした' : 'まだ公開された資料はありません') + '</div>' +
+            '<div class="text-[11px] text-slate-400 mt-2 leading-relaxed">' +
+            '店舗が本部へ提出した資料のうち、本部が「他店の参考になる」と選んだものがここに並びます。</div>' +
+            '</div>';
+          return;
+        }
+        body.innerHTML = rows.map(function (x) {
+          const summary = (x.overallSummary || '').substring(0, 160);
+          return '<button onclick="window.openStoreMeeting(\'' + esc(x.docId) + '\')" ' +
+            'class="btn-press w-full text-left bg-white rounded-xl border border-slate-200 p-4 active:bg-slate-50">' +
+            '<div class="flex items-start justify-between gap-2">' +
+            '<div class="min-w-0 flex-1">' +
+            '<div class="flex items-center gap-2 flex-wrap">' +
+            '<span class="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">' +
+            esc(x.shop) + '</span>' +
+            '<span class="text-[11px] text-slate-500">' + esc(x.dateDisplay) + ' のミーティング</span>' +
+            '</div>' +
+            '<div class="text-sm text-slate-700 mt-2 break-words leading-relaxed">' + esc(summary) +
+            ((x.overallSummary || '').length > 160 ? '…' : '') + '</div>' +
+            '<div class="text-[10px] text-slate-400 mt-2">記録' + (x.memoCount || 0) + '件' +
+            (x.knowledgeAt ? ' ・ 公開 ' + esc(x.knowledgeAt) : '') + '</div>' +
+            '</div>' +
+            '<span class="material-icons text-slate-400 text-base flex-shrink-0">chevron_right</span>' +
+            '</div></button>';
+        }).join('');
+      } catch (e) {
+        body.innerHTML = '<div class="p-8 text-center text-red-500 text-sm">読み込みエラー: ' +
+          window.escapeHtmlV73(e.message || String(e)) +
+          '<br><button onclick="window.loadKnowledge()" class="mt-3 px-4 py-2 rounded-lg bg-slate-100 text-slate-700 font-bold">もう一度読み込む</button></div>';
+      }
+    };
 
     window.startEditStoreMeeting = function () { _isEditingMeeting = true; renderStoreMeeting_(); };
     window.cancelEditStoreMeeting = function () { _isEditingMeeting = false; renderStoreMeeting_(); };
