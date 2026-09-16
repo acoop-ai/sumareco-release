@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v82.1: スマホの「アプリの中の画面」（LINE の QR リーダーなど）で開くとログインが止まる件。
+            見分けて Chrome / Safari で開き直す案内を出す。ログインの窓が開けない・閉じられたら
+            待ち続けずに知らせる（20秒でボタンを戻す）。ログイン後のプロフィール取得は60秒で打ち切る
      v82.0: まとめ資料の写真を、資料の閲覧権限で取りに行く（本部・保存期間切れでも出る）。
             取れなかったときは理由を画面に出し、30秒で時間切れにする
      v81.2: 巡回の送信ボタンと巡回まとめのメニューは本部（SV）にだけ出す。
@@ -917,6 +920,8 @@
         <h1 class="text-2xl font-bold text-slate-800">Smart Record</h1>
         <p class="text-sm text-slate-500 mt-1">店舗巡回・業務報告システム</p>
       </div>
+      <!-- v82.1: アプリの中の画面で開いているときだけ出す案内 -->
+      <div id="inapp-warning" class="hidden mb-4 bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 text-xs text-amber-900"></div>
       <div class="bg-slate-50 rounded-2xl p-6 border border-slate-200">
         <p class="text-xs text-slate-500 text-center mb-4">会社のGoogleアカウントでログイン</p>
         <!-- v2.x: OAuth2 ワンフロー認証へ移行（旧 g_id_signin を廃止） -->
@@ -934,6 +939,7 @@
           </button>
         </div>
         <p id="login-error" class="hidden mt-3 text-xs text-red-600 text-center font-bold"></p>
+        <p id="login-help" class="hidden mt-2 text-xs text-slate-600 text-center leading-relaxed"></p>
       </div>
       <p class="text-[10px] text-slate-400 text-center mt-4">※ 社内ドメインのアカウントのみ利用可能</p>
     </div>
@@ -1907,6 +1913,9 @@
     let currentAccessToken = null;
     let accessTokenExpiry = 0;          // unix ms
     let oauthTokenClient = null;        // GIS OAuth2 token client
+    let tokenRequestInFlight_ = null;   // v82.1: いま取得中のトークンの依頼（同時に1つだけ）
+    let loginFlowSeq_ = 0;              // v82.1: ログインの流れの通し番号（新しい流れに引き継いだ古い流れは画面を触らない）
+    let loginFlowActive_ = false;       // v82.1: ログインの流れが進んでいる間は、裏の無音ログインを始めない
     let userRole = null;                // ログイン中ユーザーのロール（HQ_ADMIN判定用）
     let tokenRefreshTimer = null;       // アクセストークン自動更新タイマー
     let audioChunks = [],
@@ -1968,27 +1977,49 @@
       oauthTokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CONFIG.GOOGLE_CLIENT_ID,
         scope: 'openid email profile',
-        callback: () => {}  // requestAccessTokenOnce_ で都度上書き
+        // v82.1: 返事は「いま取得中の依頼」へ渡す。以前は依頼のたびに callback を上書きしており、
+        //   裏の無音の再試行が、画面から押したログインの返事を横取りして捨てることがあった
+        callback: (resp) => { if (tokenRequestInFlight_) tokenRequestInFlight_.onResponse(resp); },
+        // v82.1: 窓が開けない・閉じられたことも受け取る（返事が来ないまま待ち続けない）
+        error_callback: (err) => { if (tokenRequestInFlight_) tokenRequestInFlight_.onError(err); }
       });
     }
 
-    function requestAccessTokenOnce_(opts) {
+    /** 待ちに上限を付ける（上限を過ぎたら、その呼び出し側だけが諦める。依頼そのものは止めない） */
+    function withTimeout_(promise, ms, message) {
       return new Promise((resolve, reject) => {
-        try { ensureOAuthTokenClient_(); } catch (e) { return reject(e); }
-        const isSilent = !!(opts && opts.silent);
-        let settled = false;
-        let guard = null;
-        if (isSilent) {
-          guard = setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            reject(new Error('OAuth2 silent token acquisition timed out (10s)'));
-          }, 10000);
-        }
-        oauthTokenClient.callback = (resp) => {
-          if (settled) return;
-          settled = true;
-          if (guard) clearTimeout(guard);
+        const t = setTimeout(() => reject(new Error(message)), ms);
+        promise.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+      });
+    }
+
+    /**
+     * v82.1: トークンの依頼は同時に1つだけ（GIS の返事の受け口は1つしかないため）。
+     *   - 無音の依頼: 動いている依頼があれば、新しい窓は開かずにそれを待つ（10秒まで）
+     *   - 画面から押したログイン: 動いている依頼を取り下げて新しく始める（押し直しにも応える）
+     *   - 窓が開けない（popup_failed_to_open）: すぐ失敗として返す
+     *   - 窓が閉じた（popup_closed）: 端末によっては後から返事が届くので、依頼は生かしたまま opts.onProblem で知らせる
+     */
+    function requestAccessTokenOnce_(opts) {
+      const isSilent = !!(opts && opts.silent);
+      try { ensureOAuthTokenClient_(); } catch (e) { return Promise.reject(e); }
+
+      const inflight = tokenRequestInFlight_;
+      if (inflight) {
+        if (isSilent) return withTimeout_(inflight.promise, 10000, 'OAuth2 silent token acquisition timed out (10s)');
+        inflight.abandon();
+      }
+
+      const job = { silent: isSilent, settled: false, guard: null };
+      job.promise = new Promise((resolve, reject) => {
+        const finish = () => {
+          job.settled = true;
+          if (job.guard) clearTimeout(job.guard);
+          if (tokenRequestInFlight_ === job) tokenRequestInFlight_ = null;
+        };
+        job.onResponse = (resp) => {
+          if (job.settled) return;
+          finish();
           if (!resp) return reject(new Error('empty oauth2 response'));
           if (resp.error) return reject(new Error(resp.error_description || resp.error));
           if (!resp.access_token) return reject(new Error('no access_token in response'));
@@ -1999,18 +2030,47 @@
           scheduleAccessTokenRefresh_(expiresIn);
           resolve(resp);
         };
-        try {
-          const req = {};
-          if (isSilent) req.prompt = '';
-          if (opts && opts.login_hint) req.hint = opts.login_hint;
-          oauthTokenClient.requestAccessToken(req);
-        } catch (e) {
-          if (settled) return;
-          settled = true;
-          if (guard) clearTimeout(guard);
+        job.onError = (err) => {
+          if (job.settled) return;
+          const type = (err && err.type) || 'unknown';
+          if (type === 'popup_closed') {
+            if (opts && typeof opts.onProblem === 'function') {
+              try { opts.onProblem(type); } catch (_) {}
+            }
+            return;
+          }
+          finish();
+          const e = new Error(type === 'popup_failed_to_open' ? 'ログインの窓を開けませんでした'
+            : 'ログインを続けられませんでした（' + type + '）');
+          e.gisType = type;
           reject(e);
+        };
+        job.fail = (e) => {
+          if (job.settled) return;
+          finish();
+          reject(e);
+        };
+        job.abandon = () => {
+          if (job.settled) return;
+          finish();
+          const e = new Error('新しいログインに引き継ぎました');
+          e.gisType = 'superseded';
+          reject(e);
+        };
+        if (isSilent) {
+          job.guard = setTimeout(() => job.fail(new Error('OAuth2 silent token acquisition timed out (10s)')), 10000);
         }
       });
+      tokenRequestInFlight_ = job;
+      try {
+        const req = {};
+        if (isSilent) req.prompt = '';
+        if (opts && opts.login_hint) req.hint = opts.login_hint;
+        oauthTokenClient.requestAccessToken(req);
+      } catch (e) {
+        job.fail(e);
+      }
+      return job.promise;
     }
 
     function scheduleAccessTokenRefresh_(expiresInSec) {
@@ -2793,6 +2853,109 @@
       ;
 
     // ============================================================
+    // v82.1: スマホの「アプリの中の画面」でのログイン対策
+    //   QR を LINE など別のアプリで読むと、そのアプリの中の画面（アプリ内ブラウザ）で開く。
+    //   Google はこうした画面でのログインを許しておらず、ログインの窓（ポップアップ）も開けない。
+    //   以前は窓が開けなくても返事を待ち続け、ボタンが押せないまま止まっていた。
+    //   ①見分けて Chrome / Safari で開き直す案内を出す ②窓が開けない・閉じられたらすぐ知らせる
+    //   信頼境界: userAgent は書き換えられる値。案内の出し分けにだけ使い、認証・権限の判断には使わない。
+    //   ※ iPhone のホーム画面アプリ（standalone）は Safari の印が無いが、アプリの中の画面ではないので除く
+    // ============================================================
+    function detectInAppBrowser_() {
+      const ua = navigator.userAgent || '';
+      const isAndroid = /Android/i.test(ua);
+      const isIOS = /iPhone|iPad|iPod/i.test(ua);
+      let standalone = false;
+      try {
+        standalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+      } catch (_) {}
+      let app = '';
+      if (/\bLine\//i.test(ua)) app = 'LINE';
+      else if (/FBAN|FBAV|FB_IAB/i.test(ua)) app = 'Facebook';
+      else if (/Instagram/i.test(ua)) app = 'Instagram';
+      else if (/YJApp/i.test(ua)) app = 'Yahoo! JAPAN';
+      else if (isAndroid && /; wv\)/.test(ua)) app = 'アプリ';
+      else if (isIOS && !standalone && !/Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua)) app = 'アプリ';
+      return { inApp: !!app, app: app, isAndroid: isAndroid, isIOS: isIOS };
+    }
+
+    /** 入口（ローダー）のアドレス。app.html?v=… ではなく、いつも最新を読む入口を渡す（クエリの値は使わない） */
+    function entryUrl_() {
+      return location.origin + location.pathname.replace(/[^/]*$/, '');
+    }
+
+    function chromeIntentUrl_(url) {
+      const m = /^(https?):\/\/([^#]*)/i.exec(url);
+      if (!m) return url;
+      return 'intent://' + m[2] + '#Intent;scheme=' + m[1].toLowerCase() +
+        ';package=com.android.chrome;S.browser_fallback_url=' + encodeURIComponent(url) + ';end';
+    }
+
+    window.openInBrowser_ = function (how) {
+      const url = entryUrl_();
+      if (how === 'line') { location.href = url + '?openExternalBrowser=1'; return; }
+      if (how === 'chrome') { location.href = chromeIntentUrl_(url); return; }
+      if (how === 'copy') {
+        const done = () => { const b = document.getElementById('inapp-copy-done'); if (b) b.classList.remove('hidden'); };
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(done, () => window.prompt('このアドレスをコピーしてください', url));
+            return;
+          }
+        } catch (_) {}
+        window.prompt('このアドレスをコピーしてください', url);
+      }
+    };
+
+    /** アプリの中の画面で開いているときだけ、ログインの上に案内を出す（出す文字は固定の文言だけ） */
+    function renderInAppWarning_() {
+      const box = document.getElementById('inapp-warning');
+      if (!box) return;
+      const d = detectInAppBrowser_();
+      if (!d.inApp) { box.classList.add('hidden'); return; }
+      const where = d.app === 'アプリ' ? 'アプリの中の画面' : d.app + ' の中の画面';
+      let action = '';
+      if (d.app === 'LINE') {
+        action = '<button type="button" onclick="window.openInBrowser_(\'line\')" class="btn-press mt-3 w-full py-2.5 rounded-lg bg-green-700 text-white text-sm font-bold">ブラウザで開く</button>';
+      } else if (d.isAndroid) {
+        action = '<button type="button" onclick="window.openInBrowser_(\'chrome\')" class="btn-press mt-3 w-full py-2.5 rounded-lg bg-green-700 text-white text-sm font-bold">Chrome で開く</button>';
+      } else {
+        action = '<p class="mt-2 leading-relaxed">画面の「…」や共有ボタンから <b>「Safari で開く」</b> を選んでください。見つからないときは、アドレスをコピーして Safari に貼り付けてください。</p>' +
+          '<button type="button" onclick="window.openInBrowser_(\'copy\')" class="btn-press mt-3 w-full py-2.5 rounded-lg bg-white border border-amber-400 text-amber-900 text-sm font-bold">アドレスをコピー</button>' +
+          '<p id="inapp-copy-done" class="hidden mt-2 text-green-700 font-bold">コピーしました。Safari に貼り付けて開いてください。</p>';
+      }
+      box.innerHTML =
+        '<div class="font-bold text-sm">この画面ではログインできません</div>' +
+        '<p class="mt-1 leading-relaxed">' + where + 'で開いています。Google のログインは、' +
+        (d.isIOS ? 'Safari' : 'Chrome') + ' などのブラウザで開いたときだけ使えます。</p>' + action +
+        // v82.1: ボタンが効かない画面（コピーできない・Chrome を開けない）でも移れるよう、アドレスを文字で出す
+        '<p class="mt-3">うまく開かないときは、下のアドレスを長押ししてコピーし、' + (d.isIOS ? 'Safari' : 'Chrome') + ' に貼り付けてください。</p>' +
+        '<div id="inapp-url" class="mt-1 p-2 bg-white border border-amber-200 rounded-lg text-[11px] text-slate-700 break-all" style="user-select:all;-webkit-user-select:all"></div>';
+      const urlEl = document.getElementById('inapp-url');
+      if (urlEl) urlEl.textContent = entryUrl_();
+      box.classList.remove('hidden');
+    }
+
+    /** ログインの窓が開けない・閉じられた・時間がかかっているときの案内（kind が空なら消す） */
+    function showLoginHelp_(kind) {
+      const el = document.getElementById('login-help');
+      if (!el) return;
+      const d = detectInAppBrowser_();
+      if (kind && d.inApp) renderInAppWarning_();
+      const msg = {
+        popup_failed_to_open: 'ログインの窓を開けませんでした。' +
+          (d.inApp ? '上の案内に沿って、ブラウザで開き直してください。' : 'ブラウザのポップアップを許可してから、もう一度押してください。'),
+        popup_closed: 'ログインの窓が閉じられました。もう一度「Googleでログイン」を押してください。',
+        slow: 'ログインの窓が出ないときは、もう一度押してください。' +
+          (d.inApp ? '直らないときは、上の案内に沿ってブラウザで開き直してください。' : ''),
+        profile_timeout: 'サーバーの応答がありません。電波の良い場所で、もう一度ログインしてください。',
+        unknown: 'ログインを続けられませんでした。もう一度押してください。'
+      }[kind] || '';
+      el.textContent = msg;
+      el.classList.toggle('hidden', !msg);
+    }
+
+    // ============================================================
     //  v2.x: OAuth2 ワンフロー認証
     //  - Google Sign-In（id token）経路を完全廃止
     //  - access_token 取得 → userinfo で email/name 取得 → ドメイン照合
@@ -2802,16 +2965,31 @@
       const errEl = document.getElementById('login-error');
       const loginBtn = document.getElementById('google-login-btn');
       const overlay = document.getElementById('loading-overlay');
+      let slowTimer = null;  // v82.1
+      // v82.1: ログインの流れは同時に1つだけ。画面から押したログインが進んでいる間、裏の無音ログインは何もしない
+      if (silent && loginFlowActive_) return false;
+      const myFlow = ++loginFlowSeq_;
+      loginFlowActive_ = true;
       try {
         if (errEl) errEl.classList.add('hidden');
         if (loginBtn && !silent) loginBtn.disabled = true;
+        // v82.1: 窓が出ないまま押せなくならないよう、20秒でボタンを戻して案内する
+        if (!silent) {
+          showLoginHelp_('');
+          slowTimer = setTimeout(() => { if (loginBtn) loginBtn.disabled = false; showLoginHelp_('slow'); }, 20000);
+        }
 
         // 1. アクセストークン取得（silent: false なら同意ポップアップ許容）
         //    v75.0(④): 有効なトークンを既に持っている（端末保存から復元済み等）なら GIS をスキップ
         const hasValidToken = currentAccessToken && accessTokenExpiry && Date.now() < accessTokenExpiry - 60 * 1000;
         if (!hasValidToken) {
-          await requestAccessTokenOnce_({ silent });
+          await requestAccessTokenOnce_({
+            silent,
+            // v82.1: 窓が閉じたと判定されたら、ボタンを戻して案内する（後から返事が届けばそのまま進む）
+            onProblem: silent ? null : (type) => { if (loginBtn) loginBtn.disabled = false; showLoginHelp_(type); }
+          });
         }
+        if (slowTimer) { clearTimeout(slowTimer); slowTimer = null; showLoginHelp_(''); }
 
         // 2. userinfo でメール・氏名を取得
         const userinfo = await fetchUserInfo_();
@@ -2833,7 +3011,15 @@
 
         // 4. GASからプロフィール取得
         if (overlay) overlay.style.display = 'flex';
-        const user = await callGAS('getProfile');
+        // v82.1: 電波が弱いと返事が来ないまま回り続けるため、60秒で打ち切って知らせる
+        const user = await Promise.race([
+          callGAS('getProfile'),
+          new Promise((_, rej) => setTimeout(() => {
+            const te = new Error('サーバーの応答がありません');
+            te.gisType = 'profile_timeout';
+            rej(te);
+          }, 60000))
+        ]);
         if (overlay) overlay.style.display = 'none';
         if (!user) throw new Error('プロフィール取得失敗');
         if (user.error && !user.registered === false) throw new Error(user.error);
@@ -2848,20 +3034,38 @@
         window.initApp(user);
         return true;
       } catch (e) {
+        // v82.1: 新しいログインに引き継いだ古い流れは、画面も保存トークンも触らずに抜ける
+        if (e && e.gisType === 'superseded') return false;
         if (overlay) overlay.style.display = 'none';
-        currentAccessToken = null;
-        accessTokenExpiry = 0;
-        clearStoredToken_(); // v75.0(④): 無効になったトークンは端末からも破棄
+        // v82.1: サーバーの応答待ちの時間切れは通信の問題で、トークンは有効。消すと再ログインの窓が要るので残す
+        if (!(e && e.gisType === 'profile_timeout')) {
+          currentAccessToken = null;
+          accessTokenExpiry = 0;
+          clearStoredToken_(); // v75.0(④): 無効になったトークンは端末からも破棄
+        }
         if (!silent) {
           console.error('OAuth2 login failed:', e);
-          if (errEl) {
+          if (e && e.gisType) {
+            // v82.1: 窓・通信の失敗は、次に何をすればよいかを案内する
+            showLoginHelp_(e.gisType);
+            // 想定外の種類は、問い合わせで見分けられるよう中身も出す
+            if (e.gisType === 'unknown' && errEl) {
+              errEl.textContent = 'ログインエラー: ' + (e.message || e);
+              errEl.classList.remove('hidden');
+            }
+          } else if (errEl) {
             errEl.textContent = 'ログインエラー: ' + (e && e.message || e);
             errEl.classList.remove('hidden');
           }
         }
         return false;
       } finally {
-        if (loginBtn) loginBtn.disabled = false;
+        if (slowTimer) clearTimeout(slowTimer);
+        // v82.1: 引き継がれた古い流れは、新しい流れのボタンや状態を触らない
+        if (loginFlowSeq_ === myFlow) {
+          loginFlowActive_ = false;
+          if (loginBtn) loginBtn.disabled = false;
+        }
       }
     };
 
@@ -4561,6 +4765,8 @@
       if (loginBtn) {
         loginBtn.addEventListener('click', () => window.loginWithOAuth2_({ silent: false }));
       }
+      // v82.1: アプリの中の画面で開いていたら、ログインの上に案内を出す
+      try { renderInAppWarning_(); } catch (_) {}
       // GIS サイレントログイン（瞬断・読み込みタイミング起因の失敗に備えて1回だけ再試行）
       const trySilent = (retries = 10) => {
         if (window.google && google.accounts && google.accounts.oauth2) {
@@ -4810,7 +5016,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v82.0';
+    const APP_VERSION = 'v82.1';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。

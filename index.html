@@ -1,5 +1,7 @@
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) 起動ローダー v1.0
+<!-- スマレコ (SmartRecord) 起動ローダー v1.1
+     v1.1（2026-09-17・v82.1）: LINE の中で開いたら、1回だけ外のブラウザへ切り替える（openExternalBrowser=1）。
+       Google のログインは LINE の中の画面では使えないため。JavaScript が動かない表示でも本体へのリンクを出す。
      目的: 端末に古い版が残り続ける問題を構造的に解消する。
        本体は app.html に置き、このローダーが毎回タイムスタンプ付きで読み込む。
        ローダー自身は数百バイトで、キャッシュ禁止のヘッダを持つ。
@@ -49,6 +51,9 @@
   <div class="fallback" id="fallback" style="display:none">
     自動で切り替わらない場合は <a id="manual-link" href="app.html">こちらをタップ</a> してください。
   </div>
+  <noscript>
+    <div class="fallback" style="display:block">この表示では Smart Record を開けません。Chrome や Safari などのブラウザで開いてください。</div>
+  </noscript>
   <script>
     // 本体は app.html。毎回タイムスタンプを付けることで、端末に古い版が残っていても
     // 必ず最新が読み込まれる（このローダー自体はキャッシュ禁止・数百バイト）。
@@ -56,10 +61,21 @@
       var url = 'app.html?v=' + Date.now();
       var link = document.getElementById('manual-link');
       if (link) link.href = url;
+      // 逃げ道のリンクは、どの分かれ道より先に用意する（切り替えが止められても白いままにしない）
       setTimeout(function () {
         var fb = document.getElementById('fallback');
         if (fb) fb.style.display = 'block';
       }, 3000);
+      // v1.1: LINE の中の画面では Google のログインが使えない。LINE の仕組みで外のブラウザへ切り替える。
+      //   切り替えた後も LINE の中の画面は残って読み込みを続けるので、繰り返さないよう1回だけにする。
+      try {
+        var ua = navigator.userAgent || '';
+        if (/\bLine\//i.test(ua) && !/[?&]openExternalBrowser=1/.test(location.search)) {
+          var tried = false;
+          try { tried = sessionStorage.getItem('smareco_line_xb') === '1'; sessionStorage.setItem('smareco_line_xb', '1'); } catch (e) {}
+          if (!tried) { location.replace(location.pathname + '?openExternalBrowser=1'); return; }
+        }
+      } catch (e) {}
       location.replace(url);
     })();
   </script>
