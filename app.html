@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v81.1: 同じ端末で複数のアカウントを使い分けるときの取り違えを防ぐ
+            （前回と違うアカウントで入ったら、マイ店舗と録音の下書きを引き継がない）
      v81.0: 利用者と権限の管理（管理者のみ・最低1名/最大10名）。本部の権限を持つ人には
             店内共有を出さない（検証用アカウントの例外は廃止し、権限の切り替えで確かめる）
      v80.1: PC で左右の余白にカーソルがあるとスクロールできない件を修正（画面を細くせず
@@ -979,6 +981,7 @@
                 <span class="material-icons text-xs mr-1">store</span><span id="shop-text">--</span><span
                   class="material-icons text-[10px] ml-1 opacity-50">edit</span>
               </p>
+              <p id="shop-note" class="hidden text-[10px] text-yellow-200 text-left"></p>
             </button>
             <p class="text-xs text-green-200 mt-0.5 flex items-center"><span id="user-name">--</span><span
                 class="mx-1.5 opacity-50">|</span><span id="account-name"
@@ -2558,9 +2561,29 @@
     // App Logic
     // -----------------------------------------------------
 
+    /**
+     * v81.1: 前回と違うアカウントで入ったら、端末に残していたものを引き継がない。
+     *   マイ店舗（天気の表示先）と録音の下書きは端末に保存されるため、
+     *   同じPC・同じブラウザで本部と店舗を使い分けると取り違えが起きる。
+     */
+    function forgetPreviousAccount_(email) {
+      try {
+        const now  = String(email || '').trim().toLowerCase();
+        const prev = String(localStorage.getItem('last_login_email') || '').trim().toLowerCase();
+        if (prev && now && prev !== now) {
+          localStorage.removeItem('my_shop_name');
+          myShopName = null;
+          try { clearDraft_(); } catch (e) { /* 下書きが無い場合もある */ }
+          console.log('別のアカウントで入ったため、端末に残していた設定と下書きを引き継ぎませんでした');
+        }
+        if (now) localStorage.setItem('last_login_email', now);
+      } catch (e) { /* 端末に保存できない環境でも起動は止めない */ }
+    }
+
     window.initApp = function (user) {
       console.log("App Starting with user:", user);
       userRole = user.role || '';
+      forgetPreviousAccount_(user.email);
       const storedShop = localStorage.getItem('my_shop_name');
       myShopName = storedShop || user.shop;
       document.getElementById('shop-text').innerText = myShopName || "--";
@@ -2635,6 +2658,14 @@
       const verLabel = APP_VERSION + (_gasVersion ? ' / サーバー ' + _gasVersion : ' / サーバー 版数不明');
       const verBadge = document.getElementById('app-version-badge');
       if (verBadge) verBadge.textContent = verLabel;
+      // v81.1: マイ店舗（天気の表示先）は所属と別に選べる。違っているときは
+      //   「どの店舗として動いているのか」を取り違えないよう、その場で示す
+      const shopNote = document.getElementById('shop-note');
+      if (shopNote) {
+        const differs = !!myShopName && !!_currentUserShop && myShopName !== _currentUserShop;
+        shopNote.textContent = differs ? '天気の表示先（所属は ' + _currentUserShop + '）' : '';
+        shopNote.classList.toggle('hidden', !differs);
+      }
       const verInstore = document.getElementById('instore-version');
       if (verInstore) verInstore.textContent = verLabel;
       const verHqm = document.getElementById('hqm-version');
@@ -4744,7 +4775,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v81.0';
+    const APP_VERSION = 'v81.1';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
