@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v81.2: 巡回の送信ボタンと巡回まとめのメニューは本部（SV）にだけ出す。
+            版の自動更新を「1セッション1回」から「更新のたび」に改め、
+            自動で入れ替わらないときは画面で知らせて手動の手段を渡す
      v81.1: 同じ端末で複数のアカウントを使い分けるときの取り違えを防ぐ
             （前回と違うアカウントで入ったら、マイ店舗と録音の下書きを引き継がない）
      v81.0: 利用者と権限の管理（管理者のみ・最低1名/最大10名）。本部の権限を持つ人には
@@ -824,11 +827,11 @@
         class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-blue-600 flex items-center">
         <span class="material-icons text-lg mr-3">menu_book</span>天気情報の見方</button>
 
-      <!-- ③ 巡回まとめ（全員・巡回者用） -->
-      <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-slate-400 bg-slate-50 tracking-wider flex items-center gap-1">
+      <!-- ③ 巡回まとめ。v81.2: 巡回は本部（SV）の仕事なので店舗の方には出さない -->
+      <div id="menu-patrol-section" class="hidden px-4 pt-3 pb-1 text-[10px] font-bold text-slate-400 bg-slate-50 tracking-wider flex items-center gap-1">
         <span class="material-icons text-[13px]">fact_check</span>巡回</div>
-      <button onclick="window.runPatrolAggregation()"
-        class="w-full text-left px-4 py-3 text-sm hover:bg-teal-50 text-teal-700 flex items-center font-bold border-l-4 border-teal-500 bg-teal-50/50">
+      <button id="menu-patrol-agg" onclick="window.runPatrolAggregation()"
+        class="hidden w-full text-left px-4 py-3 text-sm hover:bg-teal-50 text-teal-700 flex items-center font-bold border-l-4 border-teal-500 bg-teal-50/50">
         <span class="material-icons text-lg mr-3">summarize</span>【巡回者用】本日の巡回まとめ作成</button>
 
       <!-- ④ アプリ（全員） -->
@@ -1001,6 +1004,7 @@
     <div class="px-4 -mt-10 z-10 flex-grow flex flex-col space-y-5">
       <!-- v79.1: サーバー側の更新が反映されていないときに出す。画面の一番上に置き、
            症状（写真が出ない等）が出る前に気づけるようにする -->
+      <div id="app-update-notice" class="hidden bg-blue-600 text-white rounded-xl p-3 text-xs shadow-lg"></div>
       <div id="server-version-warn" class="hidden bg-red-600 text-white rounded-xl p-3 text-xs shadow-lg"></div>
       <!-- v78.0: 店舗のアカウントは「本部へ報告」と「店内で共有」を上部タブで切り替える。
            メニューの奥に入れると見つからないため、画面を開いた瞬間に目に入る位置に置く。
@@ -1092,8 +1096,8 @@
               class="text-sm font-bold text-slate-700">気付き・提案</span></button><button onclick="window.submit('返信')"
             class="btn-press p-3 bg-white border border-slate-200 rounded-xl shadow-sm hover:bg-slate-50 text-center h-24 flex flex-col items-center justify-center"><span
               class="material-icons text-purple-500 text-2xl mb-1">reply</span><span
-              class="text-sm font-bold text-slate-700">返信・共有</span></button><button onclick="window.submit('巡回')"
-            class="btn-press p-3 bg-teal-50 border border-teal-200 rounded-xl shadow-sm hover:bg-teal-100 text-center h-24 flex flex-col items-center justify-center"><span
+              class="text-sm font-bold text-slate-700">返信・共有</span></button><button id="btn-submit-patrol" onclick="window.submit('巡回')"
+            class="hidden btn-press p-3 bg-teal-50 border border-teal-200 rounded-xl shadow-sm hover:bg-teal-100 text-center h-24 flex flex-col items-center justify-center"><span
               class="material-icons text-teal-600 text-2xl mb-1">fact_check</span><span
               class="text-sm font-bold text-teal-800">巡回報告</span></button></div>
       </div>
@@ -2600,6 +2604,12 @@
       if (hqMeetBtn) hqMeetBtn.classList.toggle('hidden', !isHqMember);
       const hqDivider = document.getElementById('hq-section-divider');
       if (hqDivider) hqDivider.classList.toggle('hidden', !isHqMember);
+      // v81.2: 巡回の送信と、その日のまとめ作成は本部（SV）が使うもの。
+      //   店舗の方の画面には出さない（押す場面が無いものは並べない）
+      ['btn-submit-patrol', 'menu-patrol-section', 'menu-patrol-agg'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden', !isHqMember);
+      });
       const hqMeetMenu = document.getElementById('menu-hq-meetings');
       if (hqMeetMenu) hqMeetMenu.classList.toggle('hidden', !isHqMember);
       const hqMenuSection = document.getElementById('menu-hq-section');
@@ -4775,7 +4785,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v81.1';
+    const APP_VERSION = 'v81.2';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
@@ -4852,16 +4862,58 @@
         if (!res.ok) return;
         const text = await res.text();
         const m = text.match(/APP_VERSION = '([^']+)'/);
-        if (!m || m[1] === APP_VERSION) return;
-        // 確認を待たずに入れ替える（現場で古い版のまま使い続けるのを防ぐ）。
-        // 取得に失敗し続けても繰り返さないよう、1セッションにつき1回だけ実行する。
+        if (!m) return;
+        const latest = m[1];
+
+        // v81.2: 前回の読み直しで版が実際に上がっていたら、記録を消して次の更新にも追従する。
+        //   1セッション1回のままだと、画面を開いたままの人に2回目以降の更新が届かなかった。
         try {
-          if (sessionStorage.getItem('smareco_auto_reloaded')) return;
-          sessionStorage.setItem('smareco_auto_reloaded', '1');
+          const from = sessionStorage.getItem('smareco_reload_from');
+          if (from && from !== APP_VERSION) {
+            sessionStorage.removeItem('smareco_auto_reloaded');
+            sessionStorage.removeItem('smareco_reload_from');
+          }
         } catch (e) { /* sessionStorage が使えない環境では素通し */ }
+
+        if (latest === APP_VERSION) return;   // すでに最新
+
+        // 確認を待たずに入れ替える（現場で古い版のまま使い続けるのを防ぐ）。
+        // 読み直しても変わらなかった場合に繰り返さないよう、1回だけ自動で行う。
+        let alreadyTried = false;
+        try {
+          alreadyTried = !!sessionStorage.getItem('smareco_auto_reloaded');
+          if (!alreadyTried) {
+            sessionStorage.setItem('smareco_auto_reloaded', '1');
+            sessionStorage.setItem('smareco_reload_from', APP_VERSION);
+          }
+        } catch (e) { /* sessionStorage が使えない環境では素通し */ }
+
+        if (alreadyTried) {
+          // 自動では入れ替わらなかった。黙って古い版を使わせず、画面で知らせて手段を渡す
+          showUpdateNotice_(latest);
+          return;
+        }
         _reloadingForUpdate = true; // 読み直す直前に下書きの復元を尋ねない
         window.reloadLatest();
       } catch (e) { /* 通信できないときは何もしない */ }
+    }
+
+    /** v81.2: 自動で入れ替わらなかったときに、画面の一番上で知らせる */
+    function showUpdateNotice_(latest) {
+      const box = document.getElementById('app-update-notice');
+      if (!box) return;
+      box.innerHTML =
+        '<div class="flex items-start gap-2">' +
+        '<span class="material-icons text-lg flex-shrink-0">system_update</span>' +
+        '<div class="min-w-0 flex-1">' +
+        '<div class="font-bold">新しい版があります（' + window.escapeHtmlV73(latest) + '）</div>' +
+        '<div class="font-normal mt-1 leading-relaxed opacity-95">' +
+        'いまお使いの版は ' + APP_VERSION + ' です。直したところが反映されていない場合は、' +
+        '下のボタンで読み直してください。</div>' +
+        '<button onclick="window.reloadLatest()" class="btn-press mt-2 px-4 py-2 rounded-lg bg-white text-blue-700 text-xs font-bold">' +
+        '最新版に入れ替える</button>' +
+        '</div></div>';
+      box.classList.remove('hidden');
     }
 
     /** 端末に残った古い版を捨てて読み直す */
