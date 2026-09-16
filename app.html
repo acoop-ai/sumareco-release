@@ -978,6 +978,9 @@
     </div>
     <!-- Controls -->
     <div class="px-4 -mt-10 z-10 flex-grow flex flex-col space-y-5">
+      <!-- v79.1: サーバー側の更新が反映されていないときに出す。画面の一番上に置き、
+           症状（写真が出ない等）が出る前に気づけるようにする -->
+      <div id="server-version-warn" class="hidden bg-red-600 text-white rounded-xl p-3 text-xs shadow-lg"></div>
       <!-- v78.0: 店舗のアカウントは「本部へ報告」と「店内で共有」を上部タブで切り替える。
            メニューの奥に入れると見つからないため、画面を開いた瞬間に目に入る位置に置く。
            色は本部＝緑・店内＝ティールで固定し、今どちらに送る記録かを常に示す -->
@@ -2519,12 +2522,17 @@
       // v76.2: 表示中のバージョンを画面に出す＋端末の戻る操作の起点を1つ積む
       const verEl = document.getElementById('app-version');
       if (verEl) verEl.textContent = APP_VERSION;
+      // v79.1: サーバーの版数も併記する（「アプリ v79.1 / サーバー v79.1」）。
+      //   どちらが古いのかが一目で分かり、貼り替え漏れを症状より先に見つけられる
+      _gasVersion = String(user.gasVersion || '');
+      const verLabel = APP_VERSION + (_gasVersion ? ' / サーバー ' + _gasVersion : ' / サーバー 版数不明');
       const verBadge = document.getElementById('app-version-badge');
-      if (verBadge) verBadge.textContent = APP_VERSION;
+      if (verBadge) verBadge.textContent = verLabel;
       const verInstore = document.getElementById('instore-version');
-      if (verInstore) verInstore.textContent = APP_VERSION;
+      if (verInstore) verInstore.textContent = verLabel;
       const verHqm = document.getElementById('hqm-version');
-      if (verHqm) verHqm.textContent = APP_VERSION;
+      if (verHqm) verHqm.textContent = verLabel;
+      checkServerVersion_();
       pushOverlayHistory_();
       // v76.3: 端末に古い版が残っていないか確認する（残っていれば入れ替えを促す）
       // v78.0: 版の確認が済んでから、残っている下書きの復元を尋ねる
@@ -4636,6 +4644,42 @@
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
     const APP_VERSION = 'v79.1';
+
+    // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
+    //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
+    //   GAS は人が貼り替えて手動でデプロイする層で、version を画面で確かめられないと
+    //   「貼ったつもりで貼れていない」に症状が出るまで気づけないため。
+    const REQUIRED_GAS_VERSION = 'v79.1';
+    let _gasVersion = '';
+
+    /** 'v79.1' → 79001 のように比べられる数にする（文字列比較だと v79.10 < v79.9 になる） */
+    function versionNumber_(v) {
+      const p = String(v || '').replace(/^v/i, '').split('.');
+      return (Number(p[0]) || 0) * 1000 + (Number(p[1]) || 0);
+    }
+
+    /** サーバーの版数が足りているか確かめ、足りなければ画面の一番上で知らせる */
+    function checkServerVersion_() {
+      const box = document.getElementById('server-version-warn');
+      if (!box) return;
+      if (versionNumber_(_gasVersion) >= versionNumber_(REQUIRED_GAS_VERSION)) {
+        box.classList.add('hidden');
+        return;
+      }
+      const shown = _gasVersion || '版数不明（v79.0 以前）';
+      box.innerHTML =
+        '<div class="flex items-start gap-2">' +
+        '<span class="material-icons text-lg flex-shrink-0">warning</span>' +
+        '<div class="min-w-0">' +
+        '<div class="font-bold">サーバー側の更新が反映されていません</div>' +
+        '<div class="font-normal mt-1 leading-relaxed opacity-95">' +
+        '写真の表示など、一部の機能が正しく動きません。<br>' +
+        'アプリ ' + APP_VERSION + ' に対して、サーバーは <b>' + window.escapeHtmlV73(shown) + '</b> です' +
+        '（' + REQUIRED_GAS_VERSION + ' 以降が必要）。<br>' +
+        '管理者に、サーバー側の貼り替えとデプロイをご依頼ください。</div>' +
+        '</div></div>';
+      box.classList.remove('hidden');
+    }
 
     /** 端末の「戻る」用に履歴を1つ積む（画面を開くときに呼ぶ） */
     function pushOverlayHistory_() {
