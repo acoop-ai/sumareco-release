@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v83.1: PC も同じタブのまま Google へ移って戻るログインにした（PC でも2度の認証・通ったのにログイン画面のまま固まる件）。
+            認証が通った直後から「ログインしています…」を出し、押し直して二重に開くのを防ぐ
      v83.0: スマホのログインを「同じタブのまま Google へ移って戻る」方式にした（PC は窓の方式のまま）。
             窓の方式だとスマホでは別のタブで開き、2段階認証の数字を選んで戻ると結果が届かず、
             押し直すたびに数字を求められていた。移る前に送信していない録音・写真を端末に残す
@@ -1927,6 +1929,8 @@
       OAUTH_REDIRECT_URI: 'https://acoop-ai.github.io/sumareco-release/',
       // v83.0: false にすると、スマホも従来の窓の方式に戻る（切り戻し用）
       MOBILE_REDIRECT_LOGIN: true,
+      // v83.1: false にすると、PC だけ従来の窓の方式に戻る（切り戻し用）
+      PC_REDIRECT_LOGIN: true,
     };
 
     // v2.x: ID トークン経路を廃止し OAuth2 アクセストークンに一本化
@@ -2105,8 +2109,8 @@
         55 * 60 * 1000
       );
       tokenRefreshTimer = setTimeout(async () => {
-        // v83.0: スマホ（リダイレクト）は窓が開けず空振りするだけなので試さない
-        if (useRedirectLogin_()) return;
+        // v83.0: スマホ（リダイレクト）は窓が開けず空振りするだけなので試さない（v83.1: PC は試す）
+        if (silentPopupUseless_()) return;
         try {
           await requestAccessTokenOnce_({ silent: true });
           console.log('🔄 アクセストークンを自動更新しました');
@@ -2133,17 +2137,17 @@
       const noToken    = !currentAccessToken;
       const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 60 * 1000;
       if (noToken || nearExpiry) {
-        if (useRedirectLogin_()) {
-          // v83.0: スマホは無音の更新ができない。期限を過ぎたトークンは送らず、下のログイン画面へ回す
-          //   （送ると GAS が「認証失敗」を返し、エラーの後でやっとログイン画面に戻る形になっていた）
-          if (accessTokenExpiry && Date.now() > accessTokenExpiry) {
-            currentAccessToken = null;
-            accessTokenExpiry = 0;
-            clearStoredToken_();
-          }
-        } else {
+        // v83.1: スマホは無音の更新（窓）ができないので試さない。PC は窓を許可している人なら更新できるので試す
+        if (!silentPopupUseless_()) {
           try { await requestAccessTokenOnce_({ silent: true }); }
           catch (e) { console.warn('silent token refresh failed:', e); }
+        }
+        // v83.0: 更新できずに期限を過ぎたトークンは送らず、下のログイン画面へ回す
+        //   （送ると GAS が「認証失敗」を返し、エラーの後でやっとログイン画面に戻る形になっていた）
+        if (accessTokenExpiry && Date.now() > accessTokenExpiry) {
+          currentAccessToken = null;
+          accessTokenExpiry = 0;
+          clearStoredToken_();
         }
       }
       // それでもトークンが無ければログイン画面へ戻して再ログインを促す
@@ -2153,6 +2157,8 @@
           const login = document.getElementById('screen-login');
           if (home)  home.classList.add('hidden');
           if (login) login.classList.remove('hidden');
+          // v83.1: 使っている途中で切れた印。PC はここから窓で入り直す（同じタブで移ると読み直しになり、入力中の文字が消える）
+          window._reloginInApp_ = true;
           const errEl = document.getElementById('login-error');
           if (errEl) {
             errEl.textContent = 'セッションの有効期限が切れました。再度ログインしてください。';
@@ -2684,6 +2690,8 @@
     }
 
     window.initApp = function (user) {
+      window._reloginInApp_ = false;  // v83.1: 入れたので「途中で切れた」印を下ろす
+      try { watchOtherInstances_(); } catch (_) {}  // v83.1: 別のタブでも開いていないか見張る
       console.log("App Starting with user:", user);
       userRole = user.role || '';
       forgetPreviousAccount_(user.email);
@@ -2989,6 +2997,8 @@
         redirect_state: 'ログインを完了できませんでした（時間が経ちすぎたか、別の画面で戻りました）。もう一度「Googleでログイン」を押してください。',
         redirect_denied: 'ログインが取り消されました。もう一度「Googleでログイン」を押してください。',
         redirect_failed: 'ログインを完了できませんでした。もう一度「Googleでログイン」を押してください。',
+        redirect_going: 'Google のログイン画面へ移動しています…',
+        redirect_slow: 'Google のログイン画面へ移動できませんでした。通信や社内のネットワークの設定を確かめて、もう一度押してください。',
         unknown: 'ログインを続けられませんでした。もう一度押してください。'
       }[kind] || '';
       el.textContent = msg;
@@ -3007,16 +3017,26 @@
     const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
 
     /**
-     * スマホ（アプリの中の画面を除く）ならリダイレクトで入る。アプリの中の画面は Google が許さないので v82.1 の案内に任せる。
-     * iPhone のホーム画面アプリ（standalone）は窓の方式のまま: 別ドメインへ移ると Safari 側で開いて戻ることがあり、
-     * 保存場所が分かれて合言葉が見つからない恐れがある。実機で確かめてから切り替える（PLAN.md v83.0 の受入）
+     * リダイレクト（同じタブで Google へ移って戻る）で入るか。
+     * - アプリの中の画面: 使わない（Google が許さないので v82.1 の案内に任せる）
+     * - ホーム画面（Dock）に追加したアプリ（standalone。iPhone・iPad・Mac）: 使わない。別ドメインへ移ると Safari 側で開いて戻ることがあり、
+     *   保存場所が分かれて合言葉が見つからない恐れがある。実機で確かめてから切り替える
+     *   （iPad の Safari は Mac を名乗るので、iPhone だけを見ると漏れる）
+     * - スマホ（v83.0）・PC（v83.1）: 使う。窓の方式では、認証が通ってもスマレコ側が見失い、
+     *   ログイン画面のまま固まって見えて押し直す（2度の認証・二重に開きかける）ことが PC でも多発していた（PO 報告）
      */
     function useRedirectLogin_() {
-      if (!CONFIG.MOBILE_REDIRECT_LOGIN) return false;
       const d = detectInAppBrowser_();
       if (d.inApp) return false;
-      if (d.isIOS && d.standalone) return false;
-      return d.isAndroid || d.isIOS;
+      if (d.standalone) return false;
+      if (d.isAndroid || d.isIOS) return !!CONFIG.MOBILE_REDIRECT_LOGIN;
+      return !!CONFIG.PC_REDIRECT_LOGIN;
+    }
+
+    /** v83.1: 無音の更新（窓）を試しても無駄か。スマホは窓が開けないので無駄。PC は窓を許可している人なら更新できるので試す */
+    function silentPopupUseless_() {
+      const d = detectInAppBrowser_();
+      return (d.isAndroid || d.isIOS) && useRedirectLogin_();
     }
 
     function randomState_() {
@@ -3040,10 +3060,56 @@
       return 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
     }
 
+    /**
+     * v83.1: 別のタブ（別の画面）でもスマレコにログインしていたら、両方の画面の上に知らせる。
+     *   「ログインが固まった」と思って開き直し、二重に開いたまま使う事故が多発していた（PO 報告）。
+     *   止めはしない（どちらを閉じるかは人が決める）。BroadcastChannel が無い古い端末では何もしない。
+     */
+    const INSTANCE_ID_ = Math.random().toString(36).slice(2);
+    let _instanceChannel_ = null;
+    function watchOtherInstances_() {
+      if (_instanceChannel_ || typeof BroadcastChannel === 'undefined') return;
+      _instanceChannel_ = new BroadcastChannel('smareco-instance');
+      _instanceChannel_.onmessage = (ev) => {
+        const m = ev && ev.data;
+        if (!m || m.id === INSTANCE_ID_) return;
+        if (m.type === 'hello') _instanceChannel_.postMessage({ type: 'here', id: INSTANCE_ID_ });
+        if (m.type === 'hello' || m.type === 'here') showOtherInstanceNotice_();
+      };
+      _instanceChannel_.postMessage({ type: 'hello', id: INSTANCE_ID_ });
+    }
+    function showOtherInstanceNotice_() {
+      if (document.getElementById('other-instance-notice')) return;
+      const box = document.createElement('div');
+      box.id = 'other-instance-notice';
+      box.className = 'fixed top-2 left-2 right-2 z-[10000] bg-amber-100 border-2 border-amber-400 text-amber-900 text-xs rounded-xl p-3 shadow-lg flex items-start gap-2';
+      box.innerHTML = '<span class="material-icons text-lg flex-shrink-0">tab</span>' +
+        '<div class="flex-1"><div class="font-bold">スマレコが別のタブ（または別の画面）でも開いています</div>' +
+        '<div class="mt-1 leading-relaxed">二重に送らないよう、使わない方を閉じてください。</div></div>' +
+        '<button type="button" class="btn-press px-2 py-1 rounded bg-white border border-amber-300 font-bold">閉じる</button>';
+      box.querySelector('button').addEventListener('click', () => box.remove());
+      document.body.appendChild(box);
+    }
+
+    /** v83.1: 認証が通った後、プロフィールを受け取るまで「ログインしています…」を出す（固まって見えて押し直すのを防ぐ） */
+    function showLoginProgress_(on) {
+      const overlay = document.getElementById('loading-overlay');
+      const msg = document.getElementById('loading-msg');
+      if (!overlay) return;
+      if (on) {
+        if (msg) msg.innerText = 'ログインしています…';
+        overlay.style.opacity = '1';   // 前の処理が薄くしたまま残っていても見えるように
+        overlay.style.display = 'flex';
+      } else {
+        overlay.style.display = 'none';
+      }
+    }
+
     window.startRedirectLogin_ = async function () {
       const loginBtn = document.getElementById('google-login-btn');
       if (loginBtn) loginBtn.disabled = true;
-      showLoginHelp_('');
+      // v83.1: 移るまでの間に押し直さないよう、何が起きているかを出す
+      showLoginHelp_('redirect_going');
       // 移る前に、送信していない録音・写真を端末に残す（戻ったあと復元を尋ねる）。
       //   書き込みの途中で移ると保存が取り消されるため、最後まで待つ（大きな録音でも止まらないよう上限8秒）
       try { await Promise.race([saveDraft_('login'), new Promise((r) => setTimeout(r, 8000))]); } catch (_) {}
@@ -3061,6 +3127,11 @@
         return;
       }
       location.assign(buildRedirectLoginUrl_(state));
+      // v83.1: 社内のネットワークの設定などで移動できなかったら、15秒でボタンを戻して知らせる（移動できればこのページは閉じる）
+      window._redirectGoingTimer_ = setTimeout(() => {
+        if (loginBtn) loginBtn.disabled = false;
+        showLoginHelp_('redirect_slow');
+      }, 15000);
     };
 
     /** 端末に置いた合言葉の一覧（読めなければ空） */
@@ -3106,7 +3177,6 @@
     window.loginWithOAuth2_ = async function ({ silent = false } = {}) {
       const errEl = document.getElementById('login-error');
       const loginBtn = document.getElementById('google-login-btn');
-      const overlay = document.getElementById('loading-overlay');
       let slowTimer = null;  // v82.1
       // v82.1: ログインの流れは同時に1つだけ。画面から押したログインが進んでいる間、裏の無音ログインは何もしない
       if (silent && loginFlowActive_) return false;
@@ -3132,6 +3202,8 @@
           });
         }
         if (slowTimer) { clearTimeout(slowTimer); slowTimer = null; showLoginHelp_(''); }
+        // v83.1: ここから先（メール確認・プロフィール取得）は数秒〜数十秒かかる。ログイン画面のまま固まって見えないよう知らせる
+        if (!silent || hasValidToken) showLoginProgress_(true);
 
         // 2. userinfo でメール・氏名を取得
         const userinfo = await fetchUserInfo_();
@@ -3148,11 +3220,12 @@
           accessTokenExpiry = 0;
           clearStoredToken_();
           if (tokenRefreshTimer) { clearTimeout(tokenRefreshTimer); tokenRefreshTimer = null; }
+          showLoginProgress_(false);
           return false;
         }
 
         // 4. GASからプロフィール取得
-        if (overlay) overlay.style.display = 'flex';
+        showLoginProgress_(true);
         // v82.1: 電波が弱いと返事が来ないまま回り続けるため、60秒で打ち切って知らせる
         const user = await Promise.race([
           callGAS('getProfile'),
@@ -3162,7 +3235,7 @@
             rej(te);
           }, 60000))
         ]);
-        if (overlay) overlay.style.display = 'none';
+        showLoginProgress_(false);
         if (!user) throw new Error('プロフィール取得失敗');
         if (user.error && !user.registered === false) throw new Error(user.error);
 
@@ -3178,7 +3251,7 @@
       } catch (e) {
         // v82.1: 新しいログインに引き継いだ古い流れは、画面も保存トークンも触らずに抜ける
         if (e && e.gisType === 'superseded') return false;
-        if (overlay) overlay.style.display = 'none';
+        showLoginProgress_(false);
         // v82.1: サーバーの応答待ちの時間切れは通信の問題で、トークンは有効。消すと再ログインの窓が要るので残す
         if (!(e && e.gisType === 'profile_timeout')) {
           currentAccessToken = null;
@@ -4907,7 +4980,9 @@
       if (loginBtn) {
         loginBtn.addEventListener('click', () => {
           // v83.0: スマホは同じタブのまま Google へ移って戻る。PC は窓の方式
-          if (useRedirectLogin_()) window.startRedirectLogin_();
+          // v83.1: PC で使っている途中に切れたときは、画面を残したまま窓で入り直す（スマホは下書きを残して同じタブで移る）
+          const pcRelogin = window._reloginInApp_ && !detectInAppBrowser_().isAndroid && !detectInAppBrowser_().isIOS;
+          if (useRedirectLogin_() && !pcRelogin) window.startRedirectLogin_();
           else window.loginWithOAuth2_({ silent: false });
         });
       }
@@ -4932,7 +5007,7 @@
         return;
       }
       // v83.0: スマホは窓の方式の無音ログインを試さない（窓が開けず空振りするだけのため）
-      const silentPopupUsable = !useRedirectLogin_();
+      const silentPopupUsable = !silentPopupUseless_();
       // まず端末保存トークンでの即復帰を試す（GIS 不要・ポップアップなし）
       if (restoreAccessToken_()) {
         window.loginWithOAuth2_({ silent: true })
@@ -4943,6 +5018,15 @@
       }
     });
 
+    // v83.1: Google の画面から「戻る」で帰ってきたとき（ページが保存された状態のまま戻る）、ボタンを押せないままにしない
+    window.addEventListener('pageshow', function (ev) {
+      if (!ev.persisted) return;
+      if (window._redirectGoingTimer_) { clearTimeout(window._redirectGoingTimer_); window._redirectGoingTimer_ = null; }
+      const b = document.getElementById('google-login-btn');
+      if (b && !loginFlowActive_) b.disabled = false;
+      try { showLoginHelp_(''); } catch (_) {}
+    });
+
     // v75.0(④): アプリ復帰時（PWA切替・画面ON等）にトークン期限を先回りチェックして無音更新
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState !== 'visible') return;
@@ -4950,7 +5034,7 @@
       const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 5 * 60 * 1000;
       if (nearExpiry) {
         // v83.0: スマホ（リダイレクト）は試さない（callGAS が期限切れをログイン画面へ回す）
-        if (!useRedirectLogin_()) requestAccessTokenOnce_({ silent: true }).catch(() => {/* 失敗時は callGAS 側の再取得に任せる */});
+        if (!silentPopupUseless_()) requestAccessTokenOnce_({ silent: true }).catch(() => {/* 失敗時は callGAS 側の再取得に任せる */});
       }
     });
 
@@ -5173,7 +5257,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v83.0';
+    const APP_VERSION = 'v83.1';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
