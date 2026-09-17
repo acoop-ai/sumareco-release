@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v83.2: ログインが切れたときのお知らせを「ログインの期限が切れました。もう一度ログインしてください。」に揃えた。
+            「エラーが発生しました」「送信エラー」と重ねて2回出していたのを1回にする。GAS の「認証失敗」も同じ扱い
      v83.1: PC も同じタブのまま Google へ移って戻るログインにした（PC でも2度の認証・通ったのにログイン画面のまま固まる件）。
             認証が通った直後から「ログインしています…」を出し、押し直して二重に開くのを防ぐ
      v83.0: スマホのログインを「同じタブのまま Google へ移って戻る」方式にした（PC は窓の方式のまま）。
@@ -2130,6 +2132,49 @@
       return await res.json();
     }
 
+    // v83.2: ログインが切れたときのお知らせ（画面の赤字・ポップアップで同じ言い方にする）
+    const SESSION_EXPIRED_MSG_ = 'ログインの期限が切れました。もう一度ログインしてください。';
+
+    /**
+     * v83.2: ログイン画面へ戻してお知らせを出し、呼び出し側が見分けられる印（sessionExpired）付きのエラーを返す。
+     * detail は ErrorLog 用（時計で切れて送らなかったのか、GAS に断られたのかを見分ける）
+     */
+    function sessionExpiredError_(detail) {
+      try {
+        const home  = document.getElementById('screen-home');
+        const login = document.getElementById('screen-login');
+        // 登録画面はログイン画面と同じ重なり順で後ろにあるため、隠さないとログインのボタンが見えない
+        const reg   = document.getElementById('screen-register');
+        if (home)  home.classList.add('hidden');
+        if (reg)   reg.classList.add('hidden');
+        if (login) login.classList.remove('hidden');
+        // v83.1: 使っている途中で切れた印。PC はここから窓で入り直す（同じタブで移ると読み直しになり、入力中の文字が消える）
+        window._reloginInApp_ = true;
+        const errEl = document.getElementById('login-error');
+        if (errEl) {
+          errEl.textContent = SESSION_EXPIRED_MSG_;
+          errEl.classList.remove('hidden');
+        }
+      } catch (_) {}
+      const err = new Error(SESSION_EXPIRED_MSG_);
+      err.sessionExpired = true;
+      err.detail = detail || '';
+      return err;
+    }
+
+    /**
+     * v83.2: ログインが切れたエラーなら、お知らせを1回だけ出して true を返す。
+     * doWithLoading と呼び出し側の両方が知らせて2回出る（しかも「エラーが発生しました」と付く）のを防ぐ
+     */
+    function noticeSessionExpired_(e) {
+      if (!(e && e.sessionExpired)) return false;
+      if (!e.noticeShown) {
+        e.noticeShown = true;
+        alert(SESSION_EXPIRED_MSG_);
+      }
+      return true;
+    }
+
     // ===== GAS通信 (fetch版) =====
     async function callGAS(action, data = {}) {
       // currentAccessToken が無い、または期限切れ間近ならまず silent 再取得を試みる
@@ -2152,22 +2197,10 @@
       }
       // それでもトークンが無ければログイン画面へ戻して再ログインを促す
       if (!currentAccessToken) {
-        try {
-          const home  = document.getElementById('screen-home');
-          const login = document.getElementById('screen-login');
-          if (home)  home.classList.add('hidden');
-          if (login) login.classList.remove('hidden');
-          // v83.1: 使っている途中で切れた印。PC はここから窓で入り直す（同じタブで移ると読み直しになり、入力中の文字が消える）
-          window._reloginInApp_ = true;
-          const errEl = document.getElementById('login-error');
-          if (errEl) {
-            errEl.textContent = 'セッションの有効期限が切れました。再度ログインしてください。';
-            errEl.classList.remove('hidden');
-          }
-        } catch (_) {}
-        throw new Error('セッション切れです。ログイン画面で再度ログインしてください。');
+        throw sessionExpiredError_('トークンなし・期限切れ（送信せず）');
       }
-      const payload = { action, accessToken: currentAccessToken, ...data };
+      const sentToken = currentAccessToken;
+      const payload = { action, accessToken: sentToken, ...data };
       const res = await fetch(CONFIG.GAS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
@@ -2178,10 +2211,14 @@
       const json = await res.json();
       if (json && json.error) {
         // v75.0(④): サーバー側で認証が通らないトークンは端末保存からも破棄（無限再試行を防止）
-        if (String(json.error).indexOf('認証失敗') >= 0) {
+        // v83.2: 送った後に入り直していたら（古いトークンの返事）、新しいトークンは消さない
+        if (String(json.error).indexOf('認証失敗') >= 0 && currentAccessToken === sentToken) {
           currentAccessToken = null;
           accessTokenExpiry = 0;
           clearStoredToken_();
+          // v83.2: 使っている途中で断られたトークン（取り消し・期限切れ）。入り直すしかないので、同じくログイン画面へ。
+          //   ログインの途中（プロフィール取得など）の失敗は期限切れではないので、今までどおり中身を出す
+          if (!loginFlowActive_) throw sessionExpiredError_(String(json.error));
         }
         throw new Error(json.error);
       }
@@ -2200,7 +2237,7 @@
           accessToken: currentAccessToken || '',
           payload: {
             stage    : stage,
-            message  : String(err && err.message || err).slice(0, 500),
+            message  : (String(err && err.message || err) + (err && err.detail ? ' / ' + err.detail : '')).slice(0, 500),
             attempts : attempts != null ? String(attempts) : '',
             audioSec : audioSec != null ? String(audioSec) : '',
             payloadKb: payloadKb != null ? String(payloadKb) : '',
@@ -2228,7 +2265,7 @@
         } catch (e) {
           lastErr = e;
           const msg = String(e && e.message || e);
-          if (msg.indexOf('セッション切れ') >= 0 || msg.indexOf('認証失敗') >= 0) break;
+          if ((e && e.sessionExpired) || msg.indexOf('認証失敗') >= 0) break;  // 認証失敗: ログインの途中・入り直した後の古い返事
           if (attempt < MAX_TRY) {
             const msgEl = document.getElementById('loading-msg');
             if (msgEl) msgEl.innerText = `通信エラー → 自動再送中 (${attempt}/${MAX_TRY - 1})...`;
@@ -2469,7 +2506,7 @@
             renderReportDetailV73_();
           }
         } else {
-          alert('保存エラー: ' + msg);
+          if (!noticeSessionExpired_(e)) alert('保存エラー: ' + msg);
         }
       }
     };
@@ -2624,7 +2661,7 @@
             renderAggregatedDetailV73_();
           }
         } else {
-          alert('保存エラー: ' + msg);
+          if (!noticeSessionExpired_(e)) alert('保存エラー: ' + msg);
         }
       }
     };
@@ -2645,7 +2682,7 @@
       }
 
       catch (e) {
-        alert("エラーが発生しました:\n" + e);
+        if (!noticeSessionExpired_(e)) alert("エラーが発生しました:\n" + e);
         throw e; // エラーを再スローして呼び出し元で検知できるようにする
       }
 
@@ -3908,7 +3945,7 @@
               }
               resolve();
             } catch (e) {
-              reject("送信エラー: " + e);
+              reject((e && e.sessionExpired) ? e : "送信エラー: " + e);
             }
           };
         } catch (e) {
@@ -4758,7 +4795,7 @@
         document.getElementById('hq-msg').value   = '';
         document.getElementById('hq-endat').value = '';
       } catch (e) {
-        alert('送信エラー: ' + e.message);
+        if (!noticeSessionExpired_(e)) alert('送信エラー: ' + e.message);
       }
     };
 
@@ -4794,7 +4831,7 @@
         document.getElementById('hqs-msg').value   = '';
         document.getElementById('hqs-endat').value = '';
       } catch (e) {
-        alert('登録エラー: ' + e.message);
+        if (!noticeSessionExpired_(e)) alert('登録エラー: ' + e.message);
       }
     };
 
@@ -4946,7 +4983,7 @@
         document.getElementById('hq-edit-modal').classList.add('hidden');
         window.loadHQAlertList();
       } catch (e) {
-        alert('保存エラー: ' + e.message);
+        if (!noticeSessionExpired_(e)) alert('保存エラー: ' + e.message);
       }
     };
 
@@ -4958,7 +4995,7 @@
         alert('停止しました。');
         window.loadHQAlertList();
       } catch (e) {
-        alert('停止エラー: ' + e.message);
+        if (!noticeSessionExpired_(e)) alert('停止エラー: ' + e.message);
       }
     };
 
@@ -5257,7 +5294,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v83.1';
+    const APP_VERSION = 'v83.2';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
@@ -6116,7 +6153,7 @@
             renderStoreMeeting_();
           }
         } else {
-          alert('保存エラー: ' + msg);
+          if (!noticeSessionExpired_(e)) alert('保存エラー: ' + msg);
         }
       }
     };
@@ -6133,7 +6170,7 @@
         window.loadStoreBoard(true);
         alert(res && res.already ? 'この資料はすでに提出済みです。' : '本部へ提出しました。');
       } catch (e) {
-        alert('提出エラー: ' + (e.message || e));
+        if (!noticeSessionExpired_(e)) alert('提出エラー: ' + (e.message || e));
       }
     };
 
