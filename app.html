@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v83.0: スマホのログインを「同じタブのまま Google へ移って戻る」方式にした（PC は窓の方式のまま）。
+            窓の方式だとスマホでは別のタブで開き、2段階認証の数字を選んで戻ると結果が届かず、
+            押し直すたびに数字を求められていた。移る前に送信していない録音・写真を端末に残す
      v82.1: スマホの「アプリの中の画面」（LINE の QR リーダーなど）で開くとログインが止まる件。
             見分けて Chrome / Safari で開き直す案内を出す。ログインの窓が開けない・閉じられたら
             待ち続けずに知らせる（20秒でボタンを戻す）。ログイン後のプロフィール取得は60秒で打ち切る
@@ -74,6 +77,18 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Smart Record</title>
+  <!-- v83.0: Google から戻ったアドレスの # 以降（トークン）を、外部のスクリプトが読み込まれる前に取り出してアドレスから消す -->
+  <script>
+    (function () {
+      try {
+        var h = location.hash || '';
+        if (/(^#|&)(access_token|error)=/.test(h)) {
+          window.__oauthRedirectHash = h;
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+      } catch (e) {}
+    })();
+  </script>
 
   <!-- Libraries -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -1907,6 +1922,11 @@
       GAS_URL: 'https://script.google.com/macros/s/AKfycbxp-7ikuSC5_-uSalwdRshj6KxHKo30QieRW8j4cU__Dg0cmSIs9NZuCDRqUB2zJEo/exec',
       GOOGLE_CLIENT_ID: '1072945615483-74jadmaet56chvhkfh2cpt4ae9dvh140.apps.googleusercontent.com',
       ALLOWED_DOMAINS: ['jaz-acoop.co.jp', 'jaz-acoop1.jp', 'jaz-acoop2.jp', 'jaz-acoop3.jp'],
+      // v83.0: スマホのログインの戻り先。Google Cloud の OAuth クライアントの「承認済みのリダイレクト URI」に
+      //   この値と完全に同じもの（末尾の / まで）を登録してあること。登録が無いと Google が redirect_uri_mismatch で止める
+      OAUTH_REDIRECT_URI: 'https://acoop-ai.github.io/sumareco-release/',
+      // v83.0: false にすると、スマホも従来の窓の方式に戻る（切り戻し用）
+      MOBILE_REDIRECT_LOGIN: true,
     };
 
     // v2.x: ID トークン経路を廃止し OAuth2 アクセストークンに一本化
@@ -2023,11 +2043,7 @@
           if (!resp) return reject(new Error('empty oauth2 response'));
           if (resp.error) return reject(new Error(resp.error_description || resp.error));
           if (!resp.access_token) return reject(new Error('no access_token in response'));
-          currentAccessToken = resp.access_token;
-          const expiresIn = Number(resp.expires_in) || 3600;
-          accessTokenExpiry = Date.now() + (expiresIn - 30) * 1000;
-          persistAccessToken_(); // v75.0(④): 端末保存（再起動時の再ログイン削減）
-          scheduleAccessTokenRefresh_(expiresIn);
+          applyAccessToken_(resp.access_token, resp.expires_in);
           resolve(resp);
         };
         job.onError = (err) => {
@@ -2073,6 +2089,15 @@
       return job.promise;
     }
 
+    /** v83.0: 受け取ったトークンを反映する（窓の方式とリダイレクトの方式で共通） */
+    function applyAccessToken_(token, expiresInSec) {
+      currentAccessToken = token;
+      const expiresIn = Number(expiresInSec) || 3600;
+      accessTokenExpiry = Date.now() + (expiresIn - 30) * 1000;
+      persistAccessToken_(); // v75.0(④): 端末保存（再起動時の再ログイン削減）
+      scheduleAccessTokenRefresh_(expiresIn);
+    }
+
     function scheduleAccessTokenRefresh_(expiresInSec) {
       if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
       const refreshAfter = Math.min(
@@ -2080,6 +2105,8 @@
         55 * 60 * 1000
       );
       tokenRefreshTimer = setTimeout(async () => {
+        // v83.0: スマホ（リダイレクト）は窓が開けず空振りするだけなので試さない
+        if (useRedirectLogin_()) return;
         try {
           await requestAccessTokenOnce_({ silent: true });
           console.log('🔄 アクセストークンを自動更新しました');
@@ -2106,8 +2133,18 @@
       const noToken    = !currentAccessToken;
       const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 60 * 1000;
       if (noToken || nearExpiry) {
-        try { await requestAccessTokenOnce_({ silent: true }); }
-        catch (e) { console.warn('silent token refresh failed:', e); }
+        if (useRedirectLogin_()) {
+          // v83.0: スマホは無音の更新ができない。期限を過ぎたトークンは送らず、下のログイン画面へ回す
+          //   （送ると GAS が「認証失敗」を返し、エラーの後でやっとログイン画面に戻る形になっていた）
+          if (accessTokenExpiry && Date.now() > accessTokenExpiry) {
+            currentAccessToken = null;
+            accessTokenExpiry = 0;
+            clearStoredToken_();
+          }
+        } else {
+          try { await requestAccessTokenOnce_({ silent: true }); }
+          catch (e) { console.warn('silent token refresh failed:', e); }
+        }
       }
       // それでもトークンが無ければログイン画面へ戻して再ログインを促す
       if (!currentAccessToken) {
@@ -2876,7 +2913,7 @@
       else if (/YJApp/i.test(ua)) app = 'Yahoo! JAPAN';
       else if (isAndroid && /; wv\)/.test(ua)) app = 'アプリ';
       else if (isIOS && !standalone && !/Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua)) app = 'アプリ';
-      return { inApp: !!app, app: app, isAndroid: isAndroid, isIOS: isIOS };
+      return { inApp: !!app, app: app, isAndroid: isAndroid, isIOS: isIOS, standalone: standalone };
     }
 
     /** 入口（ローダー）のアドレス。app.html?v=… ではなく、いつも最新を読む入口を渡す（クエリの値は使わない） */
@@ -2949,11 +2986,116 @@
         slow: 'ログインの窓が出ないときは、もう一度押してください。' +
           (d.inApp ? '直らないときは、上の案内に沿ってブラウザで開き直してください。' : ''),
         profile_timeout: 'サーバーの応答がありません。電波の良い場所で、もう一度ログインしてください。',
+        redirect_state: 'ログインを完了できませんでした（時間が経ちすぎたか、別の画面で戻りました）。もう一度「Googleでログイン」を押してください。',
+        redirect_denied: 'ログインが取り消されました。もう一度「Googleでログイン」を押してください。',
+        redirect_failed: 'ログインを完了できませんでした。もう一度「Googleでログイン」を押してください。',
         unknown: 'ログインを続けられませんでした。もう一度押してください。'
       }[kind] || '';
       el.textContent = msg;
       el.classList.toggle('hidden', !msg);
     }
+
+    // ============================================================
+    // v83.0: スマホは「同じタブのまま Google へ移って戻る」ログイン（リダイレクト）
+    //   窓（ポップアップ）の方式は、スマホでは新しいタブで開く。2段階認証の数字を選びに別のアプリへ行って戻ると
+    //   元のスマレコのタブが前に出て、ログインの結果が届かない。押し直すたびに数字を求められていた（PO 報告 2026-09-17）。
+    //   同じタブのまま移って戻れば、タブの入れ替わりが起きない。PC は窓の方式のまま（問題が出ていないため）。
+    //   信頼境界: 戻りのアドレスの # 以降は誰でも作れる値。端末に置いた合言葉（state）と一致したときだけ使う。
+    //   トークンが本物で会社のアカウントかは、従来どおり userinfo と GAS 側で確かめる。
+    // ============================================================
+    const OAUTH_STATE_KEY = 'smareco_oauth_state_v83';
+    const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
+
+    /**
+     * スマホ（アプリの中の画面を除く）ならリダイレクトで入る。アプリの中の画面は Google が許さないので v82.1 の案内に任せる。
+     * iPhone のホーム画面アプリ（standalone）は窓の方式のまま: 別ドメインへ移ると Safari 側で開いて戻ることがあり、
+     * 保存場所が分かれて合言葉が見つからない恐れがある。実機で確かめてから切り替える（PLAN.md v83.0 の受入）
+     */
+    function useRedirectLogin_() {
+      if (!CONFIG.MOBILE_REDIRECT_LOGIN) return false;
+      const d = detectInAppBrowser_();
+      if (d.inApp) return false;
+      if (d.isIOS && d.standalone) return false;
+      return d.isAndroid || d.isIOS;
+    }
+
+    function randomState_() {
+      const a = new Uint8Array(16);
+      crypto.getRandomValues(a);
+      return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    /** Google のログイン画面のアドレス（戻り先は固定の定数） */
+    function buildRedirectLoginUrl_(state) {
+      const params = new URLSearchParams({
+        client_id: CONFIG.GOOGLE_CLIENT_ID,
+        redirect_uri: CONFIG.OAUTH_REDIRECT_URI,
+        response_type: 'token',
+        scope: 'openid email profile',
+        include_granted_scopes: 'true',
+        // 会社以外のアカウントが自動で選ばれ続けないよう、毎回アカウントを選ばせる（選ぶだけなら2段階認証は増えない）
+        prompt: 'select_account',
+        state: state
+      });
+      return 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
+    }
+
+    window.startRedirectLogin_ = async function () {
+      const loginBtn = document.getElementById('google-login-btn');
+      if (loginBtn) loginBtn.disabled = true;
+      showLoginHelp_('');
+      // 移る前に、送信していない録音・写真を端末に残す（戻ったあと復元を尋ねる）。
+      //   書き込みの途中で移ると保存が取り消されるため、最後まで待つ（大きな録音でも止まらないよう上限8秒）
+      try { await Promise.race([saveDraft_('login'), new Promise((r) => setTimeout(r, 8000))]); } catch (_) {}
+      const state = randomState_();
+      try {
+        // 同じタブで戻るのが普通だが、端末によっては別のタブで戻るため localStorage に置く（10分・1回限り）。
+        // 別のタブでもログインを押すことがあるので、上書きせず並べて持つ（古いものは捨てる・最大5件）
+        const now = Date.now();
+        const pending = readPendingStates_().filter((x) => now - x.t < OAUTH_STATE_MAX_AGE_MS).slice(-4);
+        pending.push({ s: state, t: now });
+        localStorage.setItem(OAUTH_STATE_KEY, JSON.stringify(pending));
+      } catch (_) {
+        if (loginBtn) loginBtn.disabled = false;
+        showLoginHelp_('redirect_failed');
+        return;
+      }
+      location.assign(buildRedirectLoginUrl_(state));
+    };
+
+    /** 端末に置いた合言葉の一覧（読めなければ空） */
+    function readPendingStates_() {
+      try {
+        const v = JSON.parse(localStorage.getItem(OAUTH_STATE_KEY) || '[]');
+        return Array.isArray(v) ? v.filter((x) => x && typeof x.s === 'string' && typeof x.t === 'number') : [];
+      } catch (_) { return []; }
+    }
+
+    /**
+     * 起動時：Google から戻ってきたところなら、受け取ったトークンを使う。戻りでなければ null。
+     * 引数は <head> の最初の script が取り出した # 以降（戻りの形のときだけ渡ってくる。形の判定はそこ1か所）
+     */
+    function consumeOAuthRedirect_(hash) {
+      if (!hash) return null;
+      const p = new URLSearchParams(String(hash).replace(/^#/, ''));
+      const now = Date.now();
+      const pending = readPendingStates_();
+      const hit = pending.find((x) => x.s === p.get('state') && now - x.t < OAUTH_STATE_MAX_AGE_MS);
+      // 使った合言葉と古い合言葉は捨てる（1回限り）
+      try {
+        const rest = pending.filter((x) => x !== hit && now - x.t < OAUTH_STATE_MAX_AGE_MS);
+        if (rest.length) localStorage.setItem(OAUTH_STATE_KEY, JSON.stringify(rest));
+        else localStorage.removeItem(OAUTH_STATE_KEY);
+      } catch (_) {}
+      if (!hit) return { error: 'redirect_state' };
+      if (p.get('error')) return { error: p.get('error') === 'access_denied' ? 'redirect_denied' : 'redirect_failed' };
+      const token = p.get('access_token');
+      if (!token) return { error: 'redirect_failed' };
+      applyAccessToken_(token, p.get('expires_in'));
+      return { ok: true };
+    }
+    const _oauthRedirectResult = consumeOAuthRedirect_(window.__oauthRedirectHash);
+    window.__oauthRedirectHash = null;
 
     // ============================================================
     //  v2.x: OAuth2 ワンフロー認証
@@ -4763,7 +4905,11 @@
     window.addEventListener('load', function () {
       const loginBtn = document.getElementById('google-login-btn');
       if (loginBtn) {
-        loginBtn.addEventListener('click', () => window.loginWithOAuth2_({ silent: false }));
+        loginBtn.addEventListener('click', () => {
+          // v83.0: スマホは同じタブのまま Google へ移って戻る。PC は窓の方式
+          if (useRedirectLogin_()) window.startRedirectLogin_();
+          else window.loginWithOAuth2_({ silent: false });
+        });
       }
       // v82.1: アプリの中の画面で開いていたら、ログインの上に案内を出す
       try { renderInAppWarning_(); } catch (_) {}
@@ -4779,10 +4925,20 @@
           setTimeout(() => trySilent(retries - 1), 300);
         }
       };
+      // v83.0: Google から戻ってきたところなら、受け取ったトークンでそのまま入る（失敗は案内を出す）
+      if (_oauthRedirectResult) {
+        if (_oauthRedirectResult.ok) window.loginWithOAuth2_({ silent: false }).catch(() => {});
+        else showLoginHelp_(_oauthRedirectResult.error);
+        return;
+      }
+      // v83.0: スマホは窓の方式の無音ログインを試さない（窓が開けず空振りするだけのため）
+      const silentPopupUsable = !useRedirectLogin_();
       // まず端末保存トークンでの即復帰を試す（GIS 不要・ポップアップなし）
       if (restoreAccessToken_()) {
-        window.loginWithOAuth2_({ silent: true }).then(ok => { if (!ok) trySilent(); }).catch(() => trySilent());
-      } else {
+        window.loginWithOAuth2_({ silent: true })
+          .then(ok => { if (!ok && silentPopupUsable) trySilent(); })
+          .catch(() => { if (silentPopupUsable) trySilent(); });
+      } else if (silentPopupUsable) {
         trySilent();
       }
     });
@@ -4793,7 +4949,8 @@
       if (!currentAccessToken) return; // ログイン前は何もしない
       const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 5 * 60 * 1000;
       if (nearExpiry) {
-        requestAccessTokenOnce_({ silent: true }).catch(() => {/* 失敗時は callGAS 側の再取得に任せる */});
+        // v83.0: スマホ（リダイレクト）は試さない（callGAS が期限切れをログイン画面へ回す）
+        if (!useRedirectLogin_()) requestAccessTokenOnce_({ silent: true }).catch(() => {/* 失敗時は callGAS 側の再取得に任せる */});
       }
     });
 
@@ -5016,7 +5173,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v82.1';
+    const APP_VERSION = 'v83.0';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。

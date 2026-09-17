@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) 起動ローダー v1.1
+<!-- スマレコ (SmartRecord) 起動ローダー v1.2
+     v1.2（2026-09-17・v83.0）: Google から戻ったアドレスの # 以降（ログインの結果）を本体へ引き継ぐ。
      v1.1（2026-09-17・v82.1）: LINE の中で開いたら、1回だけ外のブラウザへ切り替える（openExternalBrowser=1）。
        Google のログインは LINE の中の画面では使えないため。JavaScript が動かない表示でも本体へのリンクを出す。
      目的: 端末に古い版が残り続ける問題を構造的に解消する。
@@ -58,6 +59,8 @@
     // 本体は app.html。毎回タイムスタンプを付けることで、端末に古い版が残っていても
     // 必ず最新が読み込まれる（このローダー自体はキャッシュ禁止・数百バイト）。
     (function () {
+      // v1.2: Google から戻ったときの # 以降（ログインの結果）は、自動の切り替えでだけ本体へ引き継ぐ。
+      //   画面に出す逃げ道のリンクには載せない（長押しでコピー・共有されるとトークンが外へ出るため）
       var url = 'app.html?v=' + Date.now();
       var link = document.getElementById('manual-link');
       if (link) link.href = url;
@@ -76,7 +79,7 @@
           if (!tried) { location.replace(location.pathname + '?openExternalBrowser=1'); return; }
         }
       } catch (e) {}
-      location.replace(url);
+      location.replace(url + (location.hash || ''));
     })();
   </script>
 </body>
