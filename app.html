@@ -1,6 +1,7 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v88.2: 店内の1日の切り替え時刻を店舗ごとに（既定15時）。店長は店内画面の資料カードから12〜18時で変える
      v88.1: 15時以降は「まとめる」を薄くして押せないように・今日の資料を出す。ミーティングは「編集」で書き足す案内
      v88.0: ログインは最初の1回だけ（アプリの7日の札）。1時間ごとの更新・無音ログイン・サインアウトでの許可の取り消しを撤去。
             送信番号で二重を防ぐ。利用者と権限に区分・所属の絞り込みと「端末をすべてログアウト」
@@ -1754,8 +1755,8 @@
         <summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">📖 使い方（開店前 → ミーティング → 部門共有 → 本部提出）</summary>
         <div class="px-4 pb-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
           <div><b>① 記録する</b>：開店前から気付いたこと・気になること・相談事を、音声と写真でどんどん記録します。</div>
-          <div><b>② まとめる</b>：「まとめる」を押すと、部門別のミーティング資料ができます。<b>15時までは何度でも</b>押せます（記録が増えたら押し直すと最新になります）。<b>15時には自動でまとめます</b>（前日15時〜当日15時の分）。</div>
-          <div><b>③ 話し合いを書き足す</b>：ミーティングで話し合ったこと・決めたことは、資料を開いて「<b>編集</b>」で書き足します。<b>ミーティング中は録音しません</b>（15時を過ぎた録音は、翌日の資料の「前日の夕方のレポート」に入ります）。</div>
+          <div><b>② まとめる</b>：「まとめる」を押すと、部門別のミーティング資料ができます。<b>1日の切り替え時刻（既定は15時・店長が変えられます）までは何度でも</b>押せます（記録が増えたら押し直すと最新になります）。<b>切り替え時刻に自動でまとめます</b>（前日の切り替え時刻〜当日の切り替え時刻の分）。</div>
+          <div><b>③ 話し合いを書き足す</b>：ミーティングで話し合ったこと・決めたことは、資料を開いて「<b>編集</b>」で書き足します。<b>ミーティング中は録音しません</b>（切り替え時刻を過ぎた録音は、翌日の資料の「前日の夕方のレポート」に入ります）。</div>
           <div><b>④ 印刷する</b>：資料画面の「印刷」から、部門を選んで印刷できます。翌日の部門ミーティングにそのまま使えます。</div>
           <div><b>⑤ 本部へ提出</b>：資料画面の「本部へ提出」で、本日のミーティング報告として本部に届きます。<b>提出するまで本部には見えません。</b>提出と取り下げは<b>店長</b>が行います。</div>
           <div class="pt-1 text-slate-400">※ 記録した内容は同じ店舗のメンバーが閲覧できます。店舗のPCからも同じ画面で確認できます。</div>
@@ -1775,6 +1776,15 @@
           </div>
           <button id="btn-open-meeting" onclick="window.openStoreMeetingFromBoard()"
             class="btn-press flex-shrink-0 text-xs font-bold px-4 py-2.5 rounded-lg bg-teal-700 text-white active:scale-95 transition-transform">開く</button>
+        </div>
+        <!-- v88.2: 店内の1日の切り替え時刻（店舗ごと。店長だけが変えられる） -->
+        <div class="mt-2 text-[11px] text-teal-800 flex items-center gap-2 flex-wrap">
+          <span class="material-icons text-sm">schedule</span>
+          <span>1日の切り替え: <b id="instore-cutoff-label">15時</b></span>
+          <select id="instore-cutoff-select" class="hidden border border-teal-300 rounded px-1 py-0.5 text-[11px] bg-white"></select>
+          <button id="instore-cutoff-save" onclick="window.saveStoreCutoff()"
+            class="hidden btn-press text-[11px] font-bold px-2 py-1 rounded bg-teal-700 text-white">変える</button>
+          <span id="instore-cutoff-note" class="text-slate-500"></span>
         </div>
         <button onclick="window.toggleStoreHistory()"
           class="mt-3 w-full text-xs font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded-lg py-2.5 flex items-center justify-center gap-1 active:bg-teal-100">
@@ -1810,7 +1820,7 @@
       <div>
         <div class="flex items-center justify-between px-1 mb-2">
           <h3 class="text-sm font-bold text-slate-600 flex items-center">
-            <span class="material-icons text-sm mr-1 text-teal-600">forum</span><span id="instore-memo-heading">今日の記録（前日15時〜）</span>（<span id="instore-memo-count">0</span>件）
+            <span class="material-icons text-sm mr-1 text-teal-600">forum</span><span id="instore-memo-heading">今日の記録</span>（<span id="instore-memo-count">0</span>件）
           </h3>
           <button onclick="window.loadStoreBoard(true)"
             class="text-xs text-teal-700 font-bold px-2 py-1 rounded border border-teal-200 bg-teal-50 active:bg-teal-100">♻️ 更新</button>
@@ -5363,13 +5373,13 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v88.1';
+    const APP_VERSION = 'v88.2';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
     //   GAS は人が貼り替えて手動でデプロイする層で、version を画面で確かめられないと
     //   「貼ったつもりで貼れていない」に症状が出るまで気づけないため。
-    const REQUIRED_GAS_VERSION = 'v88.1';
+    const REQUIRED_GAS_VERSION = 'v88.2';
     let _gasVersion = '';
 
     /** 'v79.1' → 79001 のように比べられる数にする（文字列比較だと v79.10 < v79.9 になる） */
@@ -5669,16 +5679,18 @@
       // v88.1: 15時以降は、今日の資料は15時に自動でまとめ済み。「まとめる」は押せない（消さずに薄く）。
       //   ミーティングで話し合ったことは資料の「編集」で書き足す。15時以降の記録は明日の資料に入る
       const after = !!board.afterCutoff;
+      const h = board.cutoffHour || 15;   // v88.2: この店舗の切り替え時刻
       const sumBtn = document.getElementById('btn-instore-summarize');
       document.getElementById('instore-memo-heading').innerText =
-        after ? '15時以降の記録（明日の資料に入ります）' : '今日の記録（前日15時〜）';
+        after ? h + '時以降の記録（明日の資料に入ります）' : '今日の記録（前日' + h + '時〜）';
+      renderStoreCutoff_(board);
       sumBtn.disabled = after;
       sumBtn.classList.toggle('opacity-40', after);
       if (after) {
-        label.innerText = 'まとめる（15時まで）';
+        label.innerText = 'まとめる（' + h + '時まで）';
         status.textContent = board.meeting
-          ? (board.meeting.status || '下書き') + '（15時にまとめ済み）。話し合ったことは「開く」→「編集」で書き足してください。'
-          : '15時すぎに自動でまとめます。少し待ってから開き直してください。';
+          ? (board.meeting.status || '下書き') + '（' + h + '時にまとめ済み）。話し合ったことは「開く」→「編集」で書き足してください。'
+          : h + '時すぎに自動でまとめます。少し待ってから開き直してください。';
         if (openBtn) openBtn.classList.toggle('hidden', !board.meeting);
       } else if (board.meeting) {
         label.innerText = 'まとめを更新する';
@@ -5687,12 +5699,51 @@
       } else {
         label.innerText = 'まとめる';
         status.textContent = memos.length
-          ? 'まだ作成していません。下の「まとめる」を押すと、今日の記録（前日15時〜）' + memos.length + ' 件から資料ができます。15時には自動でもまとめます。'
+          ? 'まだ作成していません。下の「まとめる」を押すと、今日の記録（前日' + h + '時〜）' + memos.length + ' 件から資料ができます。' + h + '時には自動でもまとめます。'
           : 'まだ作成していません。まず記録をしてから「まとめる」を押してください。';
         if (openBtn) openBtn.classList.add('hidden');
       }
       return true;
     }
+
+    /** v88.2: 1日の切り替え時刻を出す。店長には時刻の選択と「変える」を出す（ほかの方には変える人を案内） */
+    function renderStoreCutoff_(board) {
+      const h = board.cutoffHour || 15;
+      document.getElementById('instore-cutoff-label').innerText = h + '時';
+      const sel = document.getElementById('instore-cutoff-select');
+      const btn = document.getElementById('instore-cutoff-save');
+      const note = document.getElementById('instore-cutoff-note');
+      const canEdit = !!board.canEditCutoff;
+      sel.classList.toggle('hidden', !canEdit);
+      btn.classList.toggle('hidden', !canEdit);
+      if (canEdit) {
+        let opts = '';
+        for (let x = (board.cutoffMin || 12); x <= (board.cutoffMax || 18); x++) {
+          opts += '<option value="' + x + '"' + (x === h ? ' selected' : '') + '>' + x + '時</option>';
+        }
+        sel.innerHTML = opts;
+        note.innerText = '';
+      } else {
+        note.innerText = '（変えるときは店長へ）';
+      }
+    }
+
+    /** v88.2: 店長が自店の切り替え時刻を変える */
+    window.saveStoreCutoff = async function () {
+      const now = (_storeBoard && _storeBoard.cutoffHour) || 15;
+      const h = Number(document.getElementById('instore-cutoff-select').value);
+      if (!h || h === now) { alert('いまの切り替え時刻（' + now + '時）と同じです。'); return; }
+      if (!confirm('1日の切り替えを ' + now + '時 から ' + h + '時 に変えますか？\n\n' +
+                   '・すぐに反映され、今日の記録の振り分けもこの時刻で決まります\n' +
+                   '・' + h + '時に自動でまとめ、' + h + '時以降の記録は翌日の「前日の夕方のレポート」に入ります')) return;
+      try {
+        await doWithLoading('切り替え時刻を変えています…', runGasTask('setStoreCutoffHour', { hour: h }));
+        alert('1日の切り替えを ' + h + '時 にしました。');
+        window.loadStoreBoard(true);
+      } catch (e) {
+        if (!noticeSessionExpired_(e)) alert('変えられませんでした: ' + (e.message || e));
+      }
+    };
 
     /** ① 本日の店内メモと、まとめの状態を読み込む */
     window.loadStoreBoard = async function (silent) {
@@ -5772,9 +5823,10 @@
       if (!force) {
         const n = (_storeBoard && _storeBoard.memos) ? _storeBoard.memos.length : 0;
         const isUpdate = !!(_storeBoard && _storeBoard.meeting);
+        const ch = (_storeBoard && _storeBoard.cutoffHour) || 15;   // v88.2
         const msg = isUpdate
-          ? '今日の記録（前日15時〜）' + n + ' 件で、ミーティング資料を最新の内容に作り直します。よろしいですか？'
-          : '今日の記録（前日15時〜）' + n + ' 件から、ミーティング資料を作成します。よろしいですか？';
+          ? '今日の記録（前日' + ch + '時〜）' + n + ' 件で、ミーティング資料を最新の内容に作り直します。よろしいですか？'
+          : '今日の記録（前日' + ch + '時〜）' + n + ' 件から、ミーティング資料を作成します。よろしいですか？';
         if (!confirm(msg)) return;
       }
       try {
@@ -5783,7 +5835,7 @@
           runGasTask('generateStoreMeeting', { force: !!force })
         );
         if (!res) return;
-        if (res.noData) { alert(res.message || '今日の記録（前日15時〜）がまだありません。'); return; }
+        if (res.noData) { alert(res.message || '今日の記録がまだありません。'); return; }
         if (res.afterCutoff) { alert(res.message); window.loadStoreBoard(true); return; }   // v88.1
         if (res.needsConfirm) {
           if (confirm(res.message + '\n\nAIで作り直しますか？\n（「キャンセル」＝今の資料をそのまま開く）')) {
@@ -5913,7 +5965,7 @@
       const pe = ai.previous_evening;
       const prevHtml = (pe && pe.topics && pe.topics.length)
         ? '<div class="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3">' +
-          '<div class="text-xs font-bold text-indigo-800 flex items-center gap-1"><span class="material-icons text-sm">nights_stay</span>前日の夕方のレポート（前日15時以降の記録）</div>' +
+          '<div class="text-xs font-bold text-indigo-800 flex items-center gap-1"><span class="material-icons text-sm">nights_stay</span>前日の夕方のレポート（前日' + (d.cutoffHour || 15) + '時以降の記録）</div>' +
           '<div class="text-[11px] text-indigo-700 mt-0.5">昨日の遅番やミーティングの後に記録された内容です' +
           (editing ? '（この欄は編集できません）' : '') + '</div>' +
           (pe.summary ? '<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded-lg border border-indigo-100 mt-2">' + esc(pe.summary) + '</div>' : '') +
@@ -6442,7 +6494,7 @@
       // v88.0: 前日の夕方のレポート（選んだときだけ・当日の分より先に）
       const pe = ai.previous_evening;
       const prevHtml = (o.prev && pe && pe.topics && pe.topics.length)
-        ? '<div class="dept-block"><h2>🌙 前日の夕方のレポート（前日15時以降の記録）</h2>' +
+        ? '<div class="dept-block"><h2>🌙 前日の夕方のレポート（前日' + (d.cutoffHour || 15) + '時以降の記録）</h2>' +
           '<div class="meta">昨日の遅番やミーティングの後に記録された内容です</div>' +
           (pe.summary ? '<div>' + esc(pe.summary) + '</div>' : '') +
           pe.topics.map(t =>
