@@ -1,6 +1,7 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v88.1: 15時以降は「まとめる」を薄くして押せないように・今日の資料を出す。ミーティングは「編集」で書き足す案内
      v88.0: ログインは最初の1回だけ（アプリの7日の札）。1時間ごとの更新・無音ログイン・サインアウトでの許可の取り消しを撤去。
             送信番号で二重を防ぐ。利用者と権限に区分・所属の絞り込みと「端末をすべてログアウト」
      v87.0: 録音しなくても写真だけで送れる（確認してから）。本部の管理者には送信の処理時間を出す
@@ -1753,8 +1754,8 @@
         <summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">📖 使い方（開店前 → ミーティング → 部門共有 → 本部提出）</summary>
         <div class="px-4 pb-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
           <div><b>① 記録する</b>：開店前から気付いたこと・気になること・相談事を、音声と写真でどんどん記録します。</div>
-          <div><b>② まとめる</b>：ミーティング前に「まとめる」を押すと、部門別のミーティング資料ができます。<b>毎日15時には自動でもまとめます</b>（前日15時〜当日15時の分。15時を過ぎた記録は、翌日の資料の「前日の夕方のレポート」に入ります）。</div>
-          <div><b>③ 更新する</b>：ミーティング中の話し合いや決定事項も録音して記録し、もう一度「まとめる」を押すと資料が最新になります。</div>
+          <div><b>② まとめる</b>：「まとめる」を押すと、部門別のミーティング資料ができます。<b>15時までは何度でも</b>押せます（記録が増えたら押し直すと最新になります）。<b>15時には自動でまとめます</b>（前日15時〜当日15時の分）。</div>
+          <div><b>③ 話し合いを書き足す</b>：ミーティングで話し合ったこと・決めたことは、資料を開いて「<b>編集</b>」で書き足します。<b>ミーティング中は録音しません</b>（15時を過ぎた録音は、翌日の資料の「前日の夕方のレポート」に入ります）。</div>
           <div><b>④ 印刷する</b>：資料画面の「印刷」から、部門を選んで印刷できます。翌日の部門ミーティングにそのまま使えます。</div>
           <div><b>⑤ 本部へ提出</b>：資料画面の「本部へ提出」で、本日のミーティング報告として本部に届きます。<b>提出するまで本部には見えません。</b>提出と取り下げは<b>店長</b>が行います。</div>
           <div class="pt-1 text-slate-400">※ 記録した内容は同じ店舗のメンバーが閲覧できます。店舗のPCからも同じ画面で確認できます。</div>
@@ -1809,7 +1810,7 @@
       <div>
         <div class="flex items-center justify-between px-1 mb-2">
           <h3 class="text-sm font-bold text-slate-600 flex items-center">
-            <span class="material-icons text-sm mr-1 text-teal-600">forum</span>今日の記録（前日15時〜・<span id="instore-memo-count">0</span>件）
+            <span class="material-icons text-sm mr-1 text-teal-600">forum</span><span id="instore-memo-heading">今日の記録（前日15時〜）</span>（<span id="instore-memo-count">0</span>件）
           </h3>
           <button onclick="window.loadStoreBoard(true)"
             class="text-xs text-teal-700 font-bold px-2 py-1 rounded border border-teal-200 bg-teal-50 active:bg-teal-100">♻️ 更新</button>
@@ -5362,13 +5363,13 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v88.0';
+    const APP_VERSION = 'v88.1';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
     //   GAS は人が貼り替えて手動でデプロイする層で、version を画面で確かめられないと
     //   「貼ったつもりで貼れていない」に症状が出るまで気づけないため。
-    const REQUIRED_GAS_VERSION = 'v88.0';
+    const REQUIRED_GAS_VERSION = 'v88.1';
     let _gasVersion = '';
 
     /** 'v79.1' → 79001 のように比べられる数にする（文字列比較だと v79.10 < v79.9 になる） */
@@ -5665,7 +5666,21 @@
       const label = document.getElementById('btn-summarize-label');
       const status = document.getElementById('instore-meeting-status');
       const openBtn = document.getElementById('btn-open-meeting');
-      if (board.meeting) {
+      // v88.1: 15時以降は、今日の資料は15時に自動でまとめ済み。「まとめる」は押せない（消さずに薄く）。
+      //   ミーティングで話し合ったことは資料の「編集」で書き足す。15時以降の記録は明日の資料に入る
+      const after = !!board.afterCutoff;
+      const sumBtn = document.getElementById('btn-instore-summarize');
+      document.getElementById('instore-memo-heading').innerText =
+        after ? '15時以降の記録（明日の資料に入ります）' : '今日の記録（前日15時〜）';
+      sumBtn.disabled = after;
+      sumBtn.classList.toggle('opacity-40', after);
+      if (after) {
+        label.innerText = 'まとめる（15時まで）';
+        status.textContent = board.meeting
+          ? (board.meeting.status || '下書き') + '（15時にまとめ済み）。話し合ったことは「開く」→「編集」で書き足してください。'
+          : '15時すぎに自動でまとめます。少し待ってから開き直してください。';
+        if (openBtn) openBtn.classList.toggle('hidden', !board.meeting);
+      } else if (board.meeting) {
         label.innerText = 'まとめを更新する';
         status.textContent = (board.meeting.status || '下書き') + '（記録 ' + memos.length + ' 件）';
         if (openBtn) openBtn.classList.remove('hidden');
@@ -5769,6 +5784,7 @@
         );
         if (!res) return;
         if (res.noData) { alert(res.message || '今日の記録（前日15時〜）がまだありません。'); return; }
+        if (res.afterCutoff) { alert(res.message); window.loadStoreBoard(true); return; }   // v88.1
         if (res.needsConfirm) {
           if (confirm(res.message + '\n\nAIで作り直しますか？\n（「キャンセル」＝今の資料をそのまま開く）')) {
             return window.runStoreMeetingSummary(true);
