@@ -1,6 +1,9 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v88.0: ログインは最初の1回だけ（アプリの7日の札）。1時間ごとの更新・無音ログイン・サインアウトでの許可の取り消しを撤去。
+            送信番号で二重を防ぐ。利用者と権限に区分・所属の絞り込みと「端末をすべてログアウト」
+     v87.0: 録音しなくても写真だけで送れる（確認してから）。本部の管理者には送信の処理時間を出す
      v86.0: 画面の変更なし。天気アクションを季節と地域の平年で判定するサーバー v86.0 を必須にする
      v85.0: 本部へ報告を送れるのは本部の方と店長だけ。店舗の方・ゲストには報告の入口を出さず
             案内を出す（タブの左は「ホーム」）。本部の方のホームにも、いま出ている通知を出す。
@@ -985,6 +988,8 @@
           <label class="text-xs font-bold text-slate-600 block mb-1">氏名</label>
           <input id="register-name" type="text" placeholder="例：田中 太郎"
             class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-green-600">
+          <p id="register-name-store-note" class="hidden text-[11px] text-slate-500 mt-1">
+            店舗のアカウントは、名前が店舗名になります（何人で使っても同じ名前です）</p>
         </div>
         <div>
           <label class="text-xs font-bold text-slate-600 block mb-1">所属</label>
@@ -1748,7 +1753,7 @@
         <summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">📖 使い方（開店前 → ミーティング → 部門共有 → 本部提出）</summary>
         <div class="px-4 pb-4 text-[11px] text-slate-500 leading-relaxed space-y-1">
           <div><b>① 記録する</b>：開店前から気付いたこと・気になること・相談事を、音声と写真でどんどん記録します。</div>
-          <div><b>② まとめる</b>：ミーティング前に「まとめる」を押すと、部門別のミーティング資料ができます。</div>
+          <div><b>② まとめる</b>：ミーティング前に「まとめる」を押すと、部門別のミーティング資料ができます。<b>毎日15時には自動でもまとめます</b>（前日15時〜当日15時の分。15時を過ぎた記録は、翌日の資料の「前日の夕方のレポート」に入ります）。</div>
           <div><b>③ 更新する</b>：ミーティング中の話し合いや決定事項も録音して記録し、もう一度「まとめる」を押すと資料が最新になります。</div>
           <div><b>④ 印刷する</b>：資料画面の「印刷」から、部門を選んで印刷できます。翌日の部門ミーティングにそのまま使えます。</div>
           <div><b>⑤ 本部へ提出</b>：資料画面の「本部へ提出」で、本日のミーティング報告として本部に届きます。<b>提出するまで本部には見えません。</b>提出と取り下げは<b>店長</b>が行います。</div>
@@ -1804,7 +1809,7 @@
       <div>
         <div class="flex items-center justify-between px-1 mb-2">
           <h3 class="text-sm font-bold text-slate-600 flex items-center">
-            <span class="material-icons text-sm mr-1 text-teal-600">forum</span>本日の記録（<span id="instore-memo-count">0</span>）
+            <span class="material-icons text-sm mr-1 text-teal-600">forum</span>今日の記録（前日15時〜・<span id="instore-memo-count">0</span>件）
           </h3>
           <button onclick="window.loadStoreBoard(true)"
             class="text-xs text-teal-700 font-bold px-2 py-1 rounded border border-teal-200 bg-teal-50 active:bg-teal-100">♻️ 更新</button>
@@ -1838,6 +1843,13 @@
   </div>
 
   <!-- 印刷する部門を選ぶ -->
+  <!-- v87.0: 写真の拡大表示（いちばん手前）。押すか戻る操作で閉じる -->
+  <div id="photo-viewer-modal" class="hidden fixed inset-0 bg-black/90 z-[7000] flex items-center justify-center p-2"
+    onclick="window.closePhotoViewer()">
+    <img id="photo-viewer-img" alt="写真" class="max-w-full max-h-full object-contain select-none">
+    <button type="button" onclick="event.stopPropagation(); window.closePhotoViewer()"
+      class="absolute top-3 right-3 px-3 py-2 rounded-full bg-white/90 text-slate-800 text-sm font-bold shadow">✕ 閉じる</button>
+  </div>
   <div id="store-print-modal" class="hidden fixed inset-0 bg-black/50 z-[6000] flex items-end sm:items-center justify-center p-0 sm:p-6">
     <div class="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
       <div class="p-4 border-b flex items-center justify-between">
@@ -1904,6 +1916,22 @@
         oninput="window.renderUsers()">
       <button onclick="window.loadUsers()" class="text-xs font-bold px-3 py-2.5 rounded-lg bg-slate-100 text-slate-600 flex-shrink-0">再読込</button>
     </div>
+    <!-- v88.0: 区分と店舗で絞り込む（PO 2026-09-24「役職や名前をフィルタで選べると良い」） -->
+    <div class="px-3 pb-3 bg-white border-b flex items-center gap-2">
+      <select id="users-kind" onchange="window.renderUsers()"
+        class="flex-1 min-w-0 border border-slate-300 rounded-lg px-2 py-2 text-xs bg-white focus:outline-none focus:border-indigo-500">
+        <option value="">すべての区分</option>
+        <option value="admin">本部の管理者</option>
+        <option value="hq">本部の方</option>
+        <option value="lead">店長</option>
+        <option value="member">店舗の方</option>
+        <option value="store">店舗アカウント</option>
+      </select>
+      <select id="users-shop" onchange="window.renderUsers()"
+        class="flex-1 min-w-0 border border-slate-300 rounded-lg px-2 py-2 text-xs bg-white focus:outline-none focus:border-indigo-500">
+        <option value="">すべての所属</option>
+      </select>
+    </div>
     <div id="users-body" class="flex-grow overflow-y-auto p-4 space-y-3 pb-24">
       <div class="p-8 text-center text-slate-400 text-sm">読み込み中…</div>
     </div>
@@ -1953,15 +1981,15 @@
       PC_REDIRECT_LOGIN: true,
     };
 
-    // v2.x: ID トークン経路を廃止し OAuth2 アクセストークンに一本化
-    let currentAccessToken = null;
-    let accessTokenExpiry = 0;          // unix ms
+    // v88.0: アプリの札（7日）で通す。Google の札はログインの最初の1回（startSession）にだけ使い、端末に残さない
+    let sessionToken = null;
+    let sessionExpiry = 0;              // unix ms
+    let googleAccessToken_ = null;      // ログインの途中だけ持つ（startSession に渡したら捨てる）
     let oauthTokenClient = null;        // GIS OAuth2 token client
     let tokenRequestInFlight_ = null;   // v82.1: いま取得中のトークンの依頼（同時に1つだけ）
     let loginFlowSeq_ = 0;              // v82.1: ログインの流れの通し番号（新しい流れに引き継いだ古い流れは画面を触らない）
     let loginFlowActive_ = false;       // v82.1: ログインの流れが進んでいる間は、裏の無音ログインを始めない
     let userRole = null;                // ログイン中ユーザーのロール（HQ_ADMIN判定用）
-    let tokenRefreshTimer = null;       // アクセストークン自動更新タイマー
     let audioChunks = [],
       mediaRecorder = null,
       recTime = 0,
@@ -1973,44 +2001,36 @@
     let myShopName = localStorage.getItem('my_shop_name');
 
     // ============================================================
-    //  IDトークン自動リフレッシュ
-    //  Google IDトークンは1時間で期限切れになるため、
-    //  期限10分前にサイレントリフレッシュを試みる
+    // v88.0: アプリの札の端末保存（7日。期限が切れたら1回だけログイン画面）
+    //   以前（v75.0〜v87.0）は Google の約1時間の札を置き、55分ごとに窓で更新していた。
+    //   スマホは更新できず、PC は窓がブロックされがちで、1時間ごとにログイン画面が出ていた。
     // ============================================================
-    //  v2.x: OAuth2 アクセストークン管理（サイレント更新可）
-    //  - GIS の oauth2.initTokenClient で access_token を取得
-    //  - prompt:'' でユーザー操作なしのサイレント更新
-    //  - 期限の5分前にタイマーで自動更新
-    // ============================================================
-    // ============================================================
-    // v75.0(④): アクセストークンの端末保存（再起動時の再ログイン削減）
-    //   - 保存するのは scope: openid email profile のトークンのみ（本人のメール/氏名の読取専用）
-    //   - 有効期限内（約1時間）なら GIS を介さず即復帰できる
-    // ============================================================
-    const TOKEN_STORE_KEY = 'smareco_oauth_token_v75';
+    const SESSION_STORE_KEY = 'smareco_session_v88';
+    // v87.0 まで Google の札を置いていた場所。残っていても使わないので起動時に消す
+    try { localStorage.removeItem('smareco_oauth_token_v75'); } catch (_) {}
 
-    function persistAccessToken_() {
+    function persistSession_() {
       try {
-        if (!currentAccessToken || !accessTokenExpiry) return;
-        localStorage.setItem(TOKEN_STORE_KEY, JSON.stringify({ t: currentAccessToken, e: accessTokenExpiry }));
+        if (!sessionToken || !sessionExpiry) return;
+        localStorage.setItem(SESSION_STORE_KEY, JSON.stringify({ t: sessionToken, e: sessionExpiry }));
       } catch (_) {}
     }
 
-    function restoreAccessToken_() {
+    /** 端末に残っている札を読む。期限まで1分を切っていれば使わない */
+    function restoreSession_() {
       try {
-        const raw = localStorage.getItem(TOKEN_STORE_KEY);
-        if (!raw) return false;
-        const o = JSON.parse(raw);
+        const o = JSON.parse(localStorage.getItem(SESSION_STORE_KEY) || 'null');
         if (!o || !o.t || !o.e || Date.now() > o.e - 60 * 1000) return false;
-        currentAccessToken = o.t;
-        accessTokenExpiry = o.e;
-        scheduleAccessTokenRefresh_(Math.floor((o.e - Date.now()) / 1000) + 30);
+        sessionToken = o.t;
+        sessionExpiry = o.e;
         return true;
       } catch (_) { return false; }
     }
 
-    function clearStoredToken_() {
-      try { localStorage.removeItem(TOKEN_STORE_KEY); } catch (_) {}
+    function clearSession_() {
+      sessionToken = null;
+      sessionExpiry = 0;
+      try { localStorage.removeItem(SESSION_STORE_KEY); } catch (_) {}
     }
 
     function ensureOAuthTokenClient_() {
@@ -2029,36 +2049,22 @@
       });
     }
 
-    /** 待ちに上限を付ける（上限を過ぎたら、その呼び出し側だけが諦める。依頼そのものは止めない） */
-    function withTimeout_(promise, ms, message) {
-      return new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error(message)), ms);
-        promise.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
-      });
-    }
-
     /**
      * v82.1: トークンの依頼は同時に1つだけ（GIS の返事の受け口は1つしかないため）。
-     *   - 無音の依頼: 動いている依頼があれば、新しい窓は開かずにそれを待つ（10秒まで）
      *   - 画面から押したログイン: 動いている依頼を取り下げて新しく始める（押し直しにも応える）
      *   - 窓が開けない（popup_failed_to_open）: すぐ失敗として返す
      *   - 窓が閉じた（popup_closed）: 端末によっては後から返事が届くので、依頼は生かしたまま opts.onProblem で知らせる
+     *   v88.0: 無音の依頼（1時間ごとの更新）は撤去。ログインの最初の1回にだけ使う
      */
     function requestAccessTokenOnce_(opts) {
-      const isSilent = !!(opts && opts.silent);
       try { ensureOAuthTokenClient_(); } catch (e) { return Promise.reject(e); }
 
-      const inflight = tokenRequestInFlight_;
-      if (inflight) {
-        if (isSilent) return withTimeout_(inflight.promise, 10000, 'OAuth2 silent token acquisition timed out (10s)');
-        inflight.abandon();
-      }
+      if (tokenRequestInFlight_) tokenRequestInFlight_.abandon();
 
-      const job = { silent: isSilent, settled: false, guard: null };
+      const job = { settled: false };
       job.promise = new Promise((resolve, reject) => {
         const finish = () => {
           job.settled = true;
-          if (job.guard) clearTimeout(job.guard);
           if (tokenRequestInFlight_ === job) tokenRequestInFlight_ = null;
         };
         job.onResponse = (resp) => {
@@ -2067,7 +2073,7 @@
           if (!resp) return reject(new Error('empty oauth2 response'));
           if (resp.error) return reject(new Error(resp.error_description || resp.error));
           if (!resp.access_token) return reject(new Error('no access_token in response'));
-          applyAccessToken_(resp.access_token, resp.expires_in);
+          applyAccessToken_(resp.access_token);
           resolve(resp);
         };
         job.onError = (err) => {
@@ -2097,14 +2103,10 @@
           e.gisType = 'superseded';
           reject(e);
         };
-        if (isSilent) {
-          job.guard = setTimeout(() => job.fail(new Error('OAuth2 silent token acquisition timed out (10s)')), 10000);
-        }
       });
       tokenRequestInFlight_ = job;
       try {
         const req = {};
-        if (isSilent) req.prompt = '';
         if (opts && opts.login_hint) req.hint = opts.login_hint;
         oauthTokenClient.requestAccessToken(req);
       } catch (e) {
@@ -2113,41 +2115,36 @@
       return job.promise;
     }
 
-    /** v83.0: 受け取ったトークンを反映する（窓の方式とリダイレクトの方式で共通） */
-    function applyAccessToken_(token, expiresInSec) {
-      currentAccessToken = token;
-      const expiresIn = Number(expiresInSec) || 3600;
-      accessTokenExpiry = Date.now() + (expiresIn - 30) * 1000;
-      persistAccessToken_(); // v75.0(④): 端末保存（再起動時の再ログイン削減）
-      scheduleAccessTokenRefresh_(expiresIn);
+    /** v83.0: 受け取った Google の札（窓の方式とリダイレクトの方式で共通）。v88.0: ログインの途中だけ持つ */
+    function applyAccessToken_(token) {
+      googleAccessToken_ = token || null;
     }
 
-    function scheduleAccessTokenRefresh_(expiresInSec) {
-      if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
-      const refreshAfter = Math.min(
-        Math.max((expiresInSec - 5 * 60) * 1000, 5000),
-        55 * 60 * 1000
-      );
-      tokenRefreshTimer = setTimeout(async () => {
-        // v83.0: スマホ（リダイレクト）は窓が開けず空振りするだけなので試さない（v83.1: PC は試す）
-        if (silentPopupUseless_()) return;
-        try {
-          await requestAccessTokenOnce_({ silent: true });
-          console.log('🔄 アクセストークンを自動更新しました');
-        } catch (e) {
-          console.warn('silent token refresh failed:', e);
-        }
-      }, refreshAfter);
-    }
-
-    // userinfo エンドポイントから email/name を取得
-    async function fetchUserInfo_() {
-      if (!currentAccessToken) throw new Error('access_token 未取得');
-      const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-        headers: { Authorization: 'Bearer ' + currentAccessToken }
+    /**
+     * v88.0: Google の札をサーバーに確かめてもらい、アプリの札（7日）とプロフィールを受け取る。
+     *   Google の札はここで役目を終えるので、すぐ捨てる（端末に残さない）。
+     */
+    async function startSession_() {
+      const googleToken = googleAccessToken_;
+      googleAccessToken_ = null;
+      if (!googleToken) throw new Error('Google の確認が済んでいません');
+      const res = await fetch(CONFIG.GAS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({ action: 'startSession', accessToken: googleToken }),
+        redirect: 'follow'
       });
-      if (!res.ok) throw new Error('userinfo HTTP ' + res.status);
-      return await res.json();
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      if (!json || json.error || !json.sessionToken) {
+        const e = new Error((json && json.error) || 'ログインを続けられませんでした');
+        e.transient = !!(json && json.transient);
+        throw e;
+      }
+      sessionToken = json.sessionToken;
+      sessionExpiry = Number(json.sessionExpiresAt) || (Date.now() + 7 * 24 * 60 * 60 * 1000);
+      persistSession_();
+      return json.profile;
     }
 
     // v83.2: ログインが切れたときのお知らせ（画面の赤字・ポップアップで同じ言い方にする）
@@ -2194,31 +2191,14 @@
     }
 
     // ===== GAS通信 (fetch版) =====
+    //   v88.0: アプリの札で通す。札が無い・期限切れなら送らずにログイン画面へ（Google の窓は開かない）
     async function callGAS(action, data = {}) {
-      // currentAccessToken が無い、または期限切れ間近ならまず silent 再取得を試みる
-      // （タブ長時間放置・bfcache 復帰・silent refresh タイマー skip 等で消えていても自動復帰させる）
-      const noToken    = !currentAccessToken;
-      const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 60 * 1000;
-      if (noToken || nearExpiry) {
-        // v83.1: スマホは無音の更新（窓）ができないので試さない。PC は窓を許可している人なら更新できるので試す
-        if (!silentPopupUseless_()) {
-          try { await requestAccessTokenOnce_({ silent: true }); }
-          catch (e) { console.warn('silent token refresh failed:', e); }
-        }
-        // v83.0: 更新できずに期限を過ぎたトークンは送らず、下のログイン画面へ回す
-        //   （送ると GAS が「認証失敗」を返し、エラーの後でやっとログイン画面に戻る形になっていた）
-        if (accessTokenExpiry && Date.now() > accessTokenExpiry) {
-          currentAccessToken = null;
-          accessTokenExpiry = 0;
-          clearStoredToken_();
-        }
+      if (!sessionToken || Date.now() > sessionExpiry) {
+        clearSession_();
+        throw sessionExpiredError_('札なし・期限切れ（送信せず）');
       }
-      // それでもトークンが無ければログイン画面へ戻して再ログインを促す
-      if (!currentAccessToken) {
-        throw sessionExpiredError_('トークンなし・期限切れ（送信せず）');
-      }
-      const sentToken = currentAccessToken;
-      const payload = { action, accessToken: sentToken, ...data };
+      const sentToken = sessionToken;
+      const payload = { action, sessionToken: sentToken, ...data };
       const res = await fetch(CONFIG.GAS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
@@ -2228,17 +2208,15 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const json = await res.json();
       if (json && json.error) {
-        // v75.0(④): サーバー側で認証が通らないトークンは端末保存からも破棄（無限再試行を防止）
-        // v83.2: 送った後に入り直していたら（古いトークンの返事）、新しいトークンは消さない
-        if (String(json.error).indexOf('認証失敗') >= 0 && currentAccessToken === sentToken) {
-          currentAccessToken = null;
-          accessTokenExpiry = 0;
-          clearStoredToken_();
-          // v83.2: 使っている途中で断られたトークン（取り消し・期限切れ）。入り直すしかないので、同じくログイン画面へ。
-          //   ログインの途中（プロフィール取得など）の失敗は期限切れではないので、今までどおり中身を出す
+        // 札が通らなかった（期限切れ・全端末ログアウト）。送った後に入り直していたら（古い札の返事）、新しい札は消さない
+        if (String(json.error).indexOf('認証失敗') >= 0 && sessionToken === sentToken) {
+          clearSession_();
           if (!loginFlowActive_) throw sessionExpiredError_(String(json.error));
         }
-        throw new Error(json.error);
+        const e = new Error(json.error);
+        e.serverError = true;          // サーバーが中身を見て断った（通信の失敗ではない）
+        e.transient = !!json.transient;
+        throw e;
       }
       return json;
     }
@@ -2252,7 +2230,7 @@
       try {
         const body = {
           action: 'logClientError',
-          accessToken: currentAccessToken || '',
+          sessionToken: sessionToken || '',
           payload: {
             stage    : stage,
             message  : (String(err && err.message || err) + (err && err.detail ? ' / ' + err.detail : '')).slice(0, 500),
@@ -2284,6 +2262,9 @@
           lastErr = e;
           const msg = String(e && e.message || e);
           if ((e && e.sessionExpired) || msg.indexOf('認証失敗') >= 0) break;  // 認証失敗: ログインの途中・入り直した後の古い返事
+          // v88.0: サーバーが中身を見て断った（権限・入力の不足など）ものは、送り直しても同じなので再送しない。
+          //   混雑・時間切れ・同時実行の上限など、一時的なものだけ送り直す（送信番号が同じなので二重にはならない）
+          if (e && e.serverError && !e.transient && !/一時|too many|timed out|timeout|Exceeded|混雑|同時|Service invoked|Rate/i.test(msg)) break;
           if (attempt < MAX_TRY) {
             const msgEl = document.getElementById('loading-msg');
             if (msgEl) msgEl.innerText = `通信エラー → 自動再送中 (${attempt}/${MAX_TRY - 1})...`;
@@ -2422,8 +2403,9 @@
       let imageHtml = '';
       if (d.imageUrls && d.imageUrls.length > 0) {
         imageHtml = '<div class="grid grid-cols-2 gap-2">' + d.imageUrls.map(function (url, i) {
-          return '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="block bg-white rounded border border-slate-200 overflow-hidden" title="タップで大きく表示">' +
-            reportImageHtml_(url, d.id, i, 'w-full object-cover', false, '4/3') + '</a>';
+          // v87.0: ドライブへは飛ばさず、アプリの中で大きく見せる（店舗のアカウントに権限の申請画面を出さない）
+          return '<button type="button" onclick="window.openPhotoViewer(this)" class="block w-full bg-white rounded border border-slate-200 overflow-hidden" title="タップで大きく表示">' +
+            reportImageHtml_(url, d.id, i, 'w-full object-cover', false, '4/3') + '</button>';
         }).join('') + '</div>';
       } else {
         imageHtml = '<div class="text-sm text-slate-400">添付画像なし</div>';
@@ -2753,7 +2735,11 @@
       const storedShop = localStorage.getItem('my_shop_name');
       myShopName = storedShop || user.shop;
       document.getElementById('shop-text').innerText = myShopName || "--";
-      document.getElementById('user-name').innerText = user.name + " (" + user.role + ")";
+      // v87.0: 名前は _currentUserName に持ち、表示には役割の呼び名を添えるだけにする
+      //   （以前は表示の文字をプロフィール編集が名前として保存し、「(一般)」が積み重なっていた）
+      _currentUserName = user.name || '';
+      _isStoreAccountUi = !!user.isStoreAccount;
+      document.getElementById('user-name').innerText = _currentUserName + " (" + (user.roleLabel || user.role || '') + ")";
       document.getElementById('account-name').innerText = user.account;
       // HQ_ADMIN または ADMIN の場合に「本部配信」ボタンを表示
       const hqBtn = document.getElementById('btn-hq-admin');
@@ -3164,12 +3150,6 @@
       return !!CONFIG.PC_REDIRECT_LOGIN;
     }
 
-    /** v83.1: 無音の更新（窓）を試しても無駄か。スマホは窓が開けないので無駄。PC は窓を許可している人なら更新できるので試す */
-    function silentPopupUseless_() {
-      const d = detectInAppBrowser_();
-      return (d.isAndroid || d.isIOS) && useRedirectLogin_();
-    }
-
     function randomState_() {
       const a = new Uint8Array(16);
       crypto.getRandomValues(a);
@@ -3293,73 +3273,59 @@
       if (p.get('error')) return { error: p.get('error') === 'access_denied' ? 'redirect_denied' : 'redirect_failed' };
       const token = p.get('access_token');
       if (!token) return { error: 'redirect_failed' };
-      applyAccessToken_(token, p.get('expires_in'));
+      applyAccessToken_(token);
       return { ok: true };
     }
     const _oauthRedirectResult = consumeOAuthRedirect_(window.__oauthRedirectHash);
     window.__oauthRedirectHash = null;
 
     // ============================================================
-    //  v2.x: OAuth2 ワンフロー認証
-    //  - Google Sign-In（id token）経路を完全廃止
-    //  - access_token 取得 → userinfo で email/name 取得 → ドメイン照合
-    //  - 初回は同意ダイアログ1回、2回目以降は silent grant でポップアップなし
+    //  ログイン（v88.0）
+    //  - Google の札を受け取る（スマホ・PC は同じタブで移って戻る／アプリの中の画面・ホーム画面アプリは窓）
+    //  - startSession でアプリの札（7日）とプロフィールを受け取る（ユーザー情報の取得・ドメインの確認もサーバー）
+    //  - 札がある間は Google の画面を出さない
     // ============================================================
-    window.loginWithOAuth2_ = async function ({ silent = false } = {}) {
+    /** プロフィールを受け取ったら画面へ（未登録なら初回登録へ） */
+    async function enterAppWithProfile_(user) {
+      if (!user) throw new Error('プロフィール取得失敗');
+      if (user.error && user.registered !== false) throw new Error(user.error);
+      if (user.registered === false) {
+        document.getElementById('screen-login').classList.add('hidden');
+        document.getElementById('register-title').textContent = 'はじめに設定してください';
+        // v87.0: 本部のドメインでなければ店舗のアカウントとして名前欄を店舗名にする（サーバーでも同じく揃える）
+        _isStoreAccountUi = !/@jaz-acoop\.co\.jp$/i.test(String(user.email || ''));
+        await window.openRegisterScreen();
+        return;
+      }
+      window.initApp(user);
+    }
+
+    window.loginWithOAuth2_ = async function () {
       const errEl = document.getElementById('login-error');
       const loginBtn = document.getElementById('google-login-btn');
       let slowTimer = null;  // v82.1
-      // v82.1: ログインの流れは同時に1つだけ。画面から押したログインが進んでいる間、裏の無音ログインは何もしない
-      if (silent && loginFlowActive_) return false;
       const myFlow = ++loginFlowSeq_;
       loginFlowActive_ = true;
       try {
         if (errEl) errEl.classList.add('hidden');
-        if (loginBtn && !silent) loginBtn.disabled = true;
+        if (loginBtn) loginBtn.disabled = true;
         // v82.1: 窓が出ないまま押せなくならないよう、20秒でボタンを戻して案内する
-        if (!silent) {
-          showLoginHelp_('');
-          slowTimer = setTimeout(() => { if (loginBtn) loginBtn.disabled = false; showLoginHelp_('slow'); }, 20000);
-        }
+        showLoginHelp_('');
+        slowTimer = setTimeout(() => { if (loginBtn) loginBtn.disabled = false; showLoginHelp_('slow'); }, 20000);
 
-        // 1. アクセストークン取得（silent: false なら同意ポップアップ許容）
-        //    v75.0(④): 有効なトークンを既に持っている（端末保存から復元済み等）なら GIS をスキップ
-        const hasValidToken = currentAccessToken && accessTokenExpiry && Date.now() < accessTokenExpiry - 60 * 1000;
-        if (!hasValidToken) {
+        // 1. Google の札（同じタブで戻ってきたところなら受け取り済み。無ければ窓で受け取る）
+        if (!googleAccessToken_) {
           await requestAccessTokenOnce_({
-            silent,
             // v82.1: 窓が閉じたと判定されたら、ボタンを戻して案内する（後から返事が届けばそのまま進む）
-            onProblem: silent ? null : (type) => { if (loginBtn) loginBtn.disabled = false; showLoginHelp_(type); }
+            onProblem: (type) => { if (loginBtn) loginBtn.disabled = false; showLoginHelp_(type); }
           });
         }
         if (slowTimer) { clearTimeout(slowTimer); slowTimer = null; showLoginHelp_(''); }
-        // v83.1: ここから先（メール確認・プロフィール取得）は数秒〜数十秒かかる。ログイン画面のまま固まって見えないよう知らせる
-        if (!silent || hasValidToken) showLoginProgress_(true);
 
-        // 2. userinfo でメール・氏名を取得
-        const userinfo = await fetchUserInfo_();
-        const email  = userinfo.email || '';
-        const domain = email.split('@')[1] || '';
-
-        // 3. クライアント側ドメインチェック（GAS 側でも再検証される）
-        if (!CONFIG.ALLOWED_DOMAINS.includes(domain)) {
-          if (errEl && !silent) {
-            errEl.textContent = '社内ドメインのアカウントでログインしてください。';
-            errEl.classList.remove('hidden');
-          }
-          currentAccessToken = null;
-          accessTokenExpiry = 0;
-          clearStoredToken_();
-          if (tokenRefreshTimer) { clearTimeout(tokenRefreshTimer); tokenRefreshTimer = null; }
-          showLoginProgress_(false);
-          return false;
-        }
-
-        // 4. GASからプロフィール取得
+        // 2. アプリの札とプロフィールを受け取る（v82.1: 電波が弱いと返事が来ないまま回り続けるため、60秒で打ち切る）
         showLoginProgress_(true);
-        // v82.1: 電波が弱いと返事が来ないまま回り続けるため、60秒で打ち切って知らせる
         const user = await Promise.race([
-          callGAS('getProfile'),
+          startSession_(),
           new Promise((_, rej) => setTimeout(() => {
             const te = new Error('サーバーの応答がありません');
             te.gisType = 'profile_timeout';
@@ -3367,42 +3333,24 @@
           }, 60000))
         ]);
         showLoginProgress_(false);
-        if (!user) throw new Error('プロフィール取得失敗');
-        if (user.error && !user.registered === false) throw new Error(user.error);
-
-        // 未登録ユーザー → 初回登録画面へ
-        if (user.registered === false) {
-          document.getElementById('screen-login').classList.add('hidden');
-          document.getElementById('register-title').textContent = 'はじめに設定してください';
-          await window.openRegisterScreen();
-          return true;
-        }
-        window.initApp(user);
+        await enterAppWithProfile_(user);
         return true;
       } catch (e) {
-        // v82.1: 新しいログインに引き継いだ古い流れは、画面も保存トークンも触らずに抜ける
+        // v82.1: 新しいログインに引き継いだ古い流れは、画面を触らずに抜ける
         if (e && e.gisType === 'superseded') return false;
         showLoginProgress_(false);
-        // v82.1: サーバーの応答待ちの時間切れは通信の問題で、トークンは有効。消すと再ログインの窓が要るので残す
-        if (!(e && e.gisType === 'profile_timeout')) {
-          currentAccessToken = null;
-          accessTokenExpiry = 0;
-          clearStoredToken_(); // v75.0(④): 無効になったトークンは端末からも破棄
-        }
-        if (!silent) {
-          console.error('OAuth2 login failed:', e);
-          if (e && e.gisType) {
-            // v82.1: 窓・通信の失敗は、次に何をすればよいかを案内する
-            showLoginHelp_(e.gisType);
-            // 想定外の種類は、問い合わせで見分けられるよう中身も出す
-            if (e.gisType === 'unknown' && errEl) {
-              errEl.textContent = 'ログインエラー: ' + (e.message || e);
-              errEl.classList.remove('hidden');
-            }
-          } else if (errEl) {
-            errEl.textContent = 'ログインエラー: ' + (e && e.message || e);
+        googleAccessToken_ = null;
+        console.error('OAuth2 login failed:', e);
+        if (e && e.gisType) {
+          // v82.1: 窓・通信の失敗は、次に何をすればよいかを案内する
+          showLoginHelp_(e.gisType);
+          if (e.gisType === 'unknown' && errEl) {
+            errEl.textContent = 'ログインエラー: ' + (e.message || e);
             errEl.classList.remove('hidden');
           }
+        } else if (errEl) {
+          errEl.textContent = (e && e.transient) ? String(e.message) : 'ログインエラー: ' + (e && e.message || e);
+          errEl.classList.remove('hidden');
         }
         return false;
       } finally {
@@ -3415,9 +3363,43 @@
       }
     };
 
+    /**
+     * v88.0: 端末に札が残っていれば、Google の画面を出さずにそのまま入る。
+     *   札が通らなければ（期限切れ・全端末ログアウト）ログイン画面のまま。通信の失敗なら札は捨てずに知らせる。
+     */
+    async function resumeSession_() {
+      const errEl = document.getElementById('login-error');
+      loginFlowActive_ = true;
+      showLoginProgress_(true);
+      try {
+        const user = await callGAS('getProfile');
+        showLoginProgress_(false);
+        await enterAppWithProfile_(user);
+      } catch (e) {
+        showLoginProgress_(false);
+        if (sessionToken && errEl) {   // 札は残っている＝通信やサーバーの一時的な問題
+          errEl.textContent = '接続できませんでした。電波の良い所でもう一度開くか、「Google でログイン」を押してください。';
+          errEl.classList.remove('hidden');
+        }
+      } finally {
+        loginFlowActive_ = false;
+      }
+    }
+
     // 登録画面を開く共通ヘルパー（店舗リストをGASから取得してドロップダウンを構築）
+    /** v87.0: 店舗のアカウントは名前欄を店舗名にして入力できないようにする（名前はサーバーが店舗名に揃える） */
+    function applyStoreAccountNameField_() {
+      const nameEl = document.getElementById('register-name');
+      const sel = document.getElementById('register-shop');
+      document.getElementById('register-name-store-note').classList.toggle('hidden', !_isStoreAccountUi);
+      nameEl.readOnly = _isStoreAccountUi;
+      nameEl.classList.toggle('bg-slate-100', _isStoreAccountUi);
+      if (_isStoreAccountUi) nameEl.value = sel.value || '';
+    }
+
     window.openRegisterScreen = async function (currentShop = '') {
       const sel = document.getElementById('register-shop');
+      sel.onchange = applyStoreAccountNameField_;
       sel.innerHTML = '<option value="">読み込み中...</option>';
       document.getElementById('screen-register').classList.remove('hidden');
       try {
@@ -3435,6 +3417,7 @@
       } catch (e) {
         sel.innerHTML = '<option value="本部">本部</option>';
       }
+      applyStoreAccountNameField_();
     };
 
     // 初回登録・プロフィール更新の送信
@@ -3466,7 +3449,7 @@
     // プロフィール編集画面を開く
     window.openEditProfile = async function () {
       document.getElementById('register-title').textContent = 'プロフィール編集';
-      document.getElementById('register-name').value = document.getElementById('user-name').innerText;
+      document.getElementById('register-name').value = _currentUserName;
       document.getElementById('register-error').classList.add('hidden');
       const currentShop = document.getElementById('shop-text').innerText;
       await window.openRegisterScreen(currentShop);
@@ -3474,14 +3457,10 @@
 
     window.signOut = function () {
       if (!confirm('サインアウトしますか？')) return;
-      // v2.x: OAuth2 トークンと自動更新タイマーを破棄
-      if (currentAccessToken && typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
-        try { google.accounts.oauth2.revoke(currentAccessToken, () => {}); } catch (_) {}
-      }
-      currentAccessToken = null;
-      accessTokenExpiry = 0;
-      clearStoredToken_(); // v75.0(④): サインアウト時は端末保存トークンも必ず破棄
-      if (tokenRefreshTimer) { clearTimeout(tokenRefreshTimer); tokenRefreshTimer = null; }
+      // v88.0: この端末の札を捨てるだけ。Google 側の許可は取り消さない
+      //   （取り消すと、同じアカウントで使っている他の端末と、同じログイン設定の他のアプリまで入り直しになる）
+      clearSession_();
+      googleAccessToken_ = null;
       document.getElementById('screen-home').classList.add('hidden');
       document.getElementById('screen-login').classList.remove('hidden');
     };
@@ -3742,6 +3721,7 @@
           recTime  : recTime,
           images   : images.slice(),
           instore  : !!(insEl && !insEl.classList.contains('hidden')),
+          requestId: _pendingRequestId || '',   // v88.0: 送っている途中なら、その番号で送り直す
           reason   : reason || ''
         };
         return draftTx_('readwrite', function (store) { return store.put(rec, DRAFT_KEY); })
@@ -3750,6 +3730,16 @@
         console.warn('下書きの保存に失敗:', e);
         return Promise.resolve();
       }
+    }
+
+    /** v88.0: 送信番号（UUID）。古い端末で randomUUID が無ければ乱数から作る */
+    function newRequestId_() {
+      if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+      const a = new Uint8Array(16);
+      crypto.getRandomValues(a);
+      a[6] = (a[6] & 0x0f) | 0x40; a[8] = (a[8] & 0x3f) | 0x80;
+      const h = Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
+      return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
     }
 
     function clearDraft_() {
@@ -3802,6 +3792,7 @@
         return;
       }
 
+      _pendingRequestId = d.requestId || null; // v88.0: 送っている途中だった記録は同じ番号で送り直す（二重にしない）
       if (d.audio) {
         audioChunks = [d.audio];
         recTime = d.recTime || 0;
@@ -3958,12 +3949,18 @@
         alert('本部への報告は、店長または本部の方が行います。\n気づいたことは「店内で共有」で記録してください。');
         return;
       }
-      if (audioChunks.length === 0) {
-        alert("音声が録音されていません。");
+      // v87.0: 録音しなくても写真だけで送れる。どちらも無いときは送らない
+      const photoOnly = audioChunks.length === 0;
+      if (photoOnly && images.length === 0) {
+        alert("録音か写真のどちらかが必要です。\nマイクで録音するか、写真を撮ってください。");
         return;
       }
 
-      if (o.confirmText) {
+      if (photoOnly) {
+        const what = (mode === '店内') ? '店内メモとして記録' : '「' + mode + '」として送信';
+        if (!confirm('音声は録音されていません。\n\n写真' + images.length + '枚だけを' + what + 'しますか？' +
+                     (mode === '巡回' ? '\n\n※これは本部巡回者用の報告先です' : ''))) return;
+      } else if (o.confirmText) {
         if (!confirm(o.confirmText)) return;
       } else if (mode === '巡回') {
         if (!confirm("【確認】\nこれは本部巡回者用の報告先ですがよろしいですか？")) return;
@@ -3972,6 +3969,11 @@
       }
 
       const emgEl = document.getElementById(o.emergencyId || 'chk-emg');
+
+      // v88.0: 送信番号。二度押し・通信切れの再送・下書きからの送り直しでも同じ番号を送る（サーバーが1件にする）
+      if (!_pendingRequestId) _pendingRequestId = newRequestId_();
+      const requestId = _pendingRequestId;
+      saveDraft_('sending'); // 送っている途中でアプリが閉じても、同じ番号で送り直せるように端末へ残す
 
       return doWithLoading("位置情報取得 & 送信中...", new Promise(async (resolve, reject) => {
         try {
@@ -3986,13 +3988,11 @@
             console.warn("Geo skipped:", e);
           }
 
-          const audioBlob = new Blob(audioChunks);
           // v78.0: 復元した録音は MediaRecorder が無い。保存しておいた形式を使う
           const detectedMime = currentAudioMime_();
-          const reader = new FileReader();
-          reader.readAsDataURL(audioBlob);
-
-          reader.onloadend = async function () {
+          // v87.0: 写真だけのときは音声を読まない（空の音声を送らない）
+          const reader = photoOnly ? { result: '' } : new FileReader();
+          const afterRead = async function () {
             // 画像はbase64リストとして直接ペイロードに含める
             const imageBase64List = images.map(img => ({
               data: img.data.split(',')[1],
@@ -4000,14 +4000,15 @@
             }));
 
             const payload = {
-              audioBase64: reader.result.split(',')[1],
+              requestId: requestId,
+              audioBase64: photoOnly ? '' : reader.result.split(',')[1],
               mimeType: detectedMime,
               mode: mode,
               isEmergency: !!(emgEl && emgEl.checked),
               imageBase64List: imageBase64List,
               location: loc
             };
-            document.getElementById('loading-msg').innerText = "AI解析・送信中...";
+            document.getElementById('loading-msg').innerText = photoOnly ? "写真を送信中..." : "AI解析・送信中...";
 
             // v75.0(⑤): エラー切り分け用メタ（録音長・概算ペイロードサイズKB）
             const audioSecMeta = recTime;
@@ -4045,16 +4046,18 @@
 
               // Reset
               audioChunks = []; recTime = 0; images = []; _draftAudioMime = '';
+              _pendingRequestId = null; // 送れたので、次の記録は新しい番号
               document.getElementById('timer').innerText = "00:00";
               document.getElementById('rec-status').innerText = "READY";
               if (emgEl) emgEl.checked = false;
               updateBtns(false); updateImagePreview();
               clearDraft_(); // 送信できたので下書きは要らない
 
+              const timingNote = _isAdminUi ? submitTimingNote_(res && res.timing) : '';
               if (o.quietSuccess) {
-                alert("記録しました。");
+                alert("記録しました。" + timingNote);
               } else {
-                alert("送信完了！\n\n【要約】\n" + res.summary);
+                alert("送信完了！\n\n【要約】\n" + res.summary + timingNote);
               }
               if (typeof o.onSuccess === 'function') {
                 try { o.onSuccess(res); } catch (e2) { console.warn('onSuccess error:', e2); }
@@ -4064,10 +4067,30 @@
               reject((e && e.sessionExpired) ? e : "送信エラー: " + e);
             }
           };
+          if (photoOnly) {
+            afterRead();
+          } else {
+            reader.onloadend = afterRead;
+            reader.readAsDataURL(new Blob(audioChunks));
+          }
         } catch (e) {
           reject("処理前エラー: " + e);
         }
       }));
+    }
+
+    /**
+     * v87.0: サーバーが返した処理時間を、本部の管理者向けに1〜2行にまとめる。
+     *   どこで待たされたか（AI・写真の保存・資料作成など）を画面で確かめるため。
+     */
+    function submitTimingNote_(t) {
+      if (!t || typeof t.total !== 'number') return '';
+      const sec = function (ms) { return (typeof ms === 'number') ? (Math.round(ms / 100) / 10) + '秒' : '-'; };
+      const parts = [];
+      if (t.hasAudio) parts.push('AI ' + sec(t.ai) + (t.aiAttempts > 1 ? '（' + t.aiAttempts + '回目で応答 ' + (t.aiCodes || '') + '）' : ''));
+      parts.push('写真保存 ' + sec(t.upload), '資料作成 ' + sec(t.doc), '保管コピー ' + sec(t.archive));
+      if (typeof t.board === 'number') parts.push('店内の一覧 ' + sec(t.board));
+      return '\n\n〔処理時間 合計 ' + sec(t.total) + '〕\n' + parts.join('・');
     }
 
     window.submit = function (mode) {
@@ -4510,56 +4533,7 @@
 
       ;
 
-    // プレビュー用ダミーデータ生成
-    function generatePreviewData() {
-      const gen = (base, ic) => Array.from({
-        length: 8
-      }
 
-        , (_, i) => ({
-          date: new Date(Date.now() + i * 864e5).toISOString().split('T')[0],
-          max: base + 5, min: base - 5, pop: 20, icon: ic, weatherDesc: "晴れ", rain: 0, wind: 0
-        }));
-
-      return [{
-
-        name: "Aコープ 城山店",
-        lat: 35.59,
-        lng: 139.30,
-        current: {
-          temp: 31, weather: "晴れ", icon: "01d", time: "10:00", wind: 2.0, windDeg: 0, rain: 0, humidity: 25
-        }
-
-        ,
-        timeline: [],
-        weekly: gen(32, "01d"),
-        alerts: [
-          { level: 'sales', title: '気温上昇・飲料訴求', msg: '【全館放送・補充】アイス・冷たい飲料の店内放送実施。冷蔵ケースのフェイスアップ徹底。', date: '現在' },
-          { level: 'sales', title: '乾燥注意・保湿', msg: '【日用雑貨・青果】のど飴・ハンドクリームのレジ横展開。みかん訴求強化。', date: '現在' },
-          { level: 'order', title: '猛暑・涼味特需', msg: '【グロサリー・青果】飲料・アイス・麺つゆ等を発注増(120-130%)。熱中症対策コーナー指示。', date: '2日後' }
-        ]
-      }
-
-        ,
-      {
-
-        name: "Aコープ 緑竹山店",
-        lat: 35.59,
-        lng: 139.30,
-        current: {
-          temp: 22, weather: "曇り", icon: "03d", time: "10:00", wind: 3.0, windDeg: 90, rain: 0
-        }
-
-        ,
-        timeline: [],
-        weekly: gen(25, "03d"),
-        alerts: [
-          { level: 'manufacture', title: '行楽・イベント日和', msg: '【惣菜・寿司: 攻めの製造】行楽弁当・オードブルの製造数UP(110-120%)。飲料ケース売りを店頭へ。', date: '明日' }
-        ]
-      }
-
-      ];
-    }
 
     window.runAggregation = function (t) {
       if (!confirm("作成しますか？")) return;
@@ -5136,39 +5110,19 @@
           // v83.1: PC で使っている途中に切れたときは、画面を残したまま窓で入り直す（スマホは下書きを残して同じタブで移る）
           const pcRelogin = window._reloginInApp_ && !detectInAppBrowser_().isAndroid && !detectInAppBrowser_().isIOS;
           if (useRedirectLogin_() && !pcRelogin) window.startRedirectLogin_();
-          else window.loginWithOAuth2_({ silent: false });
+          else window.loginWithOAuth2_();
         });
       }
       // v82.1: アプリの中の画面で開いていたら、ログインの上に案内を出す
       try { renderInAppWarning_(); } catch (_) {}
-      // GIS サイレントログイン（瞬断・読み込みタイミング起因の失敗に備えて1回だけ再試行）
-      const trySilent = (retries = 10) => {
-        if (window.google && google.accounts && google.accounts.oauth2) {
-          window.loginWithOAuth2_({ silent: true }).then(ok => {
-            if (!ok) setTimeout(() => { window.loginWithOAuth2_({ silent: true }).catch(() => {}); }, 1500);
-          }).catch(() => {
-            setTimeout(() => { window.loginWithOAuth2_({ silent: true }).catch(() => {}); }, 1500);
-          });
-        } else if (retries > 0) {
-          setTimeout(() => trySilent(retries - 1), 300);
-        }
-      };
-      // v83.0: Google から戻ってきたところなら、受け取ったトークンでそのまま入る（失敗は案内を出す）
+      // v83.0: Google から戻ってきたところなら、受け取った札でそのまま入る（失敗は案内を出す）
       if (_oauthRedirectResult) {
-        if (_oauthRedirectResult.ok) window.loginWithOAuth2_({ silent: false }).catch(() => {});
+        if (_oauthRedirectResult.ok) window.loginWithOAuth2_().catch(() => {});
         else showLoginHelp_(_oauthRedirectResult.error);
         return;
       }
-      // v83.0: スマホは窓の方式の無音ログインを試さない（窓が開けず空振りするだけのため）
-      const silentPopupUsable = !silentPopupUseless_();
-      // まず端末保存トークンでの即復帰を試す（GIS 不要・ポップアップなし）
-      if (restoreAccessToken_()) {
-        window.loginWithOAuth2_({ silent: true })
-          .then(ok => { if (!ok && silentPopupUsable) trySilent(); })
-          .catch(() => { if (silentPopupUsable) trySilent(); });
-      } else if (silentPopupUsable) {
-        trySilent();
-      }
+      // v88.0: 端末に札が残っていれば、Google の画面を出さずにそのまま入る（無ければログイン画面のまま）
+      if (restoreSession_()) resumeSession_();
     });
 
     // v83.1: Google の画面から「戻る」で帰ってきたとき（ページが保存された状態のまま戻る）、ボタンを押せないままにしない
@@ -5180,17 +5134,6 @@
       try { showLoginHelp_(''); } catch (_) {}
     });
 
-    // v75.0(④): アプリ復帰時（PWA切替・画面ON等）にトークン期限を先回りチェックして無音更新
-    document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState !== 'visible') return;
-      if (!currentAccessToken) return; // ログイン前は何もしない
-      const nearExpiry = accessTokenExpiry && Date.now() > accessTokenExpiry - 5 * 60 * 1000;
-      if (nearExpiry) {
-        // v83.0: スマホ（リダイレクト）は試さない（callGAS が期限切れをログイン画面へ回す）
-        if (!silentPopupUseless_()) requestAccessTokenOnce_({ silent: true }).catch(() => {/* 失敗時は callGAS 側の再取得に任せる */});
-      }
-    });
-
 
     // ============================================================
     // v76.0: 店舗内情報共有（店内ミーティング）
@@ -5200,9 +5143,12 @@
     let _currentMeeting = null;    // 開いているミーティング資料
     let _isEditingMeeting = false;
     let _currentUserShop = '';     // ログイン中ユーザーの所属店舗（本部判定・表示用）
+    let _currentUserName = '';     // v87.0: ログイン中ユーザーの名前（ヘッダの表示とは別に持つ）
+    let _isStoreAccountUi = false; // v87.0: 店舗のアカウントか（名前は店舗名で固定。サーバーが決める）
     let _isHqMemberUi = false;     // v80.1: 本部の人か（案内の文言を出し分けるだけに使う）
     let _isAdminUi = false;        // v81.0: 権限を扱える人か（画面の出し分けに使う）
     let _canReportToHqUi = true;   // v85.0: 本部へ報告を送れるか（本部の方と店長だけ）
+    let _pendingRequestId = null;  // v88.0: いま送ろうとしている記録の送信番号（送れるか、捨てるまで同じ番号を使う）
     let _isStoreUserUi = false;    // v85.0: 店内共有を使える店舗のメンバーか（下書きの戻し先の判断に使う）
     let _isDevTester = false;      // v77.0: 店内モードの検証を許可されたアカウントか（サーバー判定）
     let _canStoreShare = false;    // v77.2: 店舗内情報共有を使えるアカウントか（サーバー判定）
@@ -5351,7 +5297,8 @@
                              'instore-screen', 'hq-meetings-screen', 'knowledge-screen',
                              'users-screen'];
     const OVERLAY_MODALS = ['report-detail-modal', 'aggregated-detail-modal', 'hq-edit-modal',
-                            'patrol-share-modal', 'store-meeting-modal', 'store-print-modal'];
+                            'patrol-share-modal', 'store-meeting-modal', 'store-print-modal',
+                            'photo-viewer-modal'];
 
     // ============================================================
     // v79.0: 進む／戻るの規則（このアプリ全体で1つ）
@@ -5377,7 +5324,8 @@
       'instore-screen': 1, 'hq-meetings-screen': 1, 'knowledge-screen': 1, 'users-screen': 1,
       'store-meeting-modal': 2, 'aggregated-detail-modal': 2, 'hq-edit-modal': 2,
       'report-detail-modal': 3,
-      'store-print-modal': 4, 'patrol-share-modal': 4
+      'store-print-modal': 4, 'patrol-share-modal': 4,
+      'photo-viewer-modal': 5
     };
 
     /** 画面を開く直前に呼ぶ：同じ階層と、それより上を閉じ、戻り先を1つ積む */
@@ -5398,7 +5346,8 @@
       openKnowledge: 'knowledge-screen', openUsers: 'users-screen',
       openStoreMeeting: 'store-meeting-modal', openAggregatedDetail: 'aggregated-detail-modal',
       openEditHQAlert: 'hq-edit-modal', openReportDetail: 'report-detail-modal',
-      openStorePrintModal: 'store-print-modal', runPatrolAggregation: 'patrol-share-modal'
+      openStorePrintModal: 'store-print-modal', runPatrolAggregation: 'patrol-share-modal',
+      openPhotoViewer: 'photo-viewer-modal'
     };
     const OVERLAY_CLOSERS = {
       closeSub: 'sub-screen', closeMap: 'map-screen', closeDash: 'dash-screen',
@@ -5408,17 +5357,18 @@
       closeUsers: 'users-screen',
       closeStoreMeeting: 'store-meeting-modal',
       closeAggregatedDetail: 'aggregated-detail-modal', closeReportDetail: 'report-detail-modal',
-      closeStorePrintModal: 'store-print-modal', closePatrolShareModal: 'patrol-share-modal'
+      closeStorePrintModal: 'store-print-modal', closePatrolShareModal: 'patrol-share-modal',
+      closePhotoViewer: 'photo-viewer-modal'
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v86.0';
+    const APP_VERSION = 'v88.0';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
     //   GAS は人が貼り替えて手動でデプロイする層で、version を画面で確かめられないと
     //   「貼ったつもりで貼れていない」に症状が出るまで気づけないため。
-    const REQUIRED_GAS_VERSION = 'v86.0';
+    const REQUIRED_GAS_VERSION = 'v88.0';
     let _gasVersion = '';
 
     /** 'v79.1' → 79001 のように比べられる数にする（文字列比較だと v79.10 < v79.9 になる） */
@@ -5454,6 +5404,23 @@
     function pushOverlayHistory_() {
       try { history.pushState({ smareco: 1 }, ''); } catch (e) { /* 履歴が使えない環境では何もしない */ }
     }
+
+    /**
+     * v87.0: 写真をアプリの中で大きく見せる。
+     *   押した枠の中の <img> がすでに読み込んだ実体（認証を通った経路の dataURL）をそのまま使う。
+     *   まだ読み込み中なら何もしない（ドライブのアドレスは開かない）。
+     */
+    window.openPhotoViewer = function (el) {
+      const img = el && el.querySelector ? el.querySelector('img') : null;
+      const src = img ? img.getAttribute('src') : '';
+      if (!src || src.indexOf('data:') !== 0) return;
+      document.getElementById('photo-viewer-img').src = src;
+      document.getElementById('photo-viewer-modal').classList.remove('hidden');
+    };
+    window.closePhotoViewer = function () {
+      hideOverlay_('photo-viewer-modal');
+      document.getElementById('photo-viewer-img').removeAttribute('src');
+    };
 
     /** 今いちばん手前に見えているオーバーレイのIDを返す */
     function topVisibleOverlay_() {
@@ -5629,10 +5596,10 @@
         '<div class="text-[10px] text-slate-400 mb-1">' + esc(m.time) + ' ・ ' + esc(m.name) + ' の写真</div>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">' +
         m.imageUrls.map(function (u, i) {
-          return '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" ' +
-            'class="block rounded overflow-hidden border border-slate-200 bg-white" title="タップで大きく表示">' +
+          return '<button type="button" onclick="event.stopPropagation(); window.openPhotoViewer(this)" ' +
+            'class="block w-full rounded overflow-hidden border border-slate-200 bg-white" title="タップで大きく表示">' +
             reportImageHtml_(u, m.id, i, 'w-full object-cover', false, '4/3',
-              (_currentMeeting && _currentMeeting.docId) || '') + '</a>';
+              (_currentMeeting && _currentMeeting.docId) || '') + '</button>';
         }).join('') + '</div></div>';
     }
 
@@ -5643,8 +5610,8 @@
         ? '<span class="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 rounded px-1 ml-1">重要</span>' : '';
       const imgs = (m.imageUrls && m.imageUrls.length)
         ? '<div class="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-2">' + m.imageUrls.map(function (u, i) {
-            return '<a href="' + esc(u) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="block rounded overflow-hidden border border-slate-200 bg-white">' +
-              reportImageHtml_(u, m.id, i, 'w-full object-cover', false, '4/3') + '</a>';
+            return '<button type="button" onclick="event.stopPropagation(); window.openPhotoViewer(this)" class="block w-full rounded overflow-hidden border border-slate-200 bg-white" title="タップで大きく表示">' +
+              reportImageHtml_(u, m.id, i, 'w-full object-cover', false, '4/3') + '</button>';
           }).join('') + '</div>'
         : '';
       // v78.0: カード自体を押せるようにして、原文・写真を報告書の詳細で読めるようにする
@@ -5705,7 +5672,7 @@
       } else {
         label.innerText = 'まとめる';
         status.textContent = memos.length
-          ? 'まだ作成していません。下の「まとめる」を押すと、本日の記録 ' + memos.length + ' 件から資料ができます。'
+          ? 'まだ作成していません。下の「まとめる」を押すと、今日の記録（前日15時〜）' + memos.length + ' 件から資料ができます。15時には自動でもまとめます。'
           : 'まだ作成していません。まず記録をしてから「まとめる」を押してください。';
         if (openBtn) openBtn.classList.add('hidden');
       }
@@ -5791,8 +5758,8 @@
         const n = (_storeBoard && _storeBoard.memos) ? _storeBoard.memos.length : 0;
         const isUpdate = !!(_storeBoard && _storeBoard.meeting);
         const msg = isUpdate
-          ? '本日の記録 ' + n + ' 件で、ミーティング資料を最新の内容に作り直します。よろしいですか？'
-          : '本日の記録 ' + n + ' 件から、ミーティング資料を作成します。よろしいですか？';
+          ? '今日の記録（前日15時〜）' + n + ' 件で、ミーティング資料を最新の内容に作り直します。よろしいですか？'
+          : '今日の記録（前日15時〜）' + n + ' 件から、ミーティング資料を作成します。よろしいですか？';
         if (!confirm(msg)) return;
       }
       try {
@@ -5801,7 +5768,7 @@
           runGasTask('generateStoreMeeting', { force: !!force })
         );
         if (!res) return;
-        if (res.noData) { alert(res.message || '本日の記録がまだありません。'); return; }
+        if (res.noData) { alert(res.message || '今日の記録（前日15時〜）がまだありません。'); return; }
         if (res.needsConfirm) {
           if (confirm(res.message + '\n\nAIで作り直しますか？\n（「キャンセル」＝今の資料をそのまま開く）')) {
             return window.runStoreMeetingSummary(true);
@@ -5926,13 +5893,33 @@
       });
       if (!deptHtml) deptHtml = '<div class="text-xs text-slate-400">（部門別の内容がありません）</div>';
 
+      // v88.0: 前日の夕方（前日15時以降）の記録は、当日の分と切り分けて先に見せる（編集の対象外）
+      const pe = ai.previous_evening;
+      const prevHtml = (pe && pe.topics && pe.topics.length)
+        ? '<div class="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3">' +
+          '<div class="text-xs font-bold text-indigo-800 flex items-center gap-1"><span class="material-icons text-sm">nights_stay</span>前日の夕方のレポート（前日15時以降の記録）</div>' +
+          '<div class="text-[11px] text-indigo-700 mt-0.5">昨日の遅番やミーティングの後に記録された内容です' +
+          (editing ? '（この欄は編集できません）' : '') + '</div>' +
+          (pe.summary ? '<div class="whitespace-pre-wrap text-sm bg-white p-3 rounded-lg border border-indigo-100 mt-2">' + esc(pe.summary) + '</div>' : '') +
+          '<div class="space-y-2 mt-2">' + pe.topics.map(function (t) {
+            const memos = (t.related_ids || []).map(id => memoById[id]).filter(Boolean);
+            return '<div class="bg-white rounded-lg border border-indigo-100 p-3">' +
+              '<div class="text-sm font-bold text-slate-700">・' +
+              (t.department ? '<span class="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1 mr-1">' + esc(t.department) + '</span>' : '') +
+              esc(t.title || '') + '</div>' +
+              (t.detail ? '<div class="text-sm text-slate-600 whitespace-pre-wrap mt-1">' + esc(t.detail) + '</div>' : '') +
+              (t.action ? '<div class="text-sm text-teal-700 font-bold mt-1">→ 対応: ' + esc(t.action) + '</div>' : '') +
+              memos.map(memoPhotosHtml_).join('') + '</div>';
+          }).join('') + '</div></div>'
+        : '';
+
       const archivedNote = d.memosArchived
         ? '<div class="bg-amber-50 border border-amber-200 rounded-lg p-2 text-[11px] text-amber-700">元の記録は保存期間（30日）を過ぎたため、作成時点の内容を表示しています。</div>'
         : '';
 
       document.getElementById('sm-body').innerHTML =
-        archivedNote +
-        '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 全体概要</div>' + overallView + '</div>' +
+        archivedNote + prevHtml +
+        '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 全体概要（当日）</div>' + overallView + '</div>' +
         '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 決定事項</div>' + decisionsView + '</div>' +
         '<div><div class="text-xs font-bold text-slate-500 mb-1">■ やること</div>' + todosView + '</div>' +
         '<div><div class="text-xs font-bold text-slate-500 mb-1">■ 部門別</div>' + deptHtml + '</div>' +
@@ -6095,11 +6082,23 @@
       label.textContent = '本部の管理者 ' + d.adminCount + ' / ' + d.adminMax + ' 名' +
         (leads ? '　店長 ' + leads + ' 名' : '') + '　（全 ' + d.users.length + ' 名）';
 
-      const list = kw
-        ? d.users.filter(function (u) {
-            return (u.name + ' ' + u.shop + ' ' + u.email).toLowerCase().indexOf(kw) >= 0;
-          })
-        : d.users;
+      // v88.0: 区分と所属の絞り込み。所属の選択肢は一覧にいる人の所属から作る（選んでいたものは残す）
+      const kind = document.getElementById('users-kind').value;
+      const shopSel = document.getElementById('users-shop');
+      const shopPicked = shopSel.value;
+      const shops = d.users.map(function (u) { return u.shop || ''; })
+        .filter(function (v, i, a) { return v && a.indexOf(v) === i; })
+        .sort(function (a, b) { return a === '本部' ? -1 : (b === '本部' ? 1 : a.localeCompare(b, 'ja')); });
+      shopSel.innerHTML = '<option value="">すべての所属</option>' + shops.map(function (v) {
+        return '<option value="' + esc(v) + '"' + (v === shopPicked ? ' selected' : '') + '>' + esc(v) + '</option>';
+      }).join('');
+
+      const list = d.users.filter(function (u) {
+        if (kw && (u.name + ' ' + u.shop + ' ' + u.email).toLowerCase().indexOf(kw) < 0) return false;
+        if (kind && userKind_(u) !== kind) return false;
+        if (shopPicked && u.shop !== shopPicked) return false;
+        return true;
+      });
 
       // 人数の状況を最初に伝える（操作してから断られるより、先に分かるほうがよい）
       let notice = '';
@@ -6135,11 +6134,8 @@
             'class="btn-press flex-1 py-2.5 rounded-lg bg-indigo-700 text-white text-xs font-bold">' +
             (u.isHqShop ? '管理者にする' : '店長にする') + '</button>';
         }
-        const badge = u.isAdmin
-          ? '<span class="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5">本部の管理者</span>'
-          : (u.isStoreLead
-              ? '<span class="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded px-1.5 py-0.5">店長</span>'
-              : '<span class="text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5">一般</span>');
+        const k = USER_KIND_LABEL_[userKind_(u)];
+        const badge = '<span class="text-[10px] font-bold rounded px-1.5 py-0.5 border ' + k.cls + '">' + k.label + '</span>';
         const border = u.isAdmin ? 'border-indigo-300' : (u.isStoreLead ? 'border-teal-300' : 'border-slate-200');
         return '<div class="bg-white rounded-xl border ' + border + ' p-3">' +
           '<div class="flex items-center gap-2 flex-wrap">' +
@@ -6147,7 +6143,10 @@
           (self ? '<span class="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">あなた</span>' : '') +
           '</div>' +
           '<div class="text-[11px] text-slate-500 mt-1 break-all">' + esc(u.shop || '-') + '　' + esc(u.email) + '</div>' +
-          '<div class="flex gap-2 mt-3">' + btn + '</div></div>';
+          '<div class="flex gap-2 mt-3">' + btn + '</div>' +
+          // v88.0: 端末をなくしたとき等に、この人のログインをすべての端末で切る（Google 側の許可には触れない）
+          '<button onclick="window.signOutUserEverywhere(\'' + esc(u.email) + '\')" ' +
+          'class="mt-2 text-[11px] text-slate-500 underline decoration-dotted">この人の端末をすべてログアウト</button></div>';
       }).join('');
 
       body.innerHTML = notice +
@@ -6160,6 +6159,34 @@
         (list.length
           ? cards
           : '<div class="p-8 text-center text-slate-400 text-sm">当てはまる利用者がいません</div>');
+    };
+
+    /** v88.0: 区分（画面の表示と絞り込みで同じ見分け方を使う） */
+    function userKind_(u) {
+      if (u.isAdmin) return 'admin';
+      if (u.isHqShop) return 'hq';
+      if (u.isStoreLead) return 'lead';
+      if (!u.canBeAdmin) return 'store';   // 本部を名乗れないアカウント＝店舗の共有アカウント・ゲスト
+      return 'member';
+    }
+    const USER_KIND_LABEL_ = {
+      admin : { label: '本部の管理者',   cls: 'text-indigo-700 bg-indigo-50 border-indigo-200' },
+      hq    : { label: '本部',           cls: 'text-slate-700 bg-slate-50 border-slate-300' },
+      lead  : { label: '店長',           cls: 'text-teal-700 bg-teal-50 border-teal-200' },
+      member: { label: '店舗の方',       cls: 'text-slate-500 bg-slate-50 border-slate-200' },
+      store : { label: '店舗アカウント', cls: 'text-amber-700 bg-amber-50 border-amber-200' }
+    };
+
+    /** v88.0: この人のログインを、すべての端末で切る（次に開いたときにログイン画面が1回出る） */
+    window.signOutUserEverywhere = async function (email) {
+      if (!confirm(email + '\n\nこの人がログインしている端末を、すべてログアウトしますか？\n' +
+                   '（端末をなくしたとき等に使います。次に開いたときに、もう一度ログインが必要になります）')) return;
+      try {
+        await doWithLoading('ログアウトしています…', runGasTask('signOutUserEverywhere', { email: email }));
+        alert('すべての端末をログアウトしました。');
+      } catch (e) {
+        if (!noticeSessionExpired_(e)) alert('ログアウトできませんでした: ' + (e.message || e));
+      }
     };
 
     window.toggleUserRole = async function (email, makeAdmin) {
@@ -6326,8 +6353,14 @@
       if (!d) return;
       const esc = window.escapeHtmlV73;
       const depts = (d.ai && d.ai.departments) ? d.ai.departments.map(x => x.name) : [];
-      if (depts.length === 0) { alert('印刷できる内容がありません。'); return; }
+      const pe = d.ai && d.ai.previous_evening;
+      const hasPrev = !!(pe && pe.topics && pe.topics.length);   // v88.0
+      if (depts.length === 0 && !hasPrev) { alert('印刷できる内容がありません。'); return; }
       document.getElementById('spm-body').innerHTML =
+        (hasPrev
+          ? '<label class="flex items-center gap-2 text-sm text-indigo-800 font-bold py-1 mb-1 border-b border-slate-200">' +
+            '<input type="checkbox" id="spm-prev" class="w-4 h-4 accent-indigo-600" checked>🌙 前日の夕方のレポート</label>'
+          : '') +
         '<label class="flex items-center gap-2 text-xs font-bold text-slate-600 pb-2 border-b border-slate-200">' +
         '<input type="checkbox" id="spm-all" class="w-4 h-4 accent-teal-600" checked onchange="window.spmToggleAll_(this)">すべての部門</label>' +
         depts.map((n, i) =>
@@ -6390,6 +6423,19 @@
           memoBlock(t.related_ids) + '</div>').join('') +
         '</div>').join('');
 
+      // v88.0: 前日の夕方のレポート（選んだときだけ・当日の分より先に）
+      const pe = ai.previous_evening;
+      const prevHtml = (o.prev && pe && pe.topics && pe.topics.length)
+        ? '<div class="dept-block"><h2>🌙 前日の夕方のレポート（前日15時以降の記録）</h2>' +
+          '<div class="meta">昨日の遅番やミーティングの後に記録された内容です</div>' +
+          (pe.summary ? '<div>' + esc(pe.summary) + '</div>' : '') +
+          pe.topics.map(t =>
+            '<div class="topic"><h3>・［' + esc(t.department || '') + '］' + esc(t.title || '') + '</h3>' +
+            (t.detail ? '<div>' + esc(t.detail) + '</div>' : '') +
+            (t.action ? '<div class="action">→ 対応: ' + esc(t.action) + '</div>' : '') +
+            memoBlock(t.related_ids) + '</div>').join('') + '</div>'
+        : '';
+
       const decisions = (ai.decisions && ai.decisions.length)
         ? '<h2>決定事項</h2><ul>' + ai.decisions.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
       const todos = (ai.todos && ai.todos.length)
@@ -6399,8 +6445,9 @@
       return '<div class="print-doc">' +
         '<h1>' + esc(d.fileName || '店内ミーティング資料') + '</h1>' +
         '<div class="meta">' + esc(d.shop || '') + '　／　対象日: ' + esc(d.dateDisplay || '') +
-        '　／　作成: ' + esc(d.author || '') + '　／　印刷部門: ' + esc(deptNames.join('・')) + '</div>' +
-        '<h2>全体概要</h2><div>' + esc((ai.overall_summary || '（概要なし）')) + '</div>' +
+        '　／　作成: ' + esc(d.author || '') + '　／　印刷部門: ' + esc(deptNames.join('・') || '（前日の夕方のみ）') + '</div>' +
+        prevHtml +
+        '<h2>全体概要（当日）</h2><div>' + esc((ai.overall_summary || '（概要なし）')) + '</div>' +
         decisions + todos + deptHtml + '</div>';
     }
 
@@ -6408,10 +6455,13 @@
       const d = _currentMeeting;
       if (!d) return;
       const deptNames = Array.prototype.slice.call(document.querySelectorAll('#spm-body input.spm-dept:checked')).map(el => el.value);
-      if (deptNames.length === 0) { alert('印刷する部門を選んでください。'); return; }
+      const prevEl = document.getElementById('spm-prev');
+      const withPrev = !!(prevEl && prevEl.checked);   // v88.0
+      if (deptNames.length === 0 && !withPrev) { alert('印刷する部門を選んでください。'); return; }
       const printOpts = {
         photos: document.getElementById('spm-photos').checked,
-        text  : document.getElementById('spm-memos').checked
+        text  : document.getElementById('spm-memos').checked,
+        prev  : withPrev
       };
       const root = document.getElementById('print-root');
       root.innerHTML = buildPrintHtml_(d, deptNames, printOpts);
