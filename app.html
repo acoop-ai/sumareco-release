@@ -1,6 +1,12 @@
 
 <!DOCTYPE html>
 <!-- スマレコ (SmartRecord) PWA Frontend v77.2
+     v86.0: 画面の変更なし。天気アクションを季節と地域の平年で判定するサーバー v86.0 を必須にする
+     v85.0: 本部へ報告を送れるのは本部の方と店長だけ。店舗の方・ゲストには報告の入口を出さず
+            案内を出す（タブの左は「ホーム」）。本部の方のホームにも、いま出ている通知を出す。
+            店内共有のまとめの提出・取り下げ（提出後の削除も）も店長だけ
+     v84.0: 役割（管理者かどうか）と所属（本部か店舗か）を分ける。店舗に所属する店長が
+            店内共有と天気を使えるようにし、本部の機能は所属で判断する
      v83.2: ログインが切れたときのお知らせを「ログインの期限が切れました。もう一度ログインしてください。」に揃えた。
             「エラーが発生しました」「送信エラー」と重ねて2回出していたのを1回にする。GAS の「認証失敗」も同じ扱い
      v83.1: PC も同じタブのまま Google へ移って戻るログインにした（PC でも2度の認証・通ったのにログイン画面のまま固まる件）。
@@ -865,10 +871,10 @@
         class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-blue-600 flex items-center">
         <span class="material-icons text-lg mr-3">install_mobile</span>ホーム画面に追加する方法</button>
 
-      <!-- ⑤ レポート作成（ADMIN/HQ_ADMIN のみ） -->
+      <!-- ⑤ レポート作成（v84.0: 本部所属なら誰でも） -->
       <div id="report-create-section" class="hidden">
         <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-indigo-400 bg-indigo-50/40 tracking-wider flex items-center gap-1">
-          <span class="material-icons text-[13px]">admin_panel_settings</span>レポート作成（管理者）</div>
+          <span class="material-icons text-[13px]">admin_panel_settings</span>レポート作成（本部）</div>
         <button onclick="window.runAggregation('flash')"
           class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 text-slate-700 flex items-center">
           <span class="material-icons text-lg mr-3">flash_on</span>今日の速報を作成</button>
@@ -877,10 +883,10 @@
           <span class="material-icons text-lg mr-3">article</span>昨日の日報を集計</button>
       </div>
 
-      <!-- ⑥ 管理者ツール（ADMIN/HQ_ADMIN のみ） -->
+      <!-- ⑥ 本部ツール（v84.0: 本部所属なら誰でも） -->
       <div id="admin-tools-section" class="hidden">
         <div class="px-4 pt-3 pb-1 text-[10px] font-bold text-rose-400 bg-rose-50/40 tracking-wider flex items-center gap-1">
-          <span class="material-icons text-[13px]">build</span>管理者ツール</div>
+          <span class="material-icons text-[13px]">build</span>本部ツール</div>
         <button onclick="window.forceWeatherUpdate()"
           class="w-full text-left px-4 py-3 text-sm hover:bg-blue-50 text-blue-700 flex items-center">
           <span class="material-icons text-lg mr-3">cloud_sync</span>全店 天気データ強制更新</button>
@@ -1033,13 +1039,15 @@
            症状（写真が出ない等）が出る前に気づけるようにする -->
       <div id="app-update-notice" class="hidden bg-blue-600 text-white rounded-xl p-3 text-xs shadow-lg"></div>
       <div id="server-version-warn" class="hidden bg-red-600 text-white rounded-xl p-3 text-xs shadow-lg"></div>
+      <!-- v85.0: 本部の方のホームにも、いま出ている本部からの通知を出す（店舗の方は下の天気の枠に出る） -->
+      <div id="hq-active-alerts" class="hidden bg-white border-l-4 border-indigo-600 rounded-r-lg p-3 shadow-md"></div>
       <!-- v78.0: 店舗のアカウントは「本部へ報告」と「店内で共有」を上部タブで切り替える。
            メニューの奥に入れると見つからないため、画面を開いた瞬間に目に入る位置に置く。
            色は本部＝緑・店内＝ティールで固定し、今どちらに送る記録かを常に示す -->
       <div id="mode-tabs-home" class="hidden bg-white rounded-2xl shadow-xl p-1.5 flex gap-1.5 border border-slate-200">
         <button type="button" aria-current="page"
           class="flex-1 py-3.5 rounded-xl bg-green-700 text-white font-bold text-sm flex items-center justify-center gap-1 shadow">
-          <span class="material-icons text-base">send</span>本部へ報告
+          <span class="material-icons text-base" data-tab-home-icon>send</span><span data-tab-home-label>本部へ報告</span>
         </button>
         <button type="button" onclick="window.openInstore()"
           class="btn-press flex-1 py-3.5 rounded-xl bg-teal-50 text-teal-700 border border-teal-200 font-bold text-sm flex items-center justify-center gap-1 active:scale-95 transition-transform">
@@ -1097,7 +1105,17 @@
         <div id="img-preview" class="flex space-x-3 overflow-x-auto hidden pb-2 pl-1 no-scrollbar"></div>
       </div>
       </div><!-- /home-recorder-slot -->
-      <div class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100 pb-8">
+      <!-- v85.0: 本部へ報告を送れない方（店舗の方・ゲスト）に出す案内。報告の入口の代わりに置く -->
+      <div id="hq-report-blocked" class="hidden bg-white rounded-2xl shadow-lg p-5 border border-slate-200">
+        <div class="flex items-start gap-3">
+          <span class="material-icons text-slate-400 text-2xl">info</span>
+          <div class="min-w-0">
+            <div class="text-sm font-bold text-slate-700">本部への報告は店長が行います</div>
+            <div id="hq-report-blocked-text" class="text-xs text-slate-500 mt-1 leading-relaxed"></div>
+          </div>
+        </div>
+      </div>
+      <div id="hq-report-card" class="bg-white rounded-2xl shadow-lg p-5 border border-slate-100 pb-8">
         <div class="flex justify-between items-center mb-4">
           <h3 class="text-sm font-bold text-green-800 flex items-center gap-1">
             <span class="material-icons text-sm">send</span>本部・SVへ送る報告</h3><label
@@ -1716,7 +1734,7 @@
       <div class="bg-white rounded-2xl shadow p-1.5 flex gap-1.5 border border-teal-200">
         <button type="button" onclick="window.closeInstore()"
           class="btn-press flex-1 py-3.5 rounded-xl bg-green-50 text-green-700 border border-green-200 font-bold text-sm flex items-center justify-center gap-1 active:scale-95 transition-transform">
-          <span class="material-icons text-base">send</span>本部へ報告
+          <span class="material-icons text-base" data-tab-home-icon>send</span><span data-tab-home-label>本部へ報告</span>
         </button>
         <button type="button" aria-current="page"
           class="flex-1 py-3.5 rounded-xl bg-teal-700 text-white font-bold text-sm flex items-center justify-center gap-1 shadow">
@@ -1733,7 +1751,7 @@
           <div><b>② まとめる</b>：ミーティング前に「まとめる」を押すと、部門別のミーティング資料ができます。</div>
           <div><b>③ 更新する</b>：ミーティング中の話し合いや決定事項も録音して記録し、もう一度「まとめる」を押すと資料が最新になります。</div>
           <div><b>④ 印刷する</b>：資料画面の「印刷」から、部門を選んで印刷できます。翌日の部門ミーティングにそのまま使えます。</div>
-          <div><b>⑤ 本部へ提出</b>：資料画面の「本部へ提出」で、本日のミーティング報告として本部に届きます。<b>提出するまで本部には見えません。</b></div>
+          <div><b>⑤ 本部へ提出</b>：資料画面の「本部へ提出」で、本日のミーティング報告として本部に届きます。<b>提出するまで本部には見えません。</b>提出と取り下げは<b>店長</b>が行います。</div>
           <div class="pt-1 text-slate-400">※ 記録した内容は同じ店舗のメンバーが閲覧できます。店舗のPCからも同じ画面で確認できます。</div>
         </div>
       </details>
@@ -2592,7 +2610,7 @@
         : '';
 
       // v75.0(②): Doc 直リンクは本部メンバーのみ（店舗ユーザーは Drive 権限が無いため）
-      const isHqViewer = (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
+      const isHqViewer = _isHqMemberUi; // v84.0: 所属で判断（役割では決めない）
 
       document.getElementById('ad-body').innerHTML = `
         <div class="bg-white rounded-lg p-3 border border-slate-200">
@@ -2739,10 +2757,16 @@
       document.getElementById('account-name').innerText = user.account;
       // HQ_ADMIN または ADMIN の場合に「本部配信」ボタンを表示
       const hqBtn = document.getElementById('btn-hq-admin');
-      if (hqBtn) hqBtn.classList.toggle('hidden', userRole !== 'HQ_ADMIN' && userRole !== 'ADMIN');
+      // v84.0: 本部配信は本部所属なら誰でも（役割では決めない・PO 判断 2026-09-24）
+      if (hqBtn) hqBtn.classList.toggle('hidden', !((user.isHqMember !== undefined)
+        ? !!user.isHqMember : (String(user.shop || '').trim() === '本部')));
       // v76.0: 本部メンバー（役職 or 所属=本部）には全店ミーティング報告の入口を出す
       _currentUserShop = String(user.shop || '').trim();
-      const isHqMember = (userRole === 'HQ_ADMIN' || userRole === 'ADMIN' || _currentUserShop === '本部');
+      // v83.0: 「本部の方か」は所属で決まる（役割では決めない）。判定はサーバーに置き、
+      //   ここでは受け取った結果を使う。古い版のサーバーに当たったときだけ所属で見る。
+      const isHqMember = (user.isHqMember !== undefined)
+        ? !!user.isHqMember
+        : (_currentUserShop === '本部');
       _isHqMemberUi = isHqMember; // v80.1: 画面の案内を出し分けるために覚えておく
       const hqMeetBtn = document.getElementById('btn-hq-meetings');
       if (hqMeetBtn) hqMeetBtn.classList.toggle('hidden', !isHqMember);
@@ -2771,23 +2795,56 @@
       //   （そのために、先に別の方を管理者にしておく必要がある）。
       const isStoreUser = _canStoreShare && !isHqMember &&
                           !!_currentUserShop && _currentUserShop !== '本部';
+      _isStoreUserUi = isStoreUser;
       // v78.0: 店舗内情報共有への入口は画面上部のタブ（v80.1 でここに一本化）
       const modeTabs = document.getElementById('mode-tabs-home');
       if (modeTabs) modeTabs.classList.toggle('hidden', !isStoreUser);
+
+      // v85.0: 本部へ報告を送れるのは本部の方と店長だけ（PO 判断 2026-09-24）。
+      //   送れない方には録音と報告のボタンを出さず、なぜ無いのかを案内する。
+      //   古い版のサーバー（判定を返さない）に当たったときは、これまでどおり出す。
+      _canReportToHqUi = (user.canReportToHq !== undefined) ? !!user.canReportToHq : true;
+      const recSlot = document.getElementById('home-recorder-slot');
+      if (recSlot) recSlot.classList.toggle('hidden', !_canReportToHqUi);
+      const reportCard = document.getElementById('hq-report-card');
+      if (reportCard) reportCard.classList.toggle('hidden', !_canReportToHqUi);
+      const blocked = document.getElementById('hq-report-blocked');
+      if (blocked) blocked.classList.toggle('hidden', _canReportToHqUi);
+      const blockedText = document.getElementById('hq-report-blocked-text');
+      if (blockedText) {
+        blockedText.innerHTML = isStoreUser
+          ? '気づいたこと・相談したいことは、画面上の「<b>店内で共有</b>」で記録してください。' +
+            '店長がまとめて本部へ届けます。天気と本部からのお知らせはこの画面で確認できます。'
+          : 'このアカウントでは、本部への報告と店内共有は使えません。天気・本部からのお知らせ・みんなのナレッジはご覧いただけます。';
+      }
+      // タブの左側：送れない方には「ホーム」と表示する（押して戻る先はどちらも同じホーム画面）
+      Array.prototype.forEach.call(document.querySelectorAll('[data-tab-home-label]'), function (el) {
+        el.textContent = _canReportToHqUi ? '本部へ報告' : 'ホーム';
+      });
+      Array.prototype.forEach.call(document.querySelectorAll('[data-tab-home-icon]'), function (el) {
+        el.textContent = _canReportToHqUi ? 'send' : 'home';
+      });
+
+      // v85.0: 本部の方には、いま出ている本部からの通知をホームに出す
+      if (isHqMember) window.loadHqActiveAlerts();
+      else { const box = document.getElementById('hq-active-alerts'); if (box) box.classList.add('hidden'); }
       // v73.2: メニューボタンは全ユーザーに表示（一般ユーザーがマイレポート/天気等に到達できるよう開放）
       const menuBtn = document.getElementById('btn-admin-menu');
       if (menuBtn) menuBtn.classList.remove('hidden');
       // v73.2: 管理者ツールのセクションは ADMIN/HQ_ADMIN のみ表示
-      const isAdmin = !!user.isAdmin || (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
+      // v83.0: 権限の付け外しができるのは「本部所属かつ役割が管理者」。サーバーの判定に従う
+      const isAdmin = !!user.isAdmin;
       _isAdminUi = isAdmin; // v81.0: 権限の管理画面を出すかの判定に使う
       const usersBtn = document.getElementById('btn-users');
       if (usersBtn) usersBtn.classList.toggle('hidden', !isAdmin);
       const usersMenu = document.getElementById('menu-users');
       if (usersMenu) usersMenu.classList.toggle('hidden', !isAdmin);
+      // v84.0: 集計の手動実行・天気の強制更新は本部所属なら誰でも（PO 判断 2026-09-24）。
+      //   権限の付け外しだけが isAdmin（本部所属かつ管理者）
       const adminToolsSection = document.getElementById('admin-tools-section');
-      if (adminToolsSection) adminToolsSection.classList.toggle('hidden', !isAdmin);
+      if (adminToolsSection) adminToolsSection.classList.toggle('hidden', !isHqMember);
       const reportCreateSection = document.getElementById('report-create-section');
-      if (reportCreateSection) reportCreateSection.classList.toggle('hidden', !isAdmin);
+      if (reportCreateSection) reportCreateSection.classList.toggle('hidden', !isHqMember);
       // ログイン画面を隠してホームを表示
       document.getElementById('screen-login').classList.add('hidden');
       document.getElementById('screen-home').classList.remove('hidden');
@@ -2848,6 +2905,41 @@
 
       ;
 
+    /**
+     * v85.0: 本部の方のホームに、いま出ている本部からの通知を出す。
+     *   店舗の方には天気データに載せて届けているが、本部の方は店舗の天気を見ないため、
+     *   別の取得口から受け取って専用の枠に並べる。0件なら枠ごと出さない。
+     */
+    window.loadHqActiveAlerts = async function () {
+      const box = document.getElementById('hq-active-alerts');
+      if (!box) return;
+      try {
+        const list = await runGasTask('getActiveHqAlertsForHq');
+        const items = Array.isArray(list) ? list : [];
+        if (!items.length) { box.classList.add('hidden'); return; }
+        const esc = window.escapeHtmlV73;
+        box.innerHTML =
+          '<div class="flex items-center justify-between gap-2 mb-2">' +
+          '<div class="text-xs font-bold text-indigo-800 flex items-center gap-1">' +
+          '<span class="material-icons text-sm">campaign</span>いま出ている本部からの通知（' + items.length + '件）</div>' +
+          '<button onclick="window.showHQAdmin()" class="text-[11px] font-bold text-indigo-700 px-2 py-1 rounded border border-indigo-200 bg-indigo-50">管理 ›</button>' +
+          '</div>' +
+          items.map(function (a) {
+            return '<div class="py-1.5 border-t border-slate-100 first:border-t-0">' +
+              '<div class="flex items-center gap-1.5 flex-wrap">' +
+              '<span class="text-[10px] font-bold text-slate-600 bg-slate-100 rounded px-1.5 py-0.5">' + esc(a.target || '全店') + '</span>' +
+              (a.alertType === '定期' ? '<span class="text-[10px] font-bold text-teal-700 bg-teal-50 rounded px-1.5 py-0.5">定期</span>' : '') +
+              '<span class="text-xs font-bold text-slate-700">' + esc(a.title || '') + '</span></div>' +
+              '<div class="text-[11px] text-slate-500 mt-0.5 break-words">' + esc(String(a.msg || '').slice(0, 80)) +
+              (String(a.msg || '').length > 80 ? '…' : '') + '</div></div>';
+          }).join('');
+        box.classList.remove('hidden');
+      } catch (e) {
+        console.warn('本部からの通知を取得できませんでした:', e);
+        box.classList.add('hidden');
+      }
+    };
+
     // Header Alert Logic
     window.updateHeaderAlert = function () {
       if (!myShopName) {
@@ -2881,6 +2973,8 @@
           const completed = window._completedAlertIds || new Set();
           const sorted = [...(myData.alerts || [])]
             .filter(a => !(a.isHQ && completed.has(a.id)))
+            // v85.0: 本部の方には専用の枠（いま出ている本部からの通知）で出すので、ここでは重ねない
+            .filter(a => !(a.isHQ && _isHqMemberUi))
             .sort((a, b) => (levelOrder[a.level] ?? 9) - (levelOrder[b.level] ?? 9));
 
           if (sorted.length > 0) {
@@ -3685,7 +3779,24 @@
         ? '写真を撮っている間に、端末の都合でアプリが起動し直されました。\n' +
           '記録は端末に残してあるので、そのまま続けられます。\n\n'
         : '前回の記録が、送信されないまま残っています。\n\n';
-      if (!confirm(head + '【残っている内容】\n' + what.join('\n') +
+      // v85.0: ホームで録っていた記録（本部への報告のつもり）が残っていても、本部へ送れない方は
+      //   そのまま続けられない。黙って消さず、店内共有で続けるか破棄するかを選んでもらう
+      //   （店内共有も使えないアカウントは、理由を伝えて破棄する）
+      if (!d.instore && !_canReportToHqUi) {
+        if (!_isStoreUserUi) {
+          alert('前回の記録が残っていましたが、このアカウントでは本部への報告を送れないため破棄しました。');
+          await clearDraft_();
+          return;
+        }
+        if (!confirm('本部への報告は、店長が行うようになりました。\n' +
+                     '残っている記録は「店内で共有」に記録できます。\n\n' +
+                     '【残っている内容】\n' + what.join('\n') +
+                     '\n\n「OK」＝店内で共有に記録する\n「キャンセル」＝破棄する')) {
+          await clearDraft_();
+          return;
+        }
+        d.instore = true;   // 下の処理で店内の画面へ移る
+      } else if (!confirm(head + '【残っている内容】\n' + what.join('\n') +
                    '\n\n「OK」＝続きから使う\n「キャンセル」＝破棄する')) {
         await clearDraft_();
         return;
@@ -3842,6 +3953,11 @@
     //   opts: { emergencyId, confirmText, quietSuccess, onSuccess }
     async function submitReport_(mode, opts) {
       const o = opts || {};
+      // v85.0: 本部への報告は本部の方と店長だけ（サーバーでも同じ判定で断る）
+      if (mode !== '店内' && !_canReportToHqUi) {
+        alert('本部への報告は、店長または本部の方が行います。\n気づいたことは「店内で共有」で記録してください。');
+        return;
+      }
       if (audioChunks.length === 0) {
         alert("音声が録音されていません。");
         return;
@@ -4577,7 +4693,7 @@
 
         // v75.0(①②): まとめレポートはサーバー側で権限フィルタ済み。
         //   本部メンバー＝全まとめ／それ以外＝自分が作成した巡回まとめ＋自店舗宛に共有された巡回まとめのみ
-        const isHqViewer = (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
+        const isHqViewer = _isHqMemberUi; // v84.0: 所属で判断（役割では決めない）
         const aggExplain = isHqViewer
           ? '・<b>まとめレポート</b>（巡回まとめ/速報/朝刊）＝下の「まとめレポート」一覧。複数の報告を1つに集約したものです。'
           : '・<b>巡回まとめ・受信レポート</b>＝自分が作成した巡回まとめと、本部から自店舗宛に共有された巡回レポートが表示されます。';
@@ -4637,7 +4753,7 @@
     // 集計レポート 行レンダラ（showReportsList / openMyReports 共用）
     window.renderAggregatedRows_ = function (list) {
       // v75.0(②): Doc 直リンクは本部メンバーのみ（店舗ユーザーは Drive 権限が無く開けないため。閲覧は「詳細」で完結）
-      const isHqViewer = (userRole === 'ADMIN' || userRole === 'HQ_ADMIN');
+      const isHqViewer = _isHqMemberUi; // v84.0: 所属で判断（役割では決めない）
       return list.map(function (i) {
         const safeId   = window.escapeHtmlV73(i.id   || '');
         const safeName = window.escapeHtmlV73(i.name || '');
@@ -5086,6 +5202,8 @@
     let _currentUserShop = '';     // ログイン中ユーザーの所属店舗（本部判定・表示用）
     let _isHqMemberUi = false;     // v80.1: 本部の人か（案内の文言を出し分けるだけに使う）
     let _isAdminUi = false;        // v81.0: 権限を扱える人か（画面の出し分けに使う）
+    let _canReportToHqUi = true;   // v85.0: 本部へ報告を送れるか（本部の方と店長だけ）
+    let _isStoreUserUi = false;    // v85.0: 店内共有を使える店舗のメンバーか（下書きの戻し先の判断に使う）
     let _isDevTester = false;      // v77.0: 店内モードの検証を許可されたアカウントか（サーバー判定）
     let _canStoreShare = false;    // v77.2: 店舗内情報共有を使えるアカウントか（サーバー判定）
 
@@ -5294,13 +5412,13 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v83.2';
+    const APP_VERSION = 'v86.0';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
     //   GAS は人が貼り替えて手動でデプロイする層で、version を画面で確かめられないと
     //   「貼ったつもりで貼れていない」に症状が出るまで気づけないため。
-    const REQUIRED_GAS_VERSION = 'v82.0';
+    const REQUIRED_GAS_VERSION = 'v86.0';
     let _gasVersion = '';
 
     /** 'v79.1' → 79001 のように比べられる数にする（文字列比較だと v79.10 < v79.9 になる） */
@@ -5835,10 +5953,13 @@
           ? '<button onclick="window.startEditStoreMeeting()" class="flex-1 min-w-[30%] py-3 bg-blue-600 text-white rounded-lg font-bold text-sm">✎ 編集</button>' : '';
         const submitBtn = (d.canSubmit && !submitted && !d.readOnly)
           ? '<button onclick="window.submitStoreMeetingToHq()" class="flex-1 min-w-[30%] py-3 bg-indigo-700 text-white rounded-lg font-bold text-sm">📤 本部へ提出</button>' : '';
+        // v85.0: 本部への提出は店長が行う。ボタンが無い理由をその場で示す
+        const leadNote = (d.submitByLead && !submitted && !d.readOnly)
+          ? '<div class="w-full text-center text-[11px] text-slate-500">本部への提出は<b>店長</b>が行います（店長のアカウントで開くと「本部へ提出」が出ます）</div>' : '';
         footer.innerHTML =
           '<button onclick="window.closeStoreMeeting()" class="flex-1 min-w-[30%] py-3 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm">閉じる</button>' +
           '<button onclick="window.openStorePrintModal()" class="flex-1 min-w-[30%] py-3 bg-white border border-teal-300 text-teal-700 rounded-lg font-bold text-sm">🖨 印刷</button>' +
-          editBtn + submitBtn;
+          editBtn + submitBtn + leadNote;
       }
     }
 
@@ -5870,9 +5991,14 @@
         rows.push('<button onclick="window.deleteStoreMeetingNow()" class="btn-press w-full py-2.5 rounded-lg border border-red-300 bg-white text-red-700 text-xs font-bold">🗑 この資料を削除する</button>');
       }
       if (!rows.length) return '';
+      // v85.0: 見出しは実際に出ている操作だけを並べる（取り下げは店長だけになったため）
+      const labels = [];
+      if (d.canWithdraw) labels.push('提出の取り下げ');
+      if (d.canDelete) labels.push('削除');
+      if (d.canPublish) labels.push('ナレッジ公開');
       return '<details class="mt-4 bg-white border border-slate-200 rounded-xl">' +
-        '<summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">⚙ この資料の管理（提出の取り下げ・削除' +
-        (d.canPublish ? '・ナレッジ公開' : '') + '）</summary>' +
+        '<summary class="px-4 py-3 text-xs font-bold text-slate-600 cursor-pointer select-none">⚙ この資料の管理' +
+        (labels.length ? '（' + labels.join('・') + '）' : '') + '</summary>' +
         '<div class="px-4 pb-4 space-y-2">' + rows.join('') + '</div></details>';
     }
 
@@ -5965,7 +6091,9 @@
       const atMax = d.adminCount >= d.adminMax;
       const atMin = d.adminCount <= d.adminMin;
 
-      label.textContent = '管理者 ' + d.adminCount + ' / ' + d.adminMax + ' 名　（全 ' + d.users.length + ' 名）';
+      const leads = d.users.filter(function (u) { return u.isStoreLead; }).length;
+      label.textContent = '本部の管理者 ' + d.adminCount + ' / ' + d.adminMax + ' 名' +
+        (leads ? '　店長 ' + leads + ' 名' : '') + '　（全 ' + d.users.length + ' 名）';
 
       const list = kw
         ? d.users.filter(function (u) {
@@ -5977,36 +6105,45 @@
       let notice = '';
       if (atMax) {
         notice = '<div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-900 leading-relaxed">' +
-          '<b>管理者が上限の' + d.adminMax + '名です。</b>これ以上は増やせません。<br>' +
-          '使っていない方の「管理者をやめる」を押して空きを作ってから、新しい方を管理者にしてください。</div>';
+          '<b>本部の管理者が上限の' + d.adminMax + '名です。</b>本部に所属する方は、これ以上増やせません。<br>' +
+          '使っていない方の「管理者をやめる」を押して空きを作ってください。<br>' +
+          '※ <b>店舗に所属する店長は、この人数に数えません。</b>店長はいつでも増やせます。</div>';
       } else if (atMin) {
         notice = '<div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-900 leading-relaxed">' +
-          '<b>管理者は現在' + d.adminCount + '名です。</b>0名になると誰も権限を戻せなくなるため、' +
+          '<b>本部の管理者は現在' + d.adminCount + '名です。</b>0名になると誰も権限を戻せなくなるため、' +
           'この方の権限は解除できません。先に別の方を管理者にしてください。</div>';
       }
 
       const cards = list.map(function (u) {
         const self = String(u.email).toLowerCase() === String(d.myEmail).toLowerCase();
+        // v83.0: 同じ「管理者」の役割でも、本部所属なら権限を扱える人、店舗所属なら店長。
+        //   上限（10名）と「最後の1名」は本部所属にだけかかる
+        const hasRole = u.isAdmin || u.isStoreLead;
         let btn;
-        if (u.isAdmin) {
-          btn = atMin
+        if (hasRole) {
+          btn = (u.isAdmin && atMin)
             ? '<button disabled class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-400 text-xs font-bold">解除できません（最後の1名）</button>'
             : '<button onclick="window.toggleUserRole(\'' + esc(u.email) + '\', false)" ' +
-              'class="btn-press flex-1 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-bold">管理者をやめる</button>';
+              'class="btn-press flex-1 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-bold">' +
+              (u.isAdmin ? '管理者をやめる' : '店長をやめる') + '</button>';
         } else if (!u.canBeAdmin) {
-          btn = '<div class="flex-1 py-2.5 text-center text-[11px] text-slate-400">本部のアカウントではないため管理者にできません</div>';
-        } else if (atMax) {
-          btn = '<button disabled class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-400 text-xs font-bold">上限に達しています</button>';
+          btn = '<div class="flex-1 py-2.5 text-center text-[11px] text-slate-400">本部のアカウントではないため権限を付けられません</div>';
+        } else if (u.isHqShop && atMax) {
+          btn = '<button disabled class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-400 text-xs font-bold">本部の管理者は上限（' + d.adminMax + '名）です</button>';
         } else {
           btn = '<button onclick="window.toggleUserRole(\'' + esc(u.email) + '\', true)" ' +
-            'class="btn-press flex-1 py-2.5 rounded-lg bg-indigo-700 text-white text-xs font-bold">管理者にする</button>';
+            'class="btn-press flex-1 py-2.5 rounded-lg bg-indigo-700 text-white text-xs font-bold">' +
+            (u.isHqShop ? '管理者にする' : '店長にする') + '</button>';
         }
-        return '<div class="bg-white rounded-xl border ' + (u.isAdmin ? 'border-indigo-300' : 'border-slate-200') + ' p-3">' +
+        const badge = u.isAdmin
+          ? '<span class="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5">本部の管理者</span>'
+          : (u.isStoreLead
+              ? '<span class="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded px-1.5 py-0.5">店長</span>'
+              : '<span class="text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5">一般</span>');
+        const border = u.isAdmin ? 'border-indigo-300' : (u.isStoreLead ? 'border-teal-300' : 'border-slate-200');
+        return '<div class="bg-white rounded-xl border ' + border + ' p-3">' +
           '<div class="flex items-center gap-2 flex-wrap">' +
-          '<span class="text-sm font-bold text-slate-700">' + esc(u.name || '（名前未設定）') + '</span>' +
-          (u.isAdmin
-            ? '<span class="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5">管理者</span>'
-            : '<span class="text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5">一般</span>') +
+          '<span class="text-sm font-bold text-slate-700">' + esc(u.name || '（名前未設定）') + '</span>' + badge +
           (self ? '<span class="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">あなた</span>' : '') +
           '</div>' +
           '<div class="text-[11px] text-slate-500 mt-1 break-all">' + esc(u.shop || '-') + '　' + esc(u.email) + '</div>' +
@@ -6015,18 +6152,26 @@
 
       body.innerHTML = notice +
         '<div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-[11px] text-slate-600 leading-relaxed">' +
-        '<b>管理者</b>は、利用者の権限を切り替えられます（本部配信や全店の報告も扱えます）。<br>' +
-        '管理者にできるのは本部のアカウントだけです。' +
-        '<b>最低1名・最大' + d.adminMax + '名</b>までとしています。</div>' +
+        '<b>本部の管理者</b>（本部に所属し、権限を切り替えられる方）… <b>最低1名・最大' + d.adminMax + '名</b>。<br>' +
+        '<b>店長</b>（店舗に所属し、同じ役割を持つ方）… 人数の制限はありません。' +
+        '自店の店内共有と天気を使えますが、<b>他店の内容や本部の機能は扱えません</b>。<br>' +
+        '本部配信・全店の報告・ナレッジ公開は、<b>本部に所属していれば役割によらず使えます</b>。<br>' +
+        '権限を付けられるのは本部のアカウントだけです。所属は「プロフィール編集」から変わります。</div>' +
         (list.length
           ? cards
           : '<div class="p-8 text-center text-slate-400 text-sm">当てはまる利用者がいません</div>');
     };
 
     window.toggleUserRole = async function (email, makeAdmin) {
+      const target = (_usersData && _usersData.users || []).filter(function (u) {
+        return String(u.email).toLowerCase() === String(email).toLowerCase();
+      })[0] || {};
+      const toHqAdmin = !!target.isHqShop;   // 本部所属なら管理者、店舗所属なら店長
       const msg = makeAdmin
-        ? email + ' さんを管理者にしますか？\n\n利用者の権限を切り替えられるようになります。'
-        : email + ' さんの管理者権限を解除しますか？\n\n一般の利用者に戻ります。';
+        ? (toHqAdmin
+            ? email + ' さんを本部の管理者にしますか？\n\n利用者の権限を切り替えられるようになります。'
+            : email + ' さんを店長にしますか？\n\n自店の店内共有をまとめる権限が付きます。本部の機能は使えません。')
+        : email + ' さんの権限を解除しますか？\n\n一般の利用者に戻ります。';
       if (!confirm(msg)) return;
       try {
         const res = await doWithLoading('権限を変更しています…',
@@ -6037,7 +6182,7 @@
           window.location.reload();
           return;
         }
-        alert(makeAdmin ? '管理者にしました。' : '管理者権限を解除しました。');
+        alert(makeAdmin ? (toHqAdmin ? '本部の管理者にしました。' : '店長にしました。') : '権限を解除しました。');
       } catch (e) {
         // サーバーが理由を添えて断ってくる（最後の1名・上限・本部以外）。そのまま見せる
         console.error('setUserRole error:', e);
