@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<!-- スマレコ (SmartRecord) 起動ローダー v1.2
+<!-- スマレコ (SmartRecord) 起動ローダー v1.3
+     v1.3（2026-09-25・v88.3）: ポータル等の「ご利用ガイド」からの ?guide=1 を本体へ引き継ぐ（LINE から外へ切り替えるときも）。
      v1.2（2026-09-17・v83.0）: Google から戻ったアドレスの # 以降（ログインの結果）を本体へ引き継ぐ。
      v1.1（2026-09-17・v82.1）: LINE の中で開いたら、1回だけ外のブラウザへ切り替える（openExternalBrowser=1）。
        Google のログインは LINE の中の画面では使えないため。JavaScript が動かない表示でも本体へのリンクを出す。
@@ -61,7 +62,9 @@
     (function () {
       // v1.2: Google から戻ったときの # 以降（ログインの結果）は、自動の切り替えでだけ本体へ引き継ぐ。
       //   画面に出す逃げ道のリンクには載せない（長押しでコピー・共有されるとトークンが外へ出るため）
-      var url = 'app.html?v=' + Date.now();
+      // v1.3: ?guide=1（ご利用ガイドを開く）は本体へ引き継ぐ
+      var guide = /[?&]guide=1(&|$)/.test(location.search) ? '&guide=1' : '';
+      var url = 'app.html?v=' + Date.now() + guide;
       var link = document.getElementById('manual-link');
       if (link) link.href = url;
       // 逃げ道のリンクは、どの分かれ道より先に用意する（切り替えが止められても白いままにしない）
@@ -76,7 +79,7 @@
         if (/\bLine\//i.test(ua) && !/[?&]openExternalBrowser=1/.test(location.search)) {
           var tried = false;
           try { tried = sessionStorage.getItem('smareco_line_xb') === '1'; sessionStorage.setItem('smareco_line_xb', '1'); } catch (e) {}
-          if (!tried) { location.replace(location.pathname + '?openExternalBrowser=1'); return; }
+          if (!tried) { location.replace(location.pathname + '?openExternalBrowser=1' + guide); return; }
         }
       } catch (e) {}
       location.replace(url + (location.hash || ''));

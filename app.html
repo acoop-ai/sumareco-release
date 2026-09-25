@@ -102,6 +102,16 @@
           history.replaceState(null, '', location.pathname + location.search);
         }
       } catch (e) {}
+      // v88.3: ポータル等の「ご利用ガイド」から来た印（?guide=1）。ログインのあとにガイドを開く。
+      //   スマホのログインは同じタブで Google へ移って戻る（戻り先に ?guide=1 は付かない）ので、このタブの中にだけ覚えておく
+      try {
+        if (/[?&]guide=1(&|$)/.test(location.search)) {
+          window.__openGuide = true;
+          try { sessionStorage.setItem('smareco_open_guide', '1'); } catch (e) {}
+          history.replaceState(null, '', location.pathname +
+            location.search.replace(/([?&])guide=1(&|$)/, function (m, a, b) { return b ? a : ''; }) + location.hash);
+        }
+      } catch (e) {}
     })();
   </script>
 
@@ -2880,6 +2890,8 @@
       if (verHqm) verHqm.textContent = verLabel;
       checkServerVersion_();
       pushOverlayHistory_();
+      // v88.3: ポータル等の「ご利用ガイド」から来たら、ホームの上にガイドを開く（戻るでホームへ）
+      if (takeGuideRequest_()) window.showManual();
       // v76.3: 端末に古い版が残っていないか確認する（残っていれば入れ替えを促す）
       // v78.0: 版の確認が済んでから、残っている下書きの復元を尋ねる
       //   （読み直しが走る場合は尋ねずに次回へ回す）
@@ -3528,6 +3540,16 @@
     // 説明書の本文はサーバー（GASの Guide.html＝唯一の原本）から取得する。
     // 公開される配信HTMLには本文を置かない方針のため、初回表示時に一度だけ読み込む。
     let _manualCache = null;
+    // v88.3: ?guide=1 で来たか（1回だけ答える。答えたら印を消す）
+    function takeGuideRequest_() {
+      let hit = !!window.__openGuide;
+      window.__openGuide = false;
+      try {
+        if (sessionStorage.getItem('smareco_open_guide') === '1') hit = true;
+        sessionStorage.removeItem('smareco_open_guide');
+      } catch (_) {}
+      return hit;
+    }
     window.showManual = async function () {
       closeMenuIfOpen_();
       document.getElementById('manual-screen').classList.remove('hidden');
@@ -5373,7 +5395,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v88.2';
+    const APP_VERSION = 'v88.3';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
