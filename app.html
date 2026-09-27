@@ -536,19 +536,22 @@
       counter-reset: steps;
     }
 
+    /* v88.4: 番号の丸は左に固定し、中身は1つの文章として流す。
+         以前は li を横並び（flex）にしていたため、太字・かっこ書き・改行が混ざると、その1つ1つが細い列になって横に並んだ */
     .manual-content .step-list li {
       counter-increment: steps;
-      display: flex;
-      gap: 20px;
+      position: relative;
       margin-bottom: 16px;
-      padding: 20px;
+      padding: 20px 20px 20px 72px;
       background: var(--slate-50);
       border-radius: 16px;
-      align-items: flex-start;
     }
 
     .manual-content .step-list li::before {
       content: counter(steps);
+      position: absolute;
+      left: 20px;
+      top: 18px;
       width: 32px;
       height: 32px;
       border-radius: 50%;
@@ -558,7 +561,6 @@
       align-items: center;
       justify-content: center;
       font-weight: 700;
-      flex-shrink: 0;
     }
 
     .manual-content .ui-frame {
@@ -722,6 +724,62 @@
       }
     }
 
+    /* v88.4: スマホの幅のガイド
+         ・2列の表は、各行を「題の帯（左の列）＋本文（右の列）」のカードに積む。
+           左の列の決め打ちの幅（180px など）で、本文が細い縦の列になっていたため。列名だけの行（区分｜使えるもの 等）は出さない
+         ・4列の基準表（.responsive）は上の「Mobile Responsive Table」のまま */
+    @media (max-width: 640px) {
+      .manual-content section {
+        padding: 24px 14px;
+      }
+
+      .manual-content .ref-table:not(.responsive),
+      .manual-content .ref-table:not(.responsive) thead,
+      .manual-content .ref-table:not(.responsive) tbody,
+      .manual-content .ref-table:not(.responsive) tr,
+      .manual-content .ref-table:not(.responsive) th,
+      .manual-content .ref-table:not(.responsive) td {
+        display: block;
+        width: auto !important;
+      }
+
+      .manual-content .ref-table:not(.responsive) tr:not(:has(> td)) {
+        display: none;
+      }
+
+      .manual-content .ref-table:not(.responsive) tr > :first-child {
+        background: var(--green-50);
+        color: var(--green-900);
+        font-weight: 700;
+        border: none;
+        border-radius: 10px 10px 0 0;
+        padding: 8px 14px;
+      }
+
+      .manual-content .ref-table:not(.responsive) tr > :not(:first-child) {
+        padding: 10px 14px 14px;
+        border: 1px solid var(--green-100);
+        border-top: none;
+      }
+
+      .manual-content .ref-table:not(.responsive) tr > :last-child {
+        margin-bottom: 12px;
+        border-radius: 0 0 10px 10px;
+      }
+
+      .manual-content .step-list li {
+        padding: 16px 14px 16px 54px;
+      }
+
+      .manual-content .step-list li::before {
+        left: 14px;
+        top: 17px;
+        width: 28px;
+        height: 28px;
+        font-size: 0.85rem;
+      }
+    }
+
     /* ============================================================
        v76.4: モードの色分け（送り先の取り違えを防ぐ）
          本部・SVへ送る報告 = 緑 ／ 店舗内だけで共有する記録 = ティール
@@ -750,7 +808,7 @@
     }
 
     /* ============================================================
-       v76.0: 印刷（店内ミーティング資料を部門別に紙で配る）
+       v76.0: 印刷（店内ミーティング資料を、選んだ部門だけ紙に刷る）
        画面表示は隠し、#print-root だけを A4 で印刷する
        ============================================================ */
     #print-root { display: none; }
@@ -1767,7 +1825,7 @@
           <div><b>① 記録する</b>：開店前から気付いたこと・気になること・相談事を、音声と写真でどんどん記録します。</div>
           <div><b>② まとめる</b>：「まとめる」を押すと、部門別のミーティング資料ができます。<b>1日の切り替え時刻（既定は15時・店長が変えられます）までは何度でも</b>押せます（記録が増えたら押し直すと最新になります）。<b>切り替え時刻に自動でまとめます</b>（前日の切り替え時刻〜当日の切り替え時刻の分）。</div>
           <div><b>③ 話し合いを書き足す</b>：ミーティングで話し合ったこと・決めたことは、資料を開いて「<b>編集</b>」で書き足します。<b>ミーティング中は録音しません</b>（切り替え時刻を過ぎた録音は、翌日の資料の「前日の夕方のレポート」に入ります）。</div>
-          <div><b>④ 印刷する</b>：資料画面の「印刷」から、部門を選んで印刷できます。翌日の部門ミーティングにそのまま使えます。</div>
+          <div><b>④ 印刷する（PCで）</b>：資料画面の「印刷」から紙に出せます。ミーティングでそのまま使えます。</div>
           <div><b>⑤ 本部へ提出</b>：資料画面の「本部へ提出」で、本日のミーティング報告として本部に届きます。<b>提出するまで本部には見えません。</b>提出と取り下げは<b>店長</b>が行います。</div>
           <div class="pt-1 text-slate-400">※ 記録した内容は同じ店舗のメンバーが閲覧できます。店舗のPCからも同じ画面で確認できます。</div>
         </div>
@@ -5395,7 +5453,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v88.3';
+    const APP_VERSION = 'v88.4';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
@@ -6436,7 +6494,7 @@
       }
     };
 
-    // ====== ④ 印刷（部門を選んで紙で配る） ======
+    // ====== ④ 印刷（印刷する部門を選ぶ。選んだ部門は続けて刷る） ======
 
     window.openStorePrintModal = function () {
       const d = _currentMeeting;
