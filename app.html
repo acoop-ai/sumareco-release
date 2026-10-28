@@ -1128,6 +1128,11 @@
           class="btn-press flex-1 py-3.5 rounded-xl bg-teal-50 text-teal-700 border border-teal-200 font-bold text-sm flex items-center justify-center gap-1 active:scale-95 transition-transform">
           <span class="material-icons text-base">storefront</span>店内で共有
         </button>
+        <!-- おせち受注: 店舗のアカウントと店長にだけ出す（画面で隠すのは便宜。使えるかどうかは窓口が決める） -->
+        <button type="button" id="btn-osechi-tab" onclick="window.openOsechi()"
+          class="hidden btn-press flex-1 py-3.5 rounded-xl bg-[#fbeff1] text-[#8f1d2c] border border-[#d9a3ad] font-bold text-sm flex items-center justify-center gap-1 active:scale-95 transition-transform">
+          <span class="material-icons text-base">restaurant</span>おせち受注
+        </button>
       </div>
       <!-- マイ店舗アラート表示エリア -->
       <div id="header-alert-area"
@@ -1230,6 +1235,11 @@
       <button onclick="window.openKnowledge()"
         class="btn-press w-full py-3.5 text-sm font-bold bg-white border border-amber-300 text-amber-700 rounded-xl flex items-center justify-center shadow-sm active:scale-95"><span
           class="material-icons text-base mr-2">auto_stories</span>みんなのナレッジ（他店の取り組みを見る）</button>
+      <!-- おせち受注: 本部（送るたびに店を選ぶ）と、上のタブが出ない店長（自店）の入口 -->
+      <button type="button" id="btn-osechi-home" onclick="window.openOsechi()"
+        class="hidden btn-press w-full py-3.5 text-sm font-bold bg-[#8f1d2c] text-white rounded-xl flex items-center justify-center shadow-lg active:scale-95">
+        <span class="material-icons text-base mr-2">restaurant</span><span id="btn-osechi-home-label">おせち受注</span>
+      </button>
       <!-- 本部専用ボタン（HQ_ADMINのみ表示）。v76.8: スクロール操作での誤タップを避けるため区切りと余白を置く -->
       <div id="hq-section-divider" class="hidden pt-4 pb-1 text-[10px] font-bold text-slate-400 border-t border-slate-200 flex items-center gap-1">
         <span class="material-icons text-[13px]">admin_panel_settings</span>本部メニュー
@@ -1786,6 +1796,8 @@
     </div>
     <div id="sub-body" class="flex-grow overflow-y-auto p-4 space-y-3 pb-20"></div>
   </div>
+  <!-- おせち受注（階層1・z-index 2000）。中身は osechi.js が描く（階層2 #osechi-sub・階層4 #osechi-dialog は osechi.js が body に作る） -->
+  <div id="osechi-screen" class="hidden fixed inset-0 z-[2000] bg-[#faf6ef] flex items-center justify-center text-sm text-slate-500" role="dialog" aria-label="おせち受注"></div>
   <!-- ============================================================
        v76.0: 店舗内情報共有（店内ミーティング）
        ============================================================ -->
@@ -2235,6 +2247,7 @@
      */
     function sessionExpiredError_(detail) {
       try {
+        forgetOsechiOnDevice_();   // おせち受注: ログインが切れた（全端末のログアウトを含む）＝作りかけ・札を残さずに閉じる
         const home  = document.getElementById('screen-home');
         const login = document.getElementById('screen-login');
         // 登録画面はログイン画面と同じ重なり順で後ろにあるため、隠さないとログインのボタンが見えない
@@ -2799,6 +2812,7 @@
           localStorage.removeItem('my_shop_name');
           myShopName = null;
           try { clearDraft_(); } catch (e) { /* 下書きが無い場合もある */ }
+          try { forgetOsechiOnDevice_(); } catch (e) { /* おせち受注: 前の人の作りかけ・札を引き継がない */ }
           console.log('別のアカウントで入ったため、端末に残していた設定と下書きを引き継ぎませんでした');
         }
         if (now) localStorage.setItem('last_login_email', now);
@@ -2811,6 +2825,7 @@
       console.log("App Starting with user:", user);
       userRole = user.role || '';
       forgetPreviousAccount_(user.email);
+      purgeOsechiDrafts_(user.email);   // おせち受注: 期限切れ・別のアカウントの作りかけを、おせちを開かなくても消す
       const storedShop = localStorage.getItem('my_shop_name');
       myShopName = storedShop || user.shop;
       document.getElementById('shop-text').innerText = myShopName || "--";
@@ -2864,6 +2879,16 @@
       // v78.0: 店舗内情報共有への入口は画面上部のタブ（v80.1 でここに一本化）
       const modeTabs = document.getElementById('mode-tabs-home');
       if (modeTabs) modeTabs.classList.toggle('hidden', !isStoreUser);
+      // おせち受注: 入口は店舗のアカウント・店長（自店）と本部にだけ出す。使えるかどうかは窓口が毎回決める
+      _osechiProfile = { email: String(user.email || ''), shop: _currentUserShop };
+      const osechiInTab = isStoreUser && (!!user.isStoreAccount || !!user.isStoreLead);
+      const osechiTab = document.getElementById('btn-osechi-tab');
+      if (osechiTab) osechiTab.classList.toggle('hidden', !osechiInTab);
+      const osechiHome = document.getElementById('btn-osechi-home');
+      if (osechiHome) osechiHome.classList.toggle('hidden', osechiInTab || !(isHqMember || !!user.isStoreLead));
+      const osechiHomeLabel = document.getElementById('btn-osechi-home-label');
+      if (osechiHomeLabel) osechiHomeLabel.textContent = isHqMember ? 'おせち受注（店を選んで登録）' : 'おせち受注（' + _currentUserShop + '）';
+      resumeOsechiIfAny_(osechiInTab || isHqMember || !!user.isStoreLead);
 
       // v85.0: 本部へ報告を送れるのは本部の方と店長だけ（PO 判断 2026-09-24）。
       //   送れない方には録音と報告のボタンを出さず、なぜ無いのかを案内する。
@@ -3542,9 +3567,55 @@
       //   （取り消すと、同じアカウントで使っている他の端末と、同じログイン設定の他のアプリまで入り直しになる）
       clearSession_();
       googleAccessToken_ = null;
+      // おせち受注: この端末に残した作りかけ（氏名などを含む）・おせちの札・開き直しの印を消す（先に作りかけを残さずに閉じる）
+      forgetOsechiOnDevice_();
       document.getElementById('screen-home').classList.add('hidden');
       document.getElementById('screen-login').classList.remove('hidden');
     };
+
+    // ---- おせち受注: 端末に残したものの後片付け（サインアウト・別のアカウント・ログイン切れ・起動のたび） ----
+    /**
+     * おせち受注: この端末に残したもの（作りかけ＝氏名・住所・電話を含む・おせちの札・開き直しの印）を消す。
+     *   先に作りかけを残さずに閉じる（閉じるときの保存が、消したあとに書き戻さないように）。
+     *   サインアウト・別のアカウントで入ったとき・ログインが切れたとき（全端末のログアウトを含む）に呼ぶ
+     */
+    function forgetOsechiOnDevice_() {
+      try { if (window.OsechiMode) window.OsechiMode.close({ byHost: true, discard: true }); } catch (_) {}
+      try { hideOverlay_('osechi-dialog'); hideOverlay_('osechi-sub'); hideOverlay_('osechi-screen'); } catch (_) {}
+      try { sessionStorage.removeItem('osechi_session_v1'); sessionStorage.removeItem('osechi_last_done_v1'); } catch (_) {}
+      try { localStorage.removeItem('osechi_resume_v1'); } catch (_) {}
+      try { indexedDB.deleteDatabase('osechi_drafts_v1'); } catch (_) {}
+    }
+    /**
+     * おせち受注: 起動のたびに、期限（作ってから12時間）を過ぎた作りかけと、別のアカウントの作りかけを消す（おせちを開かなくても）。
+     *   おせちを使っていない端末には保存場所を作らない（保存場所の一覧に有るときだけ開く。一覧を出せない端末は、おせちを開いたときに osechi.js が消す）
+     */
+    function purgeOsechiDrafts_(email) {
+      const mine = 'u:' + String(email || '').trim().toLowerCase(), now = Date.now(), TTL = 12 * 60 * 60 * 1000;
+      try {
+        if (!window.indexedDB || typeof indexedDB.databases !== 'function') return;
+        indexedDB.databases().then(function (list) {
+          if (!(list || []).some(function (d) { return d && d.name === 'osechi_drafts_v1'; })) return;
+          const q = indexedDB.open('osechi_drafts_v1');
+          q.onupgradeneeded = function () { try { q.transaction.abort(); } catch (_) {} };   // 一覧のあとで消えていた: 空の保存場所を作らない
+          q.onerror = function () {};
+          q.onsuccess = function () {
+            const db = q.result, done = function () { try { db.close(); } catch (_) {} };
+            try {
+              const tx = db.transaction('drafts', 'readwrite'), cur = tx.objectStore('drafts').openCursor();
+              tx.oncomplete = tx.onerror = tx.onabort = done;
+              cur.onsuccess = function () {
+                const c = cur.result;
+                if (!c) return;
+                const v = c.value || {}, at = Number(v.createdAt);
+                if (v.v !== 1 || (mine !== 'u:' && c.key !== mine) || !(at > 0) || now >= at + TTL || at > now + 5 * 60 * 1000) c.delete();
+                c.continue();
+              };
+            } catch (_) { done(); }
+          };
+        }).catch(function () {});
+      } catch (_) {}
+    }
 
     window.toggleMenu = function () {
       const menu = document.getElementById('admin-menu');
@@ -5386,10 +5457,10 @@
     const OVERLAY_SCREENS = ['sub-screen', 'map-screen', 'dash-screen', 'hq-admin-screen',
                              'help-screen', 'manual-screen', 'shop-select-screen',
                              'instore-screen', 'hq-meetings-screen', 'knowledge-screen',
-                             'users-screen'];
+                             'users-screen', 'osechi-screen'];
     const OVERLAY_MODALS = ['report-detail-modal', 'aggregated-detail-modal', 'hq-edit-modal',
                             'patrol-share-modal', 'store-meeting-modal', 'store-print-modal',
-                            'photo-viewer-modal'];
+                            'photo-viewer-modal', 'osechi-sub', 'osechi-dialog'];
 
     // ============================================================
     // v79.0: 進む／戻るの規則（このアプリ全体で1つ）
@@ -5413,9 +5484,10 @@
       'sub-screen': 1, 'map-screen': 1, 'dash-screen': 1, 'hq-admin-screen': 1,
       'help-screen': 1, 'manual-screen': 1, 'shop-select-screen': 1,
       'instore-screen': 1, 'hq-meetings-screen': 1, 'knowledge-screen': 1, 'users-screen': 1,
+      'osechi-screen': 1, 'osechi-sub': 2,
       'store-meeting-modal': 2, 'aggregated-detail-modal': 2, 'hq-edit-modal': 2,
       'report-detail-modal': 3,
-      'store-print-modal': 4, 'patrol-share-modal': 4,
+      'store-print-modal': 4, 'patrol-share-modal': 4, 'osechi-dialog': 4,
       'photo-viewer-modal': 5
     };
 
@@ -5438,7 +5510,7 @@
       openStoreMeeting: 'store-meeting-modal', openAggregatedDetail: 'aggregated-detail-modal',
       openEditHQAlert: 'hq-edit-modal', openReportDetail: 'report-detail-modal',
       openStorePrintModal: 'store-print-modal', runPatrolAggregation: 'patrol-share-modal',
-      openPhotoViewer: 'photo-viewer-modal'
+      openPhotoViewer: 'photo-viewer-modal', openOsechi: 'osechi-screen'
     };
     const OVERLAY_CLOSERS = {
       closeSub: 'sub-screen', closeMap: 'map-screen', closeDash: 'dash-screen',
@@ -5449,11 +5521,11 @@
       closeStoreMeeting: 'store-meeting-modal',
       closeAggregatedDetail: 'aggregated-detail-modal', closeReportDetail: 'report-detail-modal',
       closeStorePrintModal: 'store-print-modal', closePatrolShareModal: 'patrol-share-modal',
-      closePhotoViewer: 'photo-viewer-modal'
+      closePhotoViewer: 'photo-viewer-modal', closeOsechi: 'osechi-screen'
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v88.6';
+    const APP_VERSION = 'v88.7';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
@@ -5674,6 +5746,71 @@
       if (guardWhileRecording_()) return;
       hideOverlay_('instore-screen');
     };
+
+    // ============================================================
+    // おせち受注（2026）: 画面の本体は osechi.js（開くときに初めて読み込む＝起動を重くしない）。
+    //   窓口はおせち専用（スマレコの窓口とは別）。画面に置くのは窓口のアドレス1つだけ。
+    //   入口は区分で出し分けるが、使えるかどうかは窓口が毎回決める。
+    //   重ねる画面は osechi-screen（階層1）・osechi-sub（階層2）・osechi-dialog（階層4）。戻る操作はこの表の規則のまま閉じる。
+    // ============================================================
+    const OSECHI_API_URL = 'https://script.google.com/macros/s/AKfycbxRU2wxPUO2B9c-t8FM5HEmsEgbpOBtiaDq4kCzpTJeh_DD9mhU-y-OIGHgoC8u_4E/exec';
+    const OSECHI_JS_VERSION = 'osechi-ui-2026-10-26a';   // osechi.js の OSECHI_UI_BUILD と同じ値（古い osechi.js を端末に残さない）
+    var _osechiProfile = null;
+    var _osechiLoading = null;
+    var _osechiResumeTried = false;
+    function loadOsechi_() {
+      if (window.OsechiMode) return Promise.resolve();
+      if (_osechiLoading) return _osechiLoading;
+      _osechiLoading = new Promise(function (resolve, reject) {
+        const s = document.createElement('script');
+        s.src = 'osechi.js?v=' + encodeURIComponent(OSECHI_JS_VERSION);
+        s.async = true;
+        s.onload = function () { if (window.OsechiMode) resolve(); else { _osechiLoading = null; reject(new Error('osechi.js')); } };
+        s.onerror = function () { _osechiLoading = null; s.remove(); reject(new Error('osechi.js')); };
+        document.head.appendChild(s);
+      });
+      return _osechiLoading;
+    }
+    window.openOsechi = function () {
+      if (guardWhileRecording_()) return;
+      closeMenuIfOpen_();
+      const screen = document.getElementById('osechi-screen');
+      if (!screen) return;
+      if (!window.OsechiMode) screen.textContent = 'おせち受注を開いています…';
+      screen.classList.remove('hidden');
+      loadOsechi_().then(function () {
+        if (screen.classList.contains('hidden')) return;   // 読み込みの間に戻る操作で閉じられた
+        window.OsechiMode.open({
+          container: screen,
+          apiUrl: OSECHI_API_URL,
+          getSumarecoToken: function () { return (sessionToken && Date.now() < sessionExpiry) ? sessionToken : ''; },
+          profile: _osechiProfile || {},
+          onClose: function () { window.closeOsechi(); }
+        });
+      }).catch(function () {
+        hideOverlay_('osechi-screen');
+        alert('おせち受注の画面を読み込めませんでした。電波の良い所で、もう一度お試しください。');
+      });
+    };
+    window.closeOsechi = function () { hideOverlay_('osechi-screen'); };
+    /**
+     * カメラを開いている間に端末がアプリを終了させたら、起動し直したあとで、おせち受注を開き直す
+     * （principles_mobile_web_state_survival）。印は osechi.js が残す時刻だけ（個人情報なし）・30分まで・1回だけ。
+     * ほかの画面が開いている・録音中なら開かない。
+     */
+    function resumeOsechiIfAny_(canUse) {
+      if (_osechiResumeTried) return;
+      _osechiResumeTried = true;
+      let mark = null;
+      try { mark = JSON.parse(localStorage.getItem('osechi_resume_v1') || 'null'); } catch (_) { mark = null; }
+      if (!mark) return;
+      const age = Date.now() - Number(mark.at);
+      if (!canUse || !(age >= 0 && age < 30 * 60 * 1000)) { try { localStorage.removeItem('osechi_resume_v1'); } catch (_) {} return; }
+      setTimeout(function () {
+        if (topVisibleOverlay_() || (mediaRecorder && mediaRecorder.state === 'recording')) return;
+        window.openOsechi();
+      }, 800);
+    }
 
     /**
      * v78.1: まとめ資料に添える「記録の写真」。
