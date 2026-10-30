@@ -3585,6 +3585,8 @@
       try { sessionStorage.removeItem('osechi_session_v1'); sessionStorage.removeItem('osechi_last_done_v1'); } catch (_) {}
       try { localStorage.removeItem('osechi_resume_v1'); } catch (_) {}
       try { indexedDB.deleteDatabase('osechi_drafts_v1'); } catch (_) {}
+      try { indexedDB.deleteDatabase('osechi_resume_v1'); } catch (_) {}
+      try { const n = document.getElementById('osechi-resume-notice'); if (n) n.remove(); } catch (_) {}
     }
     /**
      * おせち受注: 起動のたびに、期限（作ってから12時間）を過ぎた作りかけと、別のアカウントの作りかけを消す（おせちを開かなくても）。
@@ -5525,7 +5527,7 @@
     };
 
     // v76.2: 画面に表示するバージョン。リリースのたびにここを上げる
-    const APP_VERSION = 'v88.7';
+    const APP_VERSION = 'v88.8';
 
     // v79.1: このフロントが正しく動くために必要なサーバー（GAS）の最低版数。
     //   サーバー側に関数を足したら、その版数をここに書く。古ければ画面で警告する。
@@ -5754,10 +5756,11 @@
     //   重ねる画面は osechi-screen（階層1）・osechi-sub（階層2）・osechi-dialog（階層4）。戻る操作はこの表の規則のまま閉じる。
     // ============================================================
     const OSECHI_API_URL = 'https://script.google.com/macros/s/AKfycbxRU2wxPUO2B9c-t8FM5HEmsEgbpOBtiaDq4kCzpTJeh_DD9mhU-y-OIGHgoC8u_4E/exec';
-    const OSECHI_JS_VERSION = 'osechi-ui-2026-10-26a';   // osechi.js の OSECHI_UI_BUILD と同じ値（古い osechi.js を端末に残さない）
+    const OSECHI_JS_VERSION = 'osechi-ui-2026-10-29a';   // osechi.js の OSECHI_UI_BUILD と同じ値（古い osechi.js を端末に残さない）
     var _osechiProfile = null;
     var _osechiLoading = null;
     var _osechiResumeTried = false;
+    var _osechiResumeMark = null;   // 開き直しの印（起動のときに見つけたもの。osechi.js に渡して消す）
     function loadOsechi_() {
       if (window.OsechiMode) return Promise.resolve();
       if (_osechiLoading) return _osechiLoading;
@@ -5785,8 +5788,10 @@
           apiUrl: OSECHI_API_URL,
           getSumarecoToken: function () { return (sessionToken && Date.now() < sessionExpiry) ? sessionToken : ''; },
           profile: _osechiProfile || {},
-          onClose: function () { window.closeOsechi(); }
+          onClose: function () { window.closeOsechi(); },
+          resumeMark: _osechiResumeMark
         });
+        _osechiResumeMark = null;
       }).catch(function () {
         hideOverlay_('osechi-screen');
         alert('おせち受注の画面を読み込めませんでした。電波の良い所で、もう一度お試しください。');
@@ -5794,22 +5799,92 @@
     };
     window.closeOsechi = function () { hideOverlay_('osechi-screen'); };
     /**
-     * カメラを開いている間に端末がアプリを終了させたら、起動し直したあとで、おせち受注を開き直す
-     * （principles_mobile_web_state_survival）。印は osechi.js が残す時刻だけ（個人情報なし）・30分まで・1回だけ。
-     * ほかの画面が開いている・録音中なら開かない。
+     * カメラ・写真の途中で端末がアプリを終了させたら、起動し直したあとで、おせち受注を開き直す
+     * （principles_mobile_web_state_survival）。印は osechi.js が残す時刻と段階だけ（個人情報なし）・30分まで・1回だけ。
+     * 印は localStorage → 無ければ IndexedDB（ブラウザごと終了すると localStorage の書き込みが消えうる＝2026-10-29 Android で開き直せなかった）。
+     * 開けないとき（ほかの画面が開いている・録音中・入口の無いアカウント）は、ホームで知らせる（黙ってホームにしない）。
      */
     function resumeOsechiIfAny_(canUse) {
       if (_osechiResumeTried) return;
       _osechiResumeTried = true;
-      let mark = null;
-      try { mark = JSON.parse(localStorage.getItem('osechi_resume_v1') || 'null'); } catch (_) { mark = null; }
-      if (!mark) return;
-      const age = Date.now() - Number(mark.at);
-      if (!canUse || !(age >= 0 && age < 30 * 60 * 1000)) { try { localStorage.removeItem('osechi_resume_v1'); } catch (_) {} return; }
-      setTimeout(function () {
-        if (topVisibleOverlay_() || (mediaRecorder && mediaRecorder.state === 'recording')) return;
-        window.openOsechi();
-      }, 800);
+      readOsechiResumeMark_().then(function (mark) {
+        if (!mark) return;
+        setTimeout(function () {
+          if (canUse && !topVisibleOverlay_() && !(mediaRecorder && mediaRecorder.state === 'recording')) {
+            _osechiResumeMark = mark;   // osechi.js が段階ごとの案内を出し、印を消す
+            window.openOsechi();
+            return;
+          }
+          forgetOsechiResumeMark_();
+          showOsechiResumeNotice_(canUse);
+        }, 800);
+      });
+    }
+    /** 開き直しの印（30分以内のものだけ）。localStorage に無ければ IndexedDB（保存場所が無い端末には作らない） */
+    function readOsechiResumeMark_() {
+      const fresh = function (o) { const age = Date.now() - Number(o && o.at); return (o && age >= 0 && age < 30 * 60 * 1000) ? o : null; };
+      let ls = null;
+      try { ls = JSON.parse(localStorage.getItem('osechi_resume_v1') || 'null'); } catch (_) { ls = null; }
+      if (ls) { const f = fresh(ls); if (!f) forgetOsechiResumeMark_(); return Promise.resolve(f); }
+      return new Promise(function (resolve) {
+        try {
+          if (!window.indexedDB || typeof indexedDB.databases !== 'function') { resolve(null); return; }
+          indexedDB.databases().then(function (list) {
+            if (!(list || []).some(function (d) { return d && d.name === 'osechi_resume_v1'; })) { resolve(null); return; }
+            const q = indexedDB.open('osechi_resume_v1');
+            q.onupgradeneeded = function () { try { q.transaction.abort(); } catch (_) {} };   // 一覧のあとで消えていた: 空の保存場所を作らない
+            q.onerror = function () { resolve(null); };
+            q.onsuccess = function () {
+              const db = q.result;
+              try {
+                const g = db.transaction('mark', 'readonly').objectStore('mark').get('m');
+                g.onsuccess = function () { db.close(); const m = fresh(g.result); if (!m && g.result) forgetOsechiResumeMark_(); resolve(m); };
+                g.onerror = function () { db.close(); resolve(null); };
+              } catch (_) { try { db.close(); } catch (__) {} resolve(null); }
+            };
+          }).catch(function () { resolve(null); });
+        } catch (_) { resolve(null); }
+      });
+    }
+    function forgetOsechiResumeMark_() {
+      try { localStorage.removeItem('osechi_resume_v1'); } catch (_) {}
+      try { indexedDB.deleteDatabase('osechi_resume_v1'); } catch (_) {}
+    }
+    /** 開き直せなかったとき、ホームの上で知らせる（「おせち受注を開く」で開く・「閉じる」で消える） */
+    function showOsechiResumeNotice_(canUse) {
+      if (document.getElementById('osechi-resume-notice')) return;
+      const box = document.createElement('div');
+      box.id = 'osechi-resume-notice';
+      box.setAttribute('role', 'alert');
+      // 見た目は、画面の部品（Tailwind）が読めないときでも崩れないよう、その場で書く（知らせが読めないと、黙ってホームと同じになる）
+      box.style.cssText = 'position:fixed;top:8px;left:8px;right:8px;z-index:10000;background:#fef3c7;border:2px solid #f59e0b;color:#78350f;border-radius:12px;padding:12px 14px;font-size:15px;line-height:1.6;box-shadow:0 6px 18px rgba(0,0,0,.25)';
+      const title = document.createElement('div');
+      title.style.cssText = 'font-weight:700;font-size:16px';
+      title.textContent = 'おせちの撮影の途中で画面が閉じられました';
+      const msg = document.createElement('div');
+      msg.style.cssText = 'margin-top:4px';
+      msg.textContent = canUse ? 'もう一度「おせち受注」を開いて撮影してください（写真は残っていません）。'
+        : '写真は残っていません。おせち受注を使える方に、撮影をお願いしてください。';
+      const row = document.createElement('div');
+      row.style.cssText = 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap';
+      if (canUse) {
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.style.cssText = 'min-height:44px;padding:8px 14px;border-radius:10px;border:0;background:#8f1d2c;color:#fff;font-weight:700;font-size:15px';
+        open.textContent = 'おせち受注を開く';
+        open.addEventListener('click', function () { box.remove(); window.openOsechi(); });
+        row.appendChild(open);
+      }
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.style.cssText = 'min-height:44px;padding:8px 14px;border-radius:10px;border:2px solid #f59e0b;background:#fff;color:#78350f;font-weight:700;font-size:15px';
+      close.textContent = '閉じる';
+      close.addEventListener('click', function () { box.remove(); });
+      row.appendChild(close);
+      box.appendChild(title);
+      box.appendChild(msg);
+      box.appendChild(row);
+      document.body.appendChild(box);
     }
 
     /**

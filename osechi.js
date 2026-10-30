@@ -49,7 +49,7 @@
   'use strict';
 
   // ===== 版・定数 =====
-  var OSECHI_UI_BUILD = 'osechi-ui-2026-10-26a';
+  var OSECHI_UI_BUILD = 'osechi-ui-2026-10-29a';
   var SESSION_KEY = 'osechi_session_v1';        // sessionStorage（このタブだけ・閉じれば消える）
   var LAST_DONE_KEY = 'osechi_last_done_v1';    // sessionStorage（直前の受付番号だけ）
   var DRAFT_DB = 'osechi_drafts_v1';            // IndexedDB（作りかけ・12時間）
@@ -59,6 +59,17 @@
   // スマレコが起動し直したあとで、このモードを開き直すための印。サインアウト・閉じる操作で消す
   var RESUME_KEY = 'osechi_resume_v1';
   var RESUME_TTL_MS = 30 * 60 * 1000;
+  // 同じ印を IndexedDB にも置く（2026-10-29: Android で撮影の間に端末がブラウザごと終了させ、開き直したスマレコに印が無く、
+  //   何も出ずにホームに戻った。localStorage は書いてから数秒、ディスクへの書き込みを待つことがあり、ブラウザごと終了すると消えうる＝推測。
+  //   IndexedDB は書いた時点でディスクへ渡る）。読むのは localStorage → 無ければ IndexedDB。消すときは両方
+  var RESUME_DB = 'osechi_resume_v1';
+  var RESUME_STORE = 'mark';
+  var RESUME_REC = 'm';
+  // 印の段階: camera＝カメラ・アルバムを開いた（写真はまだ届いていない）／photo＝写真が届いて、整えて読み取っている途中
+  var RESUME_NOTES = {
+    camera: 'カメラを開いている間に、端末の都合で画面が閉じられたため、おせち受注を開き直しました。写真は届いていないので、もう一度「注文書を撮影して読み取る」を押してください。\n続けて起きるときは、ほかのアプリを閉じてから撮るか、端末のカメラで撮ってから「アルバムの写真から読み取る」を使ってください。',
+    photo: '写真を整えて読み取っている途中で、端末の都合で画面が閉じられたため、おせち受注を開き直しました。写真は残っていないので、もう一度撮影するか、アルバムから選んでください。\n続けて起きるときは、ほかのアプリを閉じてから試してください。'
+  };
   var MAX_IMAGE_BYTES = 4 * 1024 * 1024;
   var LONG_EDGE = 2000;
   var JPEG_QUALITY = 0.82;
@@ -73,7 +84,9 @@
   };
   var DIALOG_ID = LAYERS.dialog.id;
   var SUB_ID = LAYERS.sub.id;
-  var LIMITS = { name: 40, address: 120, tel: 20, zip: 8, pickupTime: 20, store: 40 };
+  var LIMITS = { name: 40, address: 120, tel: 20, zip: 8, pickupTime: 20, store: 40, receptionist: 20 };
+  // 受付係員（申込書のいちばん下の「受付係員名」）。空のまま送らない＝空・読めないときはこの文字（PO 2026-10-29・窓口も同じ）
+  var RECEPTIONIST_NONE = '記載なし';
   var PARTY_FIELDS = ['name', 'zip', 'address', 'tel'];
   var PARTY_LABEL = { name: 'お名前', zip: '郵便番号', address: 'ご住所', tel: '電話番号' };
   var SIDE_LABEL = { receiver: 'お届け先', requester: 'ご依頼主' };
@@ -96,7 +109,10 @@
     cancelOrder: { timeoutMs: 30000, retryNetwork: true },
     exportReport: { timeoutMs: 90000, retryNetwork: false, retryBusy: false },
     exportCsv: { timeoutMs: 60000, retryNetwork: false, retryBusy: false },
-    logPrint: { timeoutMs: 15000, retryNetwork: false, retryBusy: false }
+    logPrint: { timeoutMs: 15000, retryNetwork: false, retryBusy: false },
+    // 受注状況一覧表（2026-10-29・REPORT_NOTES §8）: 見るのは送り直してよい・Excel は取り出しの上限に数えるので自動では送り直さない
+    getProductionList: { timeoutMs: 30000, retryNetwork: true },
+    exportProduction: { timeoutMs: 90000, retryNetwork: false, retryBusy: false }
   };
   var DEFAULT_ACTION_OPTS = { timeoutMs: 30000, retryNetwork: false };
   // 注意のうち、確認しても越えられないもの（日ごとの個数が空＝人が入れるまで送れない・追補 v3）
@@ -212,6 +228,47 @@
     }
     return (best !== null && bestScore >= 0.7) ? { name: best, score: bestScore } : null;
   }
+  /**
+   * 窓口の flags.paperStore（用紙の「店舗名」の欄・2026-10-29 osechi-api-2026-10-29a から）を確かめて使う形にする。無い・壊れていれば null
+   *   { raw: 読んだ店名, resolved: 店舗表の店名, how: 'exact'（1店に決まる）|'similar'（似ている＝候補）|'none'（店舗表に無い）|'empty'（読めない） }
+   */
+  var PAPER_HOW = { exact: 1, similar: 1, none: 1, empty: 1 };
+  function sanitizePaperStore(p) {
+    if (!p || typeof p !== 'object' || !PAPER_HOW[p.how]) return null;
+    var raw = cleanText(p.raw, LIMITS.store), resolved = cleanText(p.resolved, LIMITS.store), how = p.how;
+    if (how === 'empty') return { raw: '', resolved: '', how: 'empty' };
+    if (!raw) return { raw: '', resolved: '', how: 'empty' };
+    if ((how === 'exact' || how === 'similar') && !resolved) how = 'none';
+    if (how === 'none') resolved = '';
+    return { raw: raw, resolved: resolved, how: how };
+  }
+  /**
+   * 店・店長: 注文書の店名が自店と違うか（送る前に「異なる店舗の予約ですが良いですか？」と確かめる）。違えば読んだ店名、同じ・空・読めないときは ''。
+   *   paper（新しい窓口）があればそれで決める。無ければ（前の版の窓口）storeMatched と storeMessage「用紙の店名「…」は、この店…」から読む
+   */
+  function paperStoreDiffers(paper, flags, myStore) {
+    if (paper) {
+      if (paper.how === 'empty' || !paper.raw) return '';
+      if ((paper.how === 'exact' || paper.how === 'similar') && paper.resolved === myStore) return '';
+      return paper.raw;
+    }
+    if (!flags || flags.storeMatched !== false) return '';
+    var m = str(flags.storeMessage).match(/^用紙の店名「([^」]{1,40})」は、この店/);
+    return m ? cleanText(m[1], LIMITS.store) : '';
+  }
+  /** 本部: 注文書の店名が店の一覧の1店に決まるとき（how＝exact）、その店。決まらなければ '' */
+  function paperStoreAuto(paper, stores) {
+    if (!paper || paper.how !== 'exact' || !paper.resolved) return '';
+    return (Array.isArray(stores) && stores.indexOf(paper.resolved) >= 0) ? paper.resolved : '';
+  }
+  /** 開き直しの印（{ at, stage }）。30分より古い・形が違えば null */
+  function parseResumeMark(o, nowMs) {
+    if (!o || typeof o !== 'object') return null;
+    var age = (nowMs || Date.now()) - Number(o.at);
+    if (!(age >= 0 && age < RESUME_TTL_MS)) return null;
+    return { at: Number(o.at), stage: o.stage === 'photo' ? 'photo' : 'camera' };
+  }
+  function resumeNoteFor(mark) { return mark ? RESUME_NOTES[mark.stage === 'photo' ? 'photo' : 'camera'] : ''; }
 
   // ---- 数・日付・電話・郵便番号 ----
   var HYPHENS_RE = /[\u2010\u2011\u2012\u2013\u2014\u2015\u30FC\uFF0D\u2212\uFF70\u2212]/g;
@@ -299,7 +356,7 @@
   //   items[no]     = { storeQty, deliveryQty }（文字のまま。送るときに数にする）
   //   dateItems[no] = { sel: { '12/30': '2', '1/2': '' }（選んだお渡し日 → その日の個数）, hint: '3'（用紙の個数・日付が読めなかったとき。送らない） }
   function emptyForm(idx) {
-    var f = { store: '', pickupTime: '', receiver: emptyParty(), requester: emptyParty(), items: {}, dateItems: {} };
+    var f = { store: '', pickupTime: '', receptionist: '', receiver: emptyParty(), requester: emptyParty(), items: {}, dateItems: {} };
     idx.methodNos.forEach(function (no) { f.items[no] = { storeQty: '', deliveryQty: '' }; });
     idx.dateNos.forEach(function (no) { f.dateItems[no] = { sel: {}, hint: '' }; });
     return f;
@@ -318,6 +375,35 @@
     selectedDates(di, dates).forEach(function (d) { var q = parseQty(di.sel[d]); if (q.value) t += q.value; });
     return t;
   }
+  /**
+   * 日付型の商品の「注文数」（用紙の個数欄。読み取れたら入り、人が直せる。2026-10-29 PO: 数が空なのに日付の欄が押せると間違って押す
+   *   → 注文数を入れるまで、お渡し日は押せない）。形は parseQty と同じ。持ち方は dateItems[no].hint（前の版の作りかけと同じ名前）
+   */
+  function dateOrderQty(di) { return parseQty(di && di.hint); }
+  /** 注文数の欄の名前 */
+  function dateOrderKey(no) { return 'dateItems.' + no + '.total'; }
+  /**
+   * 送る・数える日ごとの個数: 注文数が空 → 無し（日付が選ばれていても送らない＝間違って送られない側）／
+   *   選んだ日が1つ → その日に注文数／2つ以上 → 日ごとに入れた個数
+   */
+  function effectiveDateQtys(di, dates) {
+    var t = dateOrderQty(di);
+    if (!t.value) return [];
+    var sel = selectedDates(di, dates);
+    if (sel.length === 1) return [{ d: sel[0], q: t.value }];
+    return sel.map(function (d) { return { d: d, q: parseQty(di.sel[d]).value || 0 }; }).filter(function (x) { return x.q; });
+  }
+  /** 選んだ日が1つなら、その日の個数を注文数にそろえる（日ごとの個数の欄は出さない） */
+  function syncSingleDate(di, dates) {
+    var sel = selectedDates(di, dates), t = dateOrderQty(di);
+    if (sel.length === 1) di.sel[sel[0]] = t.value ? String(t.value) : '';
+  }
+  /** 作りかけ・修正の注文で注文数が空のとき、日ごとの個数の合計を注文数にする（前の版の作りかけ・窓口の注文に注文数の欄は無い） */
+  function fillOrderQtyFromDates(di, dates) {
+    if (!di || str(di.hint).trim()) return;
+    var t = dateTotal(di, dates);
+    if (t) di.hint = String(t);
+  }
   function cleanParty(p, multilineAddress) {
     p = (p && typeof p === 'object') ? p : {};
     return {
@@ -335,6 +421,7 @@
     parsed = (parsed && typeof parsed === 'object') ? parsed : {};
     var form = emptyForm(idx), dropped = [];
     form.pickupTime = cleanText(parsed.pickupTime, LIMITS.pickupTime);
+    form.receptionist = cleanText(parsed.receptionist, LIMITS.receptionist) || RECEPTIONIST_NONE;   // 読めなければ「記載なし」（画面で直せる）
     form.receiver = cleanParty(parsed.receiver);
     form.requester = cleanParty(parsed.requester);
     // 2026-10-16 に items21_32 → datedItems へ改名（古い名前で返る窓口にも合わせる）
@@ -366,6 +453,8 @@
         }
       }
     });
+    // 注文数（用紙の個数）: 日付と個数が読めたら、その個数（○が複数で個数 0 のときは、窓口の formQty を startReviewFromOcr が入れる）
+    idx.dateNos.forEach(function (no) { fillOrderQtyFromDates(form.dateItems[no], idx.byNo[no].dates); });
     return { form: form, dropped: dropped, storeName: cleanText(parsed.storeName, LIMITS.store) };
   }
   /** 窓口の注文（getOrder の order）→ 入力の形（修正の画面）。番号・日付は今の商品設定にあるものだけ */
@@ -374,6 +463,7 @@
     var form = emptyForm(idx);
     form.store = cleanText(o.store, LIMITS.store);
     form.pickupTime = cleanText(o.pickupTime, LIMITS.pickupTime);
+    form.receptionist = cleanText(o.receptionist, LIMITS.receptionist) || RECEPTIONIST_NONE;
     form.receiver = cleanParty(o.receiver, true);
     form.requester = cleanParty(o.requester, true);
     (Array.isArray(o.items) ? o.items : []).slice(0, 80).forEach(function (it) {
@@ -388,6 +478,7 @@
       var d = normalizeDate(it.pickupDate, idx.byNo[no].dates), q = parseQty(it.qty).value;
       if (d && q) di.sel[d] = String(q);
     });
+    idx.dateNos.forEach(function (no) { fillOrderQtyFromDates(form.dateItems[no], idx.byNo[no].dates); });
     return form;
   }
   /** 直す前の数量（売り切れ・要電話確認は、増えた分だけを見るため）{ m:{no:{s,d}}, d:{'no@12/30':q} } */
@@ -413,6 +504,7 @@
     df = (df && typeof df === 'object') ? df : {};
     var form = emptyForm(idx);
     form.pickupTime = cleanText(df.pickupTime, LIMITS.pickupTime);
+    form.receptionist = cleanText(df.receptionist, LIMITS.receptionist) || RECEPTIONIST_NONE;   // 前の版の作りかけには無い
     form.receiver = cleanParty(df.receiver, true);
     form.requester = cleanParty(df.requester, true);
     idx.methodNos.forEach(function (no) {
@@ -435,6 +527,7 @@
         if (d0) di.sel[d0] = cleanText(it.qty, 3);
       }
       di.hint = cleanText(it.hint, 3);
+      fillOrderQtyFromDates(di, dates);   // 2026-10-29 より前の作りかけ（注文数の欄が無い）
     });
     return form;
   }
@@ -447,6 +540,7 @@
     if (!form) return '';
     if (p.length === 1) return str(form[p[0]]);
     if (p[0] === 'items' && p.length === 3) return str(form.items[p[1]] && form.items[p[1]][p[2]]);
+    if (p[0] === 'dateItems' && p.length === 3 && p[2] === 'total') return str(form.dateItems[p[1]] && form.dateItems[p[1]].hint);
     if (p[0] === 'dateItems' && p.length === 4 && p[2] === 'q') {
       var di = form.dateItems[p[1]], d = str(p[3]).replace('-', '/');
       return di && hasOwn(di.sel, d) ? str(di.sel[d]) : '';
@@ -457,6 +551,7 @@
     var p = str(key).split('.');
     if (p.length === 1) { form[p[0]] = value; return; }
     if (p[0] === 'items' && p.length === 3) { if (form.items[p[1]]) form.items[p[1]][p[2]] = value; return; }
+    if (p[0] === 'dateItems' && p.length === 3 && p[2] === 'total') { if (form.dateItems[p[1]]) form.dateItems[p[1]].hint = value; return; }
     if (p[0] === 'dateItems' && p.length === 4 && p[2] === 'q') {
       var di = form.dateItems[p[1]], d = str(p[3]).replace('-', '/');
       if (di && hasOwn(di.sel, d)) di.sel[d] = value;
@@ -498,6 +593,7 @@
     if (p.length === 2 && SIDE_LABEL[p[0]]) return SIDE_LABEL[p[0]] + 'の' + (PARTY_LABEL[p[1]] || p[1]);
     if (key === 'pickupTime') return 'お引取り時間';
     if (key === 'store') return '店舗名';
+    if (key === 'receptionist') return '受付係員';
     return str(key);
   }
 
@@ -510,7 +606,7 @@
   async function runPreSubmitChecks(form, env, ui) {
     var idx = env.idx;
     applySameWordAutofill(form);
-    var bad = [], badKey = '', noDate = [], noQty = [], soldout = [], needcall = [], hintDiff = [], confirmedCodes = [];
+    var bad = [], badKey = '', noDate = [], noQty = [], noTotal = [], soldout = [], needcall = [], hintDiff = [], confirmedCodes = [];
     var hasStore = false, hasDelivery = false, count = 0;
     // 修正（env.baseline＝直す前の注文）: 売り切れ・要電話確認は、数量が増えた商品だけを見る（売り切れのあとに住所だけ直せるように）
     var base = env.baseline || null;
@@ -529,22 +625,25 @@
       if (statusOf(idx, no) === 'needcall' && grew) needcall.push(no);
     });
     idx.dateNos.forEach(function (no) {
-      // 追補 v3: 選んだお渡し日ごとに個数。日付を選んで個数が空は送れない
-      var it = form.dateItems[no], dates = idx.byNo[no].dates, sel = selectedDates(it, dates), any = false, rowBad = false, empties = [];
-      sel.forEach(function (d) {
-        var q = parseQty(it.sel[d]);
-        if (q.error) { rowBad = true; if (!badKey) badKey = dateQtyKey(no, d); return; }
-        if (q.empty) { empties.push(d); return; }
-        any = true;
-      });
+      // 2026-10-29: 注文数（用紙の個数）→ お渡し日（いくつでも）→ 2日以上なら日ごとの個数（追補 v3）。
+      //   注文数が空なら送らない。日付だけ選ばれていたら止める（読み取りで日付だけ読めた行・間違って押した日付を、黙って送らない／捨てない）
+      var it = form.dateItems[no], dates = idx.byNo[no].dates, sel = selectedDates(it, dates), tq = dateOrderQty(it), rowBad = false, empties = [];
+      if (tq.error) { bad.push(no); if (!badKey) badKey = dateOrderKey(no); return; }
+      if (!tq.value) { if (sel.length) noTotal.push({ no: no, dates: sel }); return; }
+      if (!sel.length) { noDate.push(no); return; }
+      if (sel.length === 1) syncSingleDate(it, dates);
+      if (sel.length > 1) {
+        sel.forEach(function (d) {
+          var q = parseQty(it.sel[d]);
+          if (q.error) { rowBad = true; if (!badKey) badKey = dateQtyKey(no, d); return; }
+          if (q.empty) empties.push(d);
+        });
+      }
       if (rowBad) { bad.push(no); return; }
-      if (empties.length) noQty.push({ no: no, dates: empties });
-      var hint = parseQty(it.hint).value;
-      if (!sel.length && hint) noDate.push(no);
-      if (!any) return;
+      if (empties.length) { noQty.push({ no: no, dates: empties }); return; }
       count++;
       hasStore = true;   // お渡し日を選ぶ商品は店渡し（2026 様式「店渡し日」）。受取時間・お届け先の決まりでは店渡しとして数える
-      if (hint && !empties.length && dateTotal(it, dates) !== hint) hintDiff.push({ no: no, hint: hint, total: dateTotal(it, dates) });
+      if (sel.length > 1 && dateTotal(it, dates) !== tq.value) hintDiff.push({ no: no, hint: tq.value, total: dateTotal(it, dates) });
       var grewd = grewD(no, it, dates);
       if (statusOf(idx, no) === 'soldout' && grewd) soldout.push(no);
       if (statusOf(idx, no) === 'needcall' && grewd) needcall.push(no);
@@ -555,6 +654,13 @@
       await ui.alert('数量は 1〜99 の数字で入れてください。\n対象の商品: ' + bad.join(', '), badKey || qtyKey(idx, bad[0], form));
       return { ok: false };
     }
+    if (noTotal.length) {
+      await ui.alert('お渡し日は選ばれていますが、注文数が空の商品があります。\n対象: ' +
+        noTotal.map(function (x) { return '商品' + x.no + '（' + x.dates.join('・') + '）'; }).join('、') +
+        '\n注文書の個数を確かめて「注文数」に入れてください（空のままは送れません）。\n注文しないときは、その行の「日付を外す（この商品は受注なし）」を押してください。',
+        dateOrderKey(noTotal[0].no));
+      return { ok: false };
+    }
     if (noQty.length) {
       await ui.alert('お渡し日を選んだのに、その日の個数が入っていません。\n対象: ' +
         noQty.map(function (x) { return '商品' + x.no + '（' + x.dates.join('・') + '）'; }).join('、') +
@@ -563,8 +669,8 @@
       return { ok: false };
     }
     if (noDate.length) {
-      await ui.alert('個数は読めていますが、お渡し日が選ばれていない商品があります。\n対象の商品: ' +
-        noDate.join(', ') + '\nお渡し日を押して、日ごとの個数を入れてください。', dateGroupKey(noDate[0]));
+      await ui.alert('注文数は入っていますが、お渡し日が選ばれていない商品があります。\n対象の商品: ' +
+        noDate.join(', ') + '\nお渡し日を押して選んでください（2日以上なら、日ごとの個数も入れます）。', dateGroupKey(noDate[0]));
       return { ok: false };
     }
     if (!count) {
@@ -577,10 +683,10 @@
         qtyKey(idx, soldout[0], form));
       return { ok: false };
     }
-    // 追補 v3: 用紙の個数（読めた数）と、日ごとの個数の合計が違う → 確かめる（止めない）
+    // 追補 v3: 注文数（用紙の個数）と、日ごとの個数の合計が違う → 確かめる（止めない）
     if (hintDiff.length) {
-      if (!await ui.confirm('用紙の個数と、日ごとの個数の合計が違います。\n' +
-        hintDiff.map(function (x) { return '商品' + x.no + '：用紙 ' + x.hint + ' 個 ／ 日ごとの合計 ' + x.total + ' 個'; }).join('\n') +
+      if (!await ui.confirm('注文数と、日ごとの個数の合計が違います。\n' +
+        hintDiff.map(function (x) { return '商品' + x.no + '：注文数 ' + x.hint + ' 個 ／ 日ごとの合計 ' + x.total + ' 個'; }).join('\n') +
         '\nお客様に確かめた数なら、このまま進めてください。', { yes: 'このまま進む', no: '戻って直す' })) return fail(dateGroupKey(hintDiff[0].no));
     }
 
@@ -654,7 +760,8 @@
     if (meta && meta.kind === 'date') {
       var di = form && form.dateItems && form.dateItems[no];
       var sel = selectedDates(di, meta.dates);
-      return sel.length ? dateQtyKey(no, sel[0]) : dateGroupKey(no);
+      if (!dateOrderQty(di).value) return dateOrderKey(no);   // 注文数が先
+      return sel.length > 1 ? dateQtyKey(no, sel[0]) : (sel.length ? dateOrderKey(no) : dateGroupKey(no));
     }
     var it = form && form.items && form.items[no];
     var useDelivery = it && !trim(it.storeQty) && trim(it.deliveryQty);
@@ -666,6 +773,7 @@
     var o = {
       store: env.role === 'hq' ? cleanText(form.store, LIMITS.store) : cleanText(env.store, LIMITS.store),
       pickupTime: cleanText(form.pickupTime, LIMITS.pickupTime),
+      receptionist: cleanText(form.receptionist, LIMITS.receptionist) || RECEPTIONIST_NONE,
       receiver: orderParty(form.receiver),
       requester: orderParty(form.requester),
       items: [], datedItems: []
@@ -675,10 +783,9 @@
       if (qs || qd) o.items.push({ no: no, storeQty: qs, deliveryQty: qd });
     });
     env.idx.dateNos.forEach(function (no) {
-      var it = form.dateItems[no];
-      selectedDates(it, env.idx.byNo[no].dates).forEach(function (d) {
-        var q = parseQty(it.sel[d]).value;
-        if (q) o.datedItems.push({ no: no, pickupDate: d, qty: q });
+      // 注文数が空なら送らない・日付が1つなら注文数・2つ以上なら日ごとの個数（effectiveDateQtys）
+      effectiveDateQtys(form.dateItems[no], env.idx.byNo[no].dates).forEach(function (x) {
+        o.datedItems.push({ no: no, pickupDate: x.d, qty: x.q });
       });
     });
     return o;
@@ -717,7 +824,7 @@
   function serverFieldToKey(field, order) {
     var f = cleanText(field, 80).replace(/^order\./, '');
     var m;
-    if (/^(receiver|requester)\.(name|zip|address|tel)$/.test(f) || f === 'pickupTime' || f === 'store') return f;
+    if (/^(receiver|requester)\.(name|zip|address|tel)$/.test(f) || f === 'pickupTime' || f === 'store' || f === 'receptionist') return f;
     if ((m = f.match(/^items\[(\d{1,2})\]\.(storeQty|deliveryQty)$/))) {
       var it = order && order.items && order.items[Number(m[1])];
       return it ? 'items.' + it.no + '.' + m[2] : '';
@@ -1057,18 +1164,65 @@
       return null;
     }).catch(function () { return null; });
   }
-  // ---- カメラの間に端末が画面を終了させたときの印（localStorage・時刻だけ。個人情報なし） ----
-  function setResumeMark() { try { root.localStorage.setItem(RESUME_KEY, JSON.stringify({ at: Date.now(), why: 'camera' })); } catch (e) { /* 何もしない */ } }
-  function clearResumeMark() { try { root.localStorage.removeItem(RESUME_KEY); } catch (e) { /* 何もしない */ } }
-  /** 印を読んで消す。30分以内のものだけ true */
-  function takeResumeMark() {
-    var ok = false;
-    try {
-      var o = JSON.parse(root.localStorage.getItem(RESUME_KEY) || 'null');
-      ok = !!(o && Date.now() - Number(o.at) >= 0 && Date.now() - Number(o.at) < RESUME_TTL_MS);
-    } catch (e) { ok = false; }
-    clearResumeMark();
-    return ok;
+  // ---- カメラの間に端末が画面を終了させたときの印（時刻と段階だけ。個人情報なし） ----
+  //   localStorage と IndexedDB の両方に置く（RESUME_DB の注記）。スマレコは起動のたびにこの印を見て、
+  //   おせち受注を開き直す（開けないときは、ホームで知らせる＝黙ってホームにしない）
+  var resumeQueue = Promise.resolve();   // IndexedDB の書く・消すを、出した順に1つずつ
+  function resumeIdb(fn) {
+    resumeQueue = resumeQueue.then(function () {
+      return new Promise(function (resolve) {
+        try {
+          if (!root.indexedDB) { resolve(null); return; }
+          var q = root.indexedDB.open(RESUME_DB, 1);
+          q.onupgradeneeded = function () { if (!q.result.objectStoreNames.contains(RESUME_STORE)) q.result.createObjectStore(RESUME_STORE); };
+          q.onerror = q.onblocked = function () { resolve(null); };
+          q.onsuccess = function () {
+            var db = q.result, out = null;
+            try {
+              var tx = db.transaction(RESUME_STORE, 'readwrite'), r = fn(tx.objectStore(RESUME_STORE));
+              if (r) r.onsuccess = function () { out = r.result; };
+              tx.oncomplete = function () { db.close(); resolve(out); };
+              tx.onerror = tx.onabort = function () { db.close(); resolve(null); };
+            } catch (e) { try { db.close(); } catch (e2) { /* 何もしない */ } resolve(null); }
+          };
+        } catch (e) { resolve(null); }
+      });
+    });
+    return resumeQueue;
+  }
+  /** 印を置く（stage: camera＝カメラを開く直前／photo＝写真が届いて整えて読み取っている途中） */
+  function setResumeMark(stage) {
+    var m = { at: Date.now(), why: 'camera', stage: stage === 'photo' ? 'photo' : 'camera' };
+    S.capture = m.stage;
+    try { root.localStorage.setItem(RESUME_KEY, JSON.stringify(m)); } catch (e) { /* 何もしない */ }
+    resumeIdb(function (st) { return st.put(m, RESUME_REC); });
+  }
+  function clearResumeMark() {
+    S.capture = '';
+    if (S.captureTimer) { clearTimeout(S.captureTimer); S.captureTimer = 0; }
+    try { root.localStorage.removeItem(RESUME_KEY); } catch (e) { /* 何もしない */ }
+    // 印が無い端末に、空の保存場所を作らない（一覧で見られる端末では、有るときだけ開く）
+    var dbs = root.indexedDB && typeof root.indexedDB.databases === 'function' ? root.indexedDB.databases() : null;
+    if (dbs && typeof dbs.then === 'function') {
+      dbs.then(function (list) {
+        if ((list || []).some(function (d) { return d && d.name === RESUME_DB; })) resumeIdb(function (st) { return st.delete(RESUME_REC); });
+      }, function () { resumeIdb(function (st) { return st.delete(RESUME_REC); }); });
+    } else if (root.indexedDB) resumeIdb(function (st) { return st.delete(RESUME_REC); });
+  }
+  /** localStorage の印を読む（30分以内・形の正しいものだけ） */
+  function readResumeMarkLocal() {
+    try { return parseResumeMark(JSON.parse(root.localStorage.getItem(RESUME_KEY) || 'null')); } catch (e) { return null; }
+  }
+  /** IndexedDB の印を読む（localStorage が消えていたとき。保存場所が無ければ作らずに null） */
+  function readResumeMarkIdb() {
+    var dbs = root.indexedDB && typeof root.indexedDB.databases === 'function' ? root.indexedDB.databases() : null;
+    var has = (dbs && typeof dbs.then === 'function')
+      ? dbs.then(function (list) { return (list || []).some(function (d) { return d && d.name === RESUME_DB; }); }, function () { return true; })
+      : Promise.resolve(!!root.indexedDB);
+    return has.then(function (yes) {
+      if (!yes) return null;
+      return resumeIdb(function (st) { return st.get(RESUME_REC); }).then(function (o) { return parseResumeMark(o); });
+    });
   }
 
   // ---- 画像: 端末で縮める（長辺 2000px・JPEG 0.82・4MB を超えたら画質と大きさを下げる） ----
@@ -1319,9 +1473,19 @@
     '.osechi-dq.osechi-on .osechi-qty{background:#efe6ff;border-color:#6941c6;color:#2a1663}',
     '.osechi-dsum{font-size:17px;font-weight:900;color:#2a1663}',
     '.osechi-dsum small{font-size:14px;font-weight:700;color:#4a4f57;margin-left:6px}',
+    '.osechi-dtop{display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px;align-items:start}',
+    '.osechi-dright{min-width:0;display:flex;flex-direction:column;gap:6px}',
+    '.osechi-ddates{min-width:0;display:flex;flex-direction:column;gap:6px}',
+    '.osechi-dtotal .osechi-qlabel{color:#3b1f86}',
+    '.osechi-dtotal.osechi-on .osechi-qty{background:#efe6ff;border-color:#6941c6;color:#2a1663}',
+    '.osechi-dnone{display:flex;align-items:center;min-height:54px;margin-top:22px;padding:4px 12px;border-radius:12px;border:2px dashed #c4c4c8;background:#f4f4f5;color:#374151}',
+    '.osechi-dnone b{font-size:19px;font-weight:900}',
+    '.osechi-dpending{margin-top:22px;padding:6px 10px;border-radius:12px;border:2px solid #d9a400;background:#fff7d6;font-size:16px;font-weight:800;color:#5c4400}',
     '.osechi-sum{font-size:16px;font-weight:800;color:#3d2a20;margin:0 0 6px;text-align:center}',
     '.osechi-views{display:flex;gap:6px;padding:6px 10px;background:#f3e7d6;border-bottom:2px solid #e2cfb4}',
     '.osechi-views>.osechi-btn{min-height:48px;font-size:17px}',
+    // スマホ（幅375）でも3つが1段に読める（2026-10-30: 上の切り替えに「受注状況一覧表」を足して3つに）
+    '@media (max-width:480px){.osechi-views{gap:4px;padding:6px 6px}.osechi-views>.osechi-btn{padding:4px 2px;font-size:15px;letter-spacing:-.02em}}',
     '.osechi-views>.osechi-btn[aria-current="page"]{background:#8f1d2c;color:#fff;border-color:#6e1521}',
     '.osechi-badge{display:inline-block;font-size:13px;font-weight:900;border-radius:8px;padding:0 6px;margin-top:3px}',
     '.osechi-badge-soldout{background:#c62828;color:#fff}',
@@ -1378,7 +1542,9 @@
       photo: null, pending: null, draftCreatedAt: 0, draftSaveFailed: false, restored: false,
       layer: null, sub: null, subEls: null, edit: null, listMod: null, busyTimer: 0, saveTimer: 0, containerObserver: null,
       ready: false, readyPromise: null, readyError: null, timing: {}, inputs: {}, rows: {},
-      draftOffer: null, lastNote: '', listeners: []
+      draftOffer: null, lastNote: '', listeners: [],
+      capture: '', captureTimer: 0,          // 開き直しの印の段階（camera／photo）
+      paper: null, storeAuto: '', storeDiffOk: false   // 用紙の店名（flags.paperStore）・本部が最初から選んだ店・店と店長が「違う店名」を確かめた
     };
   }
   function isStoreRole() { return !!(S.me && (S.me.role === 'store' || S.me.role === 'lead')); }
@@ -1502,7 +1668,7 @@
       if (L.cancelable && L.onCancel) { S.layer = null; clear(d); if (S.busyTimer) { clearInterval(S.busyTimer); S.busyTimer = 0; } L.onCancel(); return; }
       // 送信中は閉じない（結果が分からなくなるため）。戻して、ひとこと添える
       d.classList.remove('hidden');
-      if (L.noteEl) L.noteEl.textContent = '送信の返事を待っています。終わるまでお待ちください。';
+      if (L.noteEl) L.noteEl.textContent = L.hold || '返事を待っています。終わるまでお待ちください。';
       return;
     }
     S.layer = null;
@@ -1558,7 +1724,7 @@
     var card = h('div', { 'class': 'osechi-dlg osechi-busy', role: 'status', 'aria-busy': 'true' }, [
       h('div', { 'class': 'osechi-spin' }), h('div', { text: label }), sub, timeEl, note
     ]);
-    var layer = { kind: 'busy', cancelable: !!opt.cancelable, onCancel: opt.onCancel || null, noteEl: note };
+    var layer = { kind: 'busy', cancelable: !!opt.cancelable, onCancel: opt.onCancel || null, noteEl: note, hold: opt.hold || '' };
     if (opt.cancelable) {
       card.appendChild(h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'busy-cancel', text: opt.cancelLabel || 'やめる',
         on: { click: function () { if (S.layer === layer) { hideLayer(); if (layer.onCancel) layer.onCancel(); } } } }));
@@ -1588,13 +1754,14 @@
    *   wrap・setFooter … 本文と下の操作の場所 ／ me・cfg … 区分と設定（読むだけ） ／ h … 要素を作る道具（textContent だけ）
    */
   function makeHost() {
-    var seq = S.seq;
+    var seq = S.seq, view = S.view;   // 部品を開いた入口（お客様リスト／受注状況一覧表）。入口が替わったら、その部品は止まる
     return {
       build: OSECHI_UI_BUILD,
       api: api, ask: ask, alert: uiAlert, confirm: uiConfirm, busy: startBusy, endBusy: endBusy, isBusy: isBusy,
       openSub: openSub, closeSub: closeSub, h: h, clear: clear, lines: lines, setFooter: setFooter,
       wrap: S.els ? S.els.wrap : null, body: S.els ? S.els.body : null, me: S.me, cfg: S.cfg, idx: S.idx,
-      alive: function () { return alive(seq) && S.view === 'customers'; },
+      alive: function () { return alive(seq) && S.view === view; },
+      onlyTab: view === 'production' ? 'production' : '',   // 上の切り替えの「受注状況一覧表」から開いた＝表だけ（中の切り替えを出さない）
       editOrder: editOrder, saveFile: saveFile, stop: showAuthStop,
       util: { str: str, cleanText: cleanText, toInt: toInt, nfkc: nfkc, isDefinitive: isDefinitive, makeSubmissionId: makeSubmissionId }
     };
@@ -1624,13 +1791,28 @@
     S.open = true;
     S.seq = Date.now();
     S.ctx = ctx;
-    // カメラの間に端末が画面を終了させて、スマレコが開き直した（principles_mobile_web_state_survival）
-    if (takeResumeMark()) S.lastNote = 'カメラを開いている間に、端末の都合で画面が閉じられたため、おせち受注を開き直しました。写真は残っていないので、もう一度撮影してください。';
+    // カメラの間・写真を整えて読み取っている間に、端末が画面を終了させて、スマレコが開き直した（principles_mobile_web_state_survival）。
+    //   印は localStorage → 無ければ IndexedDB（ブラウザごと終了すると localStorage の書き込みが消えうる）。読んだら両方消す
+    var mark = parseResumeMark(ctx.resumeMark) || readResumeMarkLocal(), seq0 = S.seq;
+    if (mark) { S.lastNote = resumeNoteFor(mark); clearResumeMark(); }
+    else {
+      readResumeMarkIdb().then(function (m2) {
+        if (!alive(seq0) || S.capture) return;   // 読む間に次の撮影を始めていたら、その印を消さない
+        if (m2) { S.lastNote = resumeNoteFor(m2); if (S.phase === 'intro') refreshIntro(); }
+        clearResumeMark();   // 古い印・形の違う印も残さない
+      });
+    }
     buildFrame();
     watchContainer();
     listen(document, 'visibilitychange', function () {
-      if (document.visibilityState === 'hidden') saveDraftNow();
-      else clearResumeMark();   // 同じ画面のまま戻ってきた＝終了させられていない（撮らずに戻った）
+      if (document.visibilityState === 'hidden') { saveDraftNow(); return; }
+      // 同じ画面のまま戻ってきた＝終了させられていない。写真が届けば onPhotoChosen が段階を進める。
+      //   届かないまま（撮らずに戻った・届かない端末）なら、少し待って印を消す（すぐ消すと、このあと写真を整える間に
+      //   終了させられたとき、開き直せない）
+      if (S.capture === 'camera') {
+        if (S.captureTimer) clearTimeout(S.captureTimer);
+        S.captureTimer = setTimeout(function () { S.captureTimer = 0; if (S.capture === 'camera') clearResumeMark(); }, 4000);
+      }
     });
     listen(root, 'pagehide', function () { saveDraftNow(); });
     if (!isAllowedApiUrl(ctx.apiUrl)) {
@@ -1742,7 +1924,9 @@
     { id: 'order', label: '注文を入れる', roles: ['store', 'lead', 'hq'],
       render: function () { if (S.form && S.ready) renderReview(); else renderIntro(); },
       leave: function () { if (S.phase === 'review') saveDraftNow(); } },
-    { id: 'customers', label: 'お客様リスト', roles: ['store', 'lead', 'hq'], render: renderCustomersView, leave: disposeListModule }
+    { id: 'customers', label: 'お客様リスト', roles: ['store', 'lead', 'hq'], render: renderCustomersView, leave: disposeListModule },
+    // 受注状況一覧表（PO 2026-10-30「上の切り替えに足す」）: お客様リストの部品を、表だけの形で開く
+    { id: 'production', label: '受注状況一覧表', roles: ['store', 'lead', 'hq'], render: renderCustomersView, leave: disposeListModule }
   ];
   /** 区分で使える切り替え。区分が分かるまでは最初の1つだけ（切り替えは出さない） */
   function viewsFor(role) { return role ? VIEWS.filter(function (v) { return v.roles.indexOf(role) >= 0; }) : VIEWS.slice(0, 1); }
@@ -1792,18 +1976,18 @@
   function renderCustomersView() {
     if (!S.open) return;
     S.phase = 'list';
-    var w = S.els.wrap, seq = S.seq;
+    var w = S.els.wrap, seq = S.seq, view = S.view;
     clear(w);
     setFooter(null);
     updateHeader();
-    var box = h('div', { 'class': 'osechi-card', 'data-step': 'list-loading', role: 'status', text: 'お客様リストを開いています…' });
+    var box = h('div', { 'class': 'osechi-card', 'data-step': 'list-loading', role: 'status', text: view === 'production' ? '受注状況一覧表を開いています…' : 'お客様リストを開いています…' });
     w.appendChild(box);
     Promise.resolve(S.readyPromise).then(loadListModule).then(function (mod) {
-      if (!alive(seq) || S.view !== 'customers') return;
+      if (!alive(seq) || S.view !== view) return;
       S.listMod = mod;
       mod.render(makeHost());
     }, function (e) {
-      if (!alive(seq) || S.view !== 'customers') return;
+      if (!alive(seq) || S.view !== view) return;
       if (isAuthStop(S.readyError)) return;   // 準備の段階で案内を出してある
       clear(w);
       if (e && e.code === 'VERSION_SKEW') {
@@ -1821,7 +2005,7 @@
       w.appendChild(h('div', { 'class': 'osechi-error', role: 'alert' }, [
         h('div', { text: (S.readyError && S.readyError.message) || 'お客様リストを開けませんでした。電波の良い所で、もう一度お試しください。' }),
         h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-retry', text: 'もう一度開く',
-          on: { click: function () { if (S.readyError) retryPrepare(); renderCustomersView(); } } })
+          on: { click: function () { if (S.readyError) retryPrepare(); renderCustomersView(); } } })   // いまの入口（お客様リスト／受注状況一覧表）のまま開き直す
       ]));
     });
   }
@@ -1865,7 +2049,7 @@
     var t;
     if (!S.me) t = '確認しています…';
     else if (isStoreRole()) t = '店: ' + S.me.store + (S.me.role === 'lead' ? '（店長）' : '');
-    else t = '本部（送るたびに店を選びます）';
+    else t = '本部（店を選んで登録します）';
     S.els.sub.textContent = t;
     refreshViewTabs();
   }
@@ -1883,8 +2067,15 @@
   function openPicker(input) {
     if (isBusy() || !S.open) return;
     if (S.phase === 'review') saveDraftNow();
-    setResumeMark();
+    setResumeMark('camera');
     input.click();
+  }
+  /** カメラ・アルバムの入口（input）。写真が届いたら読み取りへ・やめたら印を消す（cancel は Chrome 113・Safari 16.4 から） */
+  function pickerInput(attrs) {
+    var inp = h('input', attrs);
+    inp.addEventListener('change', function () { onPhotoChosen(inp); });
+    inp.addEventListener('cancel', function () { if (S.capture === 'camera') clearResumeMark(); });
+    return inp;
   }
   function renderIntro() {
     if (!S.open) return;
@@ -1895,10 +2086,8 @@
     setFooter(null);
     var I = S.introEls = { err: h('div'), note: h('div'), last: h('div'), draft: h('div'), status: h('div'), admin: h('div'), foot: h('div') };
 
-    var camInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', 'class': 'osechi-file', 'data-act': 'camera-input', 'aria-label': 'カメラで撮影', tabindex: '-1' });
-    var albInput = h('input', { type: 'file', accept: 'image/*', 'class': 'osechi-file', 'data-act': 'album-input', 'aria-label': 'アルバムから選ぶ', tabindex: '-1' });
-    camInput.addEventListener('change', function () { onPhotoChosen(camInput); });
-    albInput.addEventListener('change', function () { onPhotoChosen(albInput); });
+    var camInput = pickerInput({ type: 'file', accept: 'image/*', capture: 'environment', 'class': 'osechi-file', 'data-act': 'camera-input', 'aria-label': 'カメラで撮影', tabindex: '-1' });
+    var albInput = pickerInput({ type: 'file', accept: 'image/*', 'class': 'osechi-file', 'data-act': 'album-input', 'aria-label': 'アルバムから選ぶ', tabindex: '-1' });
     var camBtn = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary osechi-camera', 'data-act': 'camera' }, [
       h('span', { 'class': 'osechi-camera-ico', text: '📷' }), h('span', { text: '注文書を撮影して読み取る' })
     ]);
@@ -2025,15 +2214,24 @@
   async function onPhotoChosen(input) {
     var file = input.files && input.files[0];
     input.value = '';
-    clearResumeMark();   // 写真を受け取れた＝画面は終了させられていない
-    if (!file || isBusy() || !S.open) return;
+    if (!S.open) return;
+    if (isBusy()) return;   // 処理中に2つ目が届いた（二度押し）: いまの処理を続ける
+    if (!file) {
+      // 写真が届かなかった（端末によっては、撮影を終えても写真が渡らないことがある）。黙って戻らず、次にすることを出す
+      clearResumeMark();
+      await uiAlert('写真を受け取れませんでした。\nもう一度「注文書を撮影して読み取る」を押してください。続けて起きるときは、端末のカメラで撮ってから「アルバムの写真から読み取る」を使ってください。', '', '写真が届きませんでした');
+      return;
+    }
+    // 写真が届いた。整えて読み取っている間に端末が画面を終了させても、開き直して知らせる（印を「写真の途中」に進める）
+    setResumeMark('photo');
     var seq = S.seq;
-    if (file.type && !/^image\//.test(file.type)) { await uiAlert('写真（画像）を選んでください。'); return; }
-    var layer = startBusy('写真を整えています…');
+    if (file.type && !/^image\//.test(file.type)) { clearResumeMark(); await uiAlert('写真（画像）を選んでください。'); return; }
+    var layer = startBusy('写真を整えています…', { hold: '写真を整えています。終わるまでお待ちください（数秒です）。' });
     var r;
     try { r = await resizeImage(file); }
     catch (e) {
       endBusy(layer);
+      clearResumeMark();
       if (alive(seq)) await uiAlert('この写真は読み込めませんでした。\nカメラで撮り直すか、別の写真を選んでください（HEIC などの形式は読めないことがあります）。', '', '写真を読めません');
       return;
     }
@@ -2058,7 +2256,7 @@
       sub: 'AI が注文書を読んでいます（ふつう 10〜30 秒）', cancelable: true,
       onCancel: function () { cancelled = true; if (ac) ac.abort(); }
     });
-    function stopped() { if (alive(seq)) { S.lastNote = '読み取りをやめました。'; refreshIntro(); } }
+    function stopped() { clearResumeMark(); if (alive(seq)) { S.lastNote = '読み取りをやめました。'; refreshIntro(); } }
     try {
       await S.readyPromise;
       if (!alive(seq)) return;
@@ -2079,6 +2277,7 @@
       endBusy(layer);
       if (!alive(seq)) return;
       if (cancelled || e.code === 'ABORTED') return stopped();
+      clearResumeMark();   // 理由を画面に出す＝開き直しの印は要らない
       if (isAuthStop(e)) { showAuthStop(e); return; }
       var choice = await ask({
         tone: 'error', title: '読み取れませんでした', message: e.message,
@@ -2094,21 +2293,23 @@
     }
   }
   function startReviewFromOcr(res) {
+    clearResumeMark();   // 確かめの画面まで来た＝開き直しの印は要らない
     var r = formFromParsed(res && res.parsed, S.idx);
     var fl = (res && res.flags && typeof res.flags === 'object') ? res.flags : {};
     var fq = formQtyByItem(fl.warnings);
     Object.keys(fq).forEach(function (no) { if (r.form.dateItems[no] && !r.form.dateItems[no].hint) r.form.dateItems[no].hint = String(fq[no]); });
     S.form = r.form;
-    S.form.store = isStoreRole() ? S.me.store : '';
     S.ocrStoreName = r.storeName;
     S.dropped = r.dropped;
     S.flags = {
       storeMatched: fl.storeMatched === true ? true : (fl.storeMatched === false ? false : null),
       storeMessage: cleanText(fl.storeMessage, 200),
+      paper: sanitizePaperStore(fl.paperStore),
       suspicious: fl.suspiciousDated === true || fl.suspicious21_32 === true,
       missing: cleanMissing(fl.missing),
       warnings: cleanWarnings(fl.warnings)
     };
+    applyStoreForRole();
     S.edited = {};
     S.pending = null;
     S.restored = false;
@@ -2118,14 +2319,29 @@
     renderReview();
     saveDraftNow();
   }
+  /**
+   * 店の欄を区分ごとに決める: 店・店長＝自店（変えられない）／本部＝注文書の店名が店の一覧の1店に決まれば（paperStore.how＝exact）
+   *   その店を最初から選んでおく（PO 2026-10-29「受付店舗名を拾えば登録できるように」。変えられる）。決まらなければ空（選んでもらう）。
+   *   「違う店舗の予約」を確かめた印は、新しい注文書のたびに下ろす
+   */
+  function applyStoreForRole() {
+    S.storeDiffOk = false;
+    S.storeAuto = '';
+    if (isStoreRole()) { S.form.store = S.me.store; return; }
+    var auto = paperStoreAuto(S.flags && S.flags.paper, storeList());
+    S.form.store = auto;
+    S.storeAuto = auto;
+  }
+  function storeList() { return (S.cfg && S.cfg.stores && S.cfg.stores.length) ? S.cfg.stores : ((S.me && S.me.stores) || []); }
   async function startManual() {
     if (isBusy()) return;
     try { await S.readyPromise; } catch (e) { return; }
     if (!S.open || !S.ready) return;
     revokePhoto();
     S.form = emptyForm(S.idx);
-    S.form.store = isStoreRole() ? S.me.store : '';
+    S.form.receptionist = RECEPTIONIST_NONE;   // 空のまま送らない（直せる）
     S.ocrStoreName = ''; S.dropped = []; S.flags = null; S.edited = {}; S.pending = null; S.restored = false; S.hasOcr = false;
+    applyStoreForRole();
     S.draftCreatedAt = Date.now();
     S.draftOffer = null;
     renderReview();
@@ -2139,14 +2355,14 @@
       return;
     }
     S.form = formFromDraft(d.form, S.idx);
-    S.form.store = isStoreRole() ? S.me.store : '';   // 本部は送るたびに選ぶ（作りかけからも引き継がない）
     S.ocrStoreName = cleanText(d.ocrStoreName, LIMITS.store);
     S.dropped = [];
     S.flags = d.flags ? {
       storeMatched: d.flags.storeMatched === true ? true : (d.flags.storeMatched === false ? false : null),
-      storeMessage: cleanText(d.flags.storeMessage, 200), suspicious: d.flags.suspicious === true,
+      storeMessage: cleanText(d.flags.storeMessage, 200), paper: sanitizePaperStore(d.flags.paper), suspicious: d.flags.suspicious === true,
       missing: cleanMissing(d.flags.missing), warnings: cleanWarnings(d.flags.warnings)
     } : null;
+    applyStoreForRole();   // 本部は前に選んだ店を引き継がない（この注文書の店名から選び直す）
     S.edited = {};
     (Array.isArray(d.edited) ? d.edited : []).slice(0, 200).forEach(function (k) { S.edited[cleanText(k, 40)] = 1; });
     S.pending = (d.pending && /^[0-9A-Za-z-]{8,64}$/.test(str(d.pending.submissionId))) ? {
@@ -2174,7 +2390,7 @@
     var d = {
       key: draftKey(S.me.email), v: 1, email: S.me.email,
       createdAt: S.draftCreatedAt || Date.now(), savedAt: Date.now(),
-      form: { pickupTime: f.pickupTime, receiver: f.receiver, requester: f.requester, items: f.items, dateItems: f.dateItems },
+      form: { pickupTime: f.pickupTime, receptionist: f.receptionist, receiver: f.receiver, requester: f.requester, items: f.items, dateItems: f.dateItems },
       ocrStoreName: S.ocrStoreName, flags: S.flags, edited: Object.keys(S.edited), hasOcr: !!S.hasOcr,
       pending: S.pending ? { submissionId: S.pending.submissionId, fingerprint: S.pending.fingerprint, replaceOrderId: S.pending.replaceOrderId || '', replaceVersion: S.pending.replaceVersion || 0 } : null
     };
@@ -2253,8 +2469,8 @@
     }
     // 商品（お渡し日を選ぶ・2026年は 27 番）
     if (S.idx.dateNos.length) {
-      w.appendChild(h('h3', { 'class': 'osechi-h3', text: 'お渡し日を選ぶ商品（日ごとの個数）' }));
-      w.appendChild(h('p', { 'class': 'osechi-note', text: '店渡しの商品です。お渡し日を押して選び（いくつでも）、選んだ日ごとに個数を入れます。用紙の個数欄は1つなので、日ごとの個数はお客様に確かめてください。' }));
+      w.appendChild(h('h3', { 'class': 'osechi-h3', text: 'お渡し日を選ぶ商品（注文数 → お渡し日）' }));
+      w.appendChild(h('p', { 'class': 'osechi-note', 'data-step': 'date-guide', text: '店渡しの商品です。先に「注文数」（用紙の個数）を入れると、お渡し日が出ます（数が空の商品は「受注なし」）。お渡し日は押して選びます（いくつでも）。2日以上なら、日ごとの個数をお客様に確かめて入れます。' }));
       S.idx.dateNos.forEach(function (no) { w.appendChild(dateRow(no)); });
       w.appendChild(h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-danger', 'data-act': 'clear-date', text: 'お渡し日の商品の入力をすべて消す', on: { click: function () { onClear('date'); } } }));
     }
@@ -2272,9 +2488,10 @@
     w.appendChild(h('h3', { 'class': 'osechi-h3', text: 'お引取り時間' }));
     w.appendChild(textField('pickupTime', 'お引取り時間（店渡しのとき・例 16時頃）※宅配は除く', { max: LIMITS.pickupTime }));
 
-    // 店舗名（申込書のいちばん下）
-    w.appendChild(h('h3', { 'class': 'osechi-h3', text: '店舗名' }));
+    // 店舗名・受付係員（申込書のいちばん下の行）
+    w.appendChild(h('h3', { 'class': 'osechi-h3', text: '店舗名・受付係員' }));
     w.appendChild(storeBlock());
+    w.appendChild(receptionistField());
     w.appendChild(footNote());
 
     var sum = h('div', { 'class': 'osechi-sum', 'data-step': 'summary', 'aria-live': 'polite' });
@@ -2336,56 +2553,71 @@
     if (!S.form || !S.idx) return false;
     var nos = (no && S.form.dateItems[no]) ? [no] : S.idx.dateNos;
     return nos.some(function (n) {
-      var di = S.form.dateItems[n];
-      return selectedDates(di, S.idx.byNo[n].dates).some(function (d) { return parseQty(di.sel[d]).empty; });
+      var di = S.form.dateItems[n], sel = selectedDates(di, S.idx.byNo[n].dates);
+      if (!dateOrderQty(di).value) return sel.length > 0;   // 日付は読めたが注文数が空
+      return sel.length > 1 && sel.some(function (d) { return parseQty(di.sel[d]).empty; });
     });
   }
 
   function storeBlock() {
     var box = h('div', { 'class': 'osechi-card', 'data-step': 'store' });
-    var paper = S.ocrStoreName;
+    var info = S.flags && S.flags.paper;   // 新しい窓口: 用紙の店名と当たり方（無ければ前の版の窓口＝店舗表の名前だけ）
     if (isStoreRole()) {
       box.appendChild(h('div', { 'class': 'osechi-fixed', 'data-field': 'store' }, [h('span', { text: S.me.store }), h('small', { text: '変更できません' })]));
-      if (S.flags && S.flags.storeMatched === false) box.appendChild(h('p', { 'class': 'osechi-note', text: '注文書の店名は、上の黄色の注意を見てください（この店の注文として登録されます）。' }));
+      var diff = paperStoreDiffers(info, S.flags, S.me.store);
+      if (diff) box.appendChild(h('p', { 'class': 'osechi-note', 'data-step': 'store-differs', text: '注文書の店名は「' + diff + '」です。送る前に「異なる店舗の予約ですが良いですか？」と確かめます（この店の注文として登録されます）。' }));
       return box;
     }
-    // 本部: 送るたびに店を選ぶ（前回の店・読み取った店で決めない）
-    var stores = (S.cfg.stores && S.cfg.stores.length) ? S.cfg.stores : S.me.stores;
+    // 本部: 注文書の店名が店の一覧の1店に決まれば、最初から選んである（変えられる）。決まらなければ選ぶ（候補を出す）
+    var stores = storeList();
+    var paper = info ? info.raw : S.ocrStoreName;
+    var cand = info ? (((info.how === 'exact' || info.how === 'similar') && stores.indexOf(info.resolved) >= 0) ? { name: info.resolved } : null)
+      : (S.ocrStoreName ? findStoreCandidate(S.ocrStoreName, stores) : null);
     var sel = h('select', { 'class': 'osechi-input', id: 'osechi-f-store', 'data-field': 'store', 'aria-label': 'どの店の注文か' });
     sel.appendChild(h('option', { value: '', text: '— 店を選んでください —' }));
     stores.forEach(function (s) { sel.appendChild(h('option', { value: s, text: s })); });
     sel.value = S.form.store || '';
-    var cand = paper ? findStoreCandidate(paper, stores) : null;
-    var warnBox = h('div', { 'aria-live': 'polite' });
-    function refreshWarn() {
-      clear(warnBox);
-      if (S.form.store && paper && cand && cand.name !== S.form.store) {
-        warnBox.appendChild(h('div', { 'class': 'osechi-warn', text: '注文書の店名（' + paper + '）と、選んだ店（' + S.form.store + '）が違います。よろしいですか？' }));
+    var noteBox = h('div', { 'aria-live': 'polite' });
+    function refresh() {
+      clear(noteBox);
+      if (S.storeAuto && S.form.store === S.storeAuto) {
+        noteBox.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'store-auto' }, [
+          '注文書の店名「' + paper + '」から ', h('b', { text: S.storeAuto }), ' を選んであります。違うときは、上の一覧から選び直してください。'
+        ]));
+        return;
       }
-    }
-    sel.addEventListener('change', function () { S.form.store = sel.value; clearFieldError('store'); refreshWarn(); updateSubmitState(); });
-    S.inputs.store = sel;
-    box.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-f-store', text: S.edit ? 'この注文の店（直すときだけ選び直します）' : 'どの店の注文ですか（毎回選びます）' }));
-    box.appendChild(sel);
-    box.appendChild(h('div', { 'class': 'osechi-fieldmsg' }));
-    if (paper) {
-      if (cand) {
-        box.appendChild(h('div', { 'class': 'osechi-info' }, [
+      if (paper && cand && S.form.store !== cand.name) {
+        noteBox.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'store-candidate' }, [
           '注文書の店名: 「' + paper + '」 → 候補: ', h('b', { text: cand.name }),
           h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-gold', 'data-act': 'pick-candidate', text: '候補の「' + cand.name + '」を選ぶ',
-            on: { click: function () { S.form.store = cand.name; sel.value = cand.name; clearFieldError('store'); refreshWarn(); updateSubmitState(); } } })
+            on: { click: function () { S.form.store = cand.name; sel.value = cand.name; clearFieldError('store'); refresh(); updateSubmitState(); scheduleSave(); } } })
         ]));
-      } else {
-        box.appendChild(h('div', { 'class': 'osechi-warn', text: '注文書の店名「' + paper + '」は、店の一覧に見つかりません。注文書を確かめて選んでください。' }));
+        if (S.form.store) noteBox.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'store-differs', text: '注文書の店名（' + paper + '）と、選んだ店（' + S.form.store + '）が違います。よろしいですか？' }));
+      } else if (paper && !cand) {
+        noteBox.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'store-unknown', text: '注文書の店名「' + paper + '」は、店の一覧に見つかりません。注文書を確かめて選んでください。' }));
+      } else if (!paper && S.hasOcr) {
+        noteBox.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'store-unread', text: '注文書の店名が読み取れませんでした。注文書を確かめて選んでください。' }));
       }
-    } else if (S.hasOcr) {
-      box.appendChild(h('div', { 'class': 'osechi-warn', text: (S.flags && S.flags.storeMessage) || '注文書に店名が読み取れませんでした。注文書を確かめて選んでください。' }));
     }
-    box.appendChild(warnBox);
-    refreshWarn();
+    sel.addEventListener('change', function () { S.form.store = sel.value; clearFieldError('store'); refresh(); updateSubmitState(); scheduleSave(); });
+    S.inputs.store = sel;
+    box.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-f-store', text: S.edit ? 'この注文の店（直すときだけ選び直します）' : 'どの店の注文ですか' }));
+    box.appendChild(sel);
+    box.appendChild(h('div', { 'class': 'osechi-fieldmsg' }));
+    box.appendChild(noteBox);
+    refresh();
     return box;
   }
 
+  /** 受付係員（申込書の「受付係員名」）。読めないときは「記載なし」が入っている。押すと全体が選ばれ、打てばそのまま置き換わる */
+  function receptionistField() {
+    var f = textField('receptionist', '受付係員（申込書のいちばん下・書いていなければ「記載なし」のまま）', { max: LIMITS.receptionist });
+    var inp = S.inputs.receptionist;
+    inp.addEventListener('focus', function () { if (inp.value === RECEPTIONIST_NONE) { try { inp.select(); } catch (e) { /* 何もしない */ } } });
+    // 空にしたまま欄を離れたら「記載なし」に戻す（空のまま送らない）
+    inp.addEventListener('change', function () { if (!trim(inp.value)) { inp.value = RECEPTIONIST_NONE; S.form.receptionist = RECEPTIONIST_NONE; scheduleSave(); } });
+    return h('div', { 'class': 'osechi-card', 'data-step': 'receptionist' }, f);
+  }
   function textField(key, label, opt) {
     opt = opt || {};
     var id = 'osechi-f-' + key.replace(/\./g, '-');
@@ -2454,11 +2686,36 @@
     return row;
   }
   /**
-   * お渡し日を選ぶ商品（追補 v3）: 日付のボタン（いくつでも）と、選んだ日ごとの個数の欄・合計。
-   *   欄の名前: ボタンの並び dateItems.<no>.dates／日ごとの個数 dateItems.<no>.q.<12-30>
+   * お渡し日を選ぶ商品（日付型＝27・20〜32）。2026-10-29 PO:「数が空でも日付の欄が出るので、間違って押してしまいそう」
+   *   → 先に「注文数」（用紙の個数欄）。注文数が空・0 のあいだは、日付の欄の代わりに「受注なし」と出す（押せる物を出さない）。
+   *   注文数を入れると、お渡し日のボタンが出る。日付が1つならその日に注文数・2つ以上なら日ごとの個数を入れる（追補 v3）。
+   *   読み取りで日付だけ読めて数が空の行は、黄色で知らせ、注文数を入れるまで送れない（「日付を外す」で受注なしにできる）。
+   *   欄の名前: 注文数 dateItems.<no>.total／ボタンの並び dateItems.<no>.dates／日ごとの個数 dateItems.<no>.q.<12-30>
    */
   function dateRow(no) {
-    var meta = S.idx.byNo[no], st = meta.status;
+    var meta = S.idx.byNo[no], st = meta.status, di = S.form.dateItems[no], tkey = dateOrderKey(no);
+    var total = h('input', { type: 'text', inputmode: 'numeric', 'class': 'osechi-qty', maxlength: '2', autocomplete: 'off',
+      'aria-label': '商品' + no + 'の注文数', 'data-field': tkey, enterkeyhint: 'next', placeholder: '－' });
+    total.value = str(di.hint);
+    total.addEventListener('input', function () {
+      di.hint = total.value;
+      S.edited[tkey] = 1;
+      syncSingleDate(di, meta.dates);   // 日付が1つなら、その日の個数＝注文数
+      renderDateQtys(no, '');
+      updateRow(no);
+      scheduleSave();
+    });
+    // 数を消した（空・0）まま欄を離れた: 選んでいた日付も外す（間違って送られない側。打ち直しの途中では消さない）
+    total.addEventListener('change', function () {
+      if (dateOrderQty(di).value || !selectedDates(di, meta.dates).length) return;
+      di.sel = {};
+      S.edited[dateGroupKey(no)] = 1;
+      renderDateQtys(no, '');
+      updateRow(no);
+      scheduleSave();
+    });
+    S.inputs[tkey] = total;
+    var tcell = h('label', { 'class': 'osechi-qcell osechi-dtotal' }, [h('span', { 'class': 'osechi-qlabel', text: '注文数' }), total]);
     var chips = meta.dates.map(function (d) {
       var c = h('button', { type: 'button', 'class': 'osechi-chip', 'data-act': 'date', 'data-no': String(no), value: d, 'aria-pressed': 'false', text: d });
       c.addEventListener('click', function () { toggleDate(no, d); });
@@ -2466,56 +2723,69 @@
     });
     var group = h('div', { 'class': 'osechi-chips', role: 'group', 'aria-label': '商品' + no + 'のお渡し日（いくつでも選べます）', 'data-field': dateGroupKey(no) },
       chips.length ? chips : [h('span', { 'class': 'osechi-small', text: 'お渡し日の候補がありません（本部へ）' })]);
+    var datesBox = h('div', { 'class': 'osechi-ddates' }, [h('div', { 'class': 'osechi-dhead', text: 'お渡し日（押して選ぶ・いくつでも）' }), group]);
+    // 受注なし: 1行だけ（13商品が並んでも画面を長くしない）。何をすれば日付が出るかは、見出しの下の一言と「注文数」の欄で分かる
+    var none = h('div', { 'class': 'osechi-dnone', 'data-step': 'date-none', 'aria-label': '受注なし（注文数を入れると、お渡し日を選べます）' }, [h('b', { text: '受注なし' })]);
+    var pendText = h('div');
+    var pending = h('div', { 'class': 'osechi-dpending osechi-hidden', 'data-step': 'date-pending' }, [pendText,
+      h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-link', 'data-act': 'date-clear', 'data-no': String(no), text: '日付を外す（この商品は受注なし）',
+        on: { click: function () { if (isBusy()) return; di.sel = {}; S.edited[dateGroupKey(no)] = 1; renderDateQtys(no, ''); updateRow(no); scheduleSave(); } } })]);
     var qbox = h('div', { 'class': 'osechi-dqtys osechi-hidden' });
-    var sum = h('div', { 'class': 'osechi-dsum', 'data-field': 'dateItems.' + no + '.total', 'aria-live': 'polite' });
+    var sum = h('div', { 'class': 'osechi-dsum', 'data-step': 'date-sum', 'aria-live': 'polite' });
     var msg = h('p', { 'class': 'osechi-item-msg osechi-hidden' });
-    var col = h('div', { 'class': 'osechi-dcol' }, [h('div', { 'class': 'osechi-dhead', text: 'お渡し日（押して選ぶ・いくつでも）' }), group, qbox, sum]);
+    var top = h('div', { 'class': 'osechi-dtop' }, [tcell, h('div', { 'class': 'osechi-dright' }, [none, pending, datesBox])]);
+    var col = h('div', { 'class': 'osechi-dcol' }, [top, qbox, sum]);
     var row = h('div', { 'class': 'osechi-item osechi-item-d' + (st === 'needcall' ? ' osechi-item--needcall' : '') + (st === 'soldout' ? ' osechi-item--soldout' : ''), 'data-no': String(no), 'data-kind': 'date' }, [
       itemNoCell(no, meta), col, msg
     ]);
-    S.rows[no] = { row: row, kind: 'date', chips: chips, qbox: qbox, sum: sum, msg: msg, qtys: [], cells: [] };
+    S.rows[no] = { row: row, kind: 'date', chips: chips, total: total, tcell: tcell, none: none, pending: pending, pendText: pendText, datesBox: datesBox,
+      qbox: qbox, sum: sum, msg: msg, qtys: [], cells: [] };
     renderDateQtys(no, '');
     updateRow(no);
     return row;
   }
-  /** 選んだ日ごとの個数の欄を作り直す（日付の並びは用紙の並び＝候補の順） */
+  /** 日ごとの個数の欄を作り直す（2日以上選んだときだけ。日付の並びは用紙の並び＝候補の順） */
   function renderDateQtys(no, focusDate) {
     var R = S.rows[no], it = S.form.dateItems[no], meta = S.idx.byNo[no];
     if (!R) return;
     Object.keys(S.inputs).forEach(function (k) { if (k.indexOf('dateItems.' + no + '.q.') === 0) delete S.inputs[k]; });
     clear(R.qbox);
     R.qtys = []; R.cells = [];
-    selectedDates(it, meta.dates).forEach(function (d) {
-      var key = dateQtyKey(no, d);
-      var q = h('input', { type: 'text', inputmode: 'numeric', 'class': 'osechi-qty', maxlength: '2', autocomplete: 'off',
-        'aria-label': '商品' + no + 'の ' + d + ' の個数', 'data-field': key, enterkeyhint: 'next', placeholder: '個数' });
-      q.value = str(it.sel[d]);
-      q.addEventListener('input', function () {
-        if (!hasOwn(it.sel, d)) return;
-        it.sel[d] = q.value;
-        S.edited[key] = 1;
-        updateRow(no);
-        scheduleSave();
+    var sel = selectedDates(it, meta.dates);
+    if (sel.length > 1 && dateOrderQty(it).value) {
+      sel.forEach(function (d) {
+        var key = dateQtyKey(no, d);
+        var q = h('input', { type: 'text', inputmode: 'numeric', 'class': 'osechi-qty', maxlength: '2', autocomplete: 'off',
+          'aria-label': '商品' + no + 'の ' + d + ' の個数', 'data-field': key, enterkeyhint: 'next', placeholder: '個数' });
+        q.value = str(it.sel[d]);
+        q.addEventListener('input', function () {
+          if (!hasOwn(it.sel, d)) return;
+          it.sel[d] = q.value;
+          S.edited[key] = 1;
+          updateRow(no);
+          scheduleSave();
+        });
+        var cell = h('label', { 'class': 'osechi-dq' }, [h('span', { 'class': 'osechi-qlabel', text: d + ' の個数' }), q]);
+        S.inputs[key] = q;
+        R.qtys.push(q);
+        R.cells.push({ cell: cell, d: d, input: q });
+        R.qbox.appendChild(cell);
+        if (focusDate === d) setTimeout(function () { try { q.focus({ preventScroll: true }); } catch (e) { q.focus(); } }, 0);
       });
-      var cell = h('label', { 'class': 'osechi-dq' }, [h('span', { 'class': 'osechi-qlabel', text: d + ' の個数' }), q]);
-      S.inputs[key] = q;
-      R.qtys.push(q);
-      R.cells.push({ cell: cell, d: d, input: q });
-      R.qbox.appendChild(cell);
-      if (focusDate === d) setTimeout(function () { try { q.focus({ preventScroll: true }); } catch (e) { q.focus(); } }, 0);
-    });
+    }
     R.qbox.classList.toggle('osechi-hidden', !R.qtys.length);
   }
-  /** お渡し日のボタンを押した: 選ぶ／外す。1つ目を選んだときに用紙の個数が読めていれば、その日に入れておく（違えば直す） */
+  /** お渡し日のボタンを押した: 選ぶ／外す（注文数が先）。1つ目はその日に注文数・2つ目からは日ごとの個数を入れる */
   function toggleDate(no, d) {
     if (isBusy() || !S.form) return;
-    var it = S.form.dateItems[no], meta = S.idx.byNo[no];
+    var it = S.form.dateItems[no], meta = S.idx.byNo[no], tq = dateOrderQty(it);
+    if (!tq.value) return;   // 受注なし（注文数が空）のあいだは選べない
     if (hasOwn(it.sel, d)) delete it.sel[d];
     else {
       if (meta.status === 'soldout') return;
-      var hint = parseQty(it.hint).value;
-      it.sel[d] = (hint && !selectedDates(it, meta.dates).length) ? String(hint) : '';
+      it.sel[d] = selectedDates(it, meta.dates).length ? '' : String(tq.value);
     }
+    syncSingleDate(it, meta.dates);
     S.edited[dateGroupKey(no)] = 1;
     renderDateQtys(no, hasOwn(it.sel, d) ? d : '');
     updateRow(no);
@@ -2544,7 +2814,17 @@
       else if (hasQty) { cls = 'osechi-item--ok'; if (st === 'needcall') text = '要電話確認の商品です。送る前にお客様へ電話で確かめてください。'; }
     } else {
       var di = S.form.dateItems[no], dates = S.idx.byNo[no].dates, sel = selectedDates(di, dates);
-      var hint = parseQty(di.hint).value, total = dateTotal(di, dates), empties = [], derr = '';
+      var tq = dateOrderQty(di), locked = !tq.value, total = dateTotal(di, dates), empties = [], derr = '';
+      var tEmpty = !str(di.hint).trim();
+      R.total.disabled = (st === 'soldout' && tEmpty);
+      R.total.setAttribute('placeholder', R.total.disabled ? '売切' : '－');
+      R.total.classList.toggle('osechi-err', !!tq.error || (st === 'soldout' && !tEmpty));
+      R.tcell.classList.toggle('osechi-on', !!tq.value);
+      // 受注なし（注文数が空・0）: 日付のボタンを出さない。日付だけ読めた行は、読めた日付と「日付を外す」を出す
+      R.datesBox.classList.toggle('osechi-hidden', locked);
+      R.none.classList.toggle('osechi-hidden', !locked || sel.length > 0);
+      R.pending.classList.toggle('osechi-hidden', !(locked && sel.length));
+      R.pendText.textContent = (locked && sel.length) ? 'お渡し日 ' + sel.join('・') + ' は読めましたが、注文数が空です。' : '';
       R.chips.forEach(function (b) {
         var on = hasOwn(di.sel, b.getAttribute('value'));
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -2557,18 +2837,17 @@
         c.input.classList.toggle('osechi-err', !!q.error || st === 'soldout');
         c.cell.classList.toggle('osechi-on', !!q.value);
       });
-      R.sum.textContent = sel.length ? '合計 ' + total + ' 個' + (hint ? '（用紙の個数 ' + hint + '）' : '') : (hint ? '用紙の個数 ' + hint : '');
-      R.sum.classList.toggle('osechi-hidden', !sel.length && !hint);
-      if (derr) { cls = 'osechi-item--err'; text = derr; }
-      else if (st === 'soldout' && sel.length) { cls = 'osechi-item--err'; text = '売り切れです。お渡し日の選択を外してください（お客様へのご連絡をお願いします）。'; }
-      else if (empties.length) { cls = 'osechi-item--warn'; text = empties.join('・') + ' の個数を入れてください（日ごとの個数が空のままは送れません）。'; }
-      else if (!sel.length && hint) { cls = 'osechi-item--warn'; text = 'お渡し日を選んでください（用紙の個数は ' + hint + '）。'; }
-      else if (total) {
-        cls = (hint && hint !== total) ? 'osechi-item--warn' : 'osechi-item--ok';
-        if (hint && hint !== total) text = '用紙の個数（' + hint + '）と、日ごとの合計（' + total + '）が違います。';
-        else if (st === 'needcall') text = '要電話確認の商品です。送る前にお客様へ電話で確かめてください。';
-      }
-      if (hasOwn(di.sel, NEW_YEAR_DATE) && st !== 'soldout') text = (text ? text + '\n' : '') + NEW_YEAR_DATE + '（元日）は、元日営業の店だけです（そうでない店は、送る前に注意が出ます）。';
+      R.sum.textContent = locked ? '' : (sel.length > 1 ? '日ごとの合計 ' + total + ' 個（注文数 ' + tq.value + '）' : (sel.length === 1 ? sel[0] + ' に ' + tq.value + ' 個' : ''));
+      R.sum.classList.toggle('osechi-hidden', !R.sum.textContent);
+      if (tq.error) { cls = 'osechi-item--err'; text = '注文数: ' + tq.error; }
+      else if (derr) { cls = 'osechi-item--err'; text = derr; }
+      else if (st === 'soldout' && (tq.value || sel.length)) { cls = 'osechi-item--err'; text = '売り切れです。注文数を消してください（お客様へのご連絡をお願いします）。'; }
+      else if (locked && sel.length) { cls = 'osechi-item--warn'; text = '注文書の個数を「注文数」に入れてください（空のままは送れません）。注文しないときは「日付を外す」を押してください。'; }
+      else if (!locked && !sel.length) { cls = 'osechi-item--warn'; text = 'お渡し日を選んでください（注文数 ' + tq.value + '）。'; }
+      else if (sel.length > 1 && empties.length) { cls = 'osechi-item--warn'; text = empties.join('・') + ' の個数を入れてください（日ごとの個数が空のままは送れません）。'; }
+      else if (sel.length > 1 && total !== tq.value) { cls = 'osechi-item--warn'; text = '注文数（' + tq.value + '）と、日ごとの合計（' + total + '）が違います。'; }
+      else if (!locked) { cls = 'osechi-item--ok'; if (st === 'needcall') text = '要電話確認の商品です。送る前にお客様へ電話で確かめてください。'; }
+      if (!locked && hasOwn(di.sel, NEW_YEAR_DATE) && st !== 'soldout') text = (text ? text + '\n' : '') + NEW_YEAR_DATE + '（元日）は、元日営業の店だけです（そうでない店は、送る前に注意が出ます）。';
     }
     R.row.classList.remove('osechi-item--warn', 'osechi-item--ok', 'osechi-item--err');
     if (cls) R.row.classList.add(cls);
@@ -2589,7 +2868,8 @@
       storeQ += a; delQ += b;
     });
     S.idx.dateNos.forEach(function (no) {
-      var t = dateTotal(S.form.dateItems[no], S.idx.byNo[no].dates);
+      var t = 0;
+      effectiveDateQtys(S.form.dateItems[no], S.idx.byNo[no].dates).forEach(function (x) { t += x.q; });
       if (t) kinds++;
       dateQ += t;
     });
@@ -2599,12 +2879,13 @@
     el.textContent = kinds ? parts.join('・') + ' 個（' + kinds + ' 品）' : 'まだ数量の入った商品がありません';
   }
   function syncInputs() {
-    // お渡し日の選び方が変わっていたら、日ごとの欄を作り直す
+    // お渡し日の選び方が変わっていたら、日ごとの欄を作り直す（日ごとの欄は2日以上のときだけ）
     Object.keys(S.rows).forEach(function (no) {
       var R = S.rows[no];
       if (R.kind !== 'date') return;
-      var sel = selectedDates(S.form.dateItems[no], S.idx.byNo[no].dates);
-      if (sel.join(',') !== R.cells.map(function (c) { return c.d; }).join(',')) renderDateQtys(Number(no), '');
+      var di = S.form.dateItems[no], sel = selectedDates(di, S.idx.byNo[no].dates);
+      var want = (sel.length > 1 && dateOrderQty(di).value) ? sel.join(',') : '';
+      if (want !== R.cells.map(function (c) { return c.d; }).join(',')) renderDateQtys(Number(no), '');
     });
     Object.keys(S.inputs).forEach(function (k) {
       var el = S.inputs[k], v = (k === 'store') ? (S.form.store || '') : getField(S.form, k);
@@ -2712,6 +2993,19 @@
       markFieldError('store', '店を選んでください');
       await uiAlert('どの店の注文かを選んでください（いちばん下の「店舗名」）。\n本部の方は、送るたびに店を選びます。', 'store', '店を選んでください');
       return;
+    }
+    // 店・店長: 注文書の店名が自店と違う → 送る前に1回だけ確かめる（PO 2026-10-29。「はい」で自店の注文として登録・この注文書では二度聞かない）
+    if (isStoreRole() && !S.storeDiffOk) {
+      var diff = paperStoreDiffers(S.flags && S.flags.paper, S.flags, S.me.store);
+      if (diff) {
+        var ans = await ask({ tone: 'info', title: '異なる店舗の予約ですが良いですか？',
+          message: '注文書の店名: ' + diff + '\nこの店: ' + S.me.store + '\n\n「はい」を押すと、この店（' + S.me.store + '）の注文として登録します。',
+          buttons: [{ id: 'yes', label: 'はい（この店の注文として登録）', kind: 'primary' }, { id: 'no', label: 'いいえ（戻って確かめる）', kind: 'secondary' }],
+          cancelId: 'no' });
+        if (!alive(seq)) return;
+        if (ans !== 'yes') { note('注文書の店名を確かめてから、もう一度送ってください（ほかの店の注文なら、その店で登録します）。'); focusField('store'); return; }
+        S.storeDiffOk = true;
+      }
     }
     var ui = {
       alert: function (m, key) { return uiAlert(m, key); },
@@ -2906,7 +3200,7 @@
     if (p.replaceOrderId) { payload.replaceOrderId = p.replaceOrderId; if (p.replaceVersion) payload.replaceVersion = p.replaceVersion; }
     if (p.allowMissing) payload.allowMissing = true;
     if (p.allowWarnings) payload.allowWarnings = true;
-    var layer = startBusy('送信しています…', { sub: '返事が来るまで、この画面のままお待ちください' });
+    var layer = startBusy('送信しています…', { sub: '返事が来るまで、この画面のままお待ちください', hold: '送信の返事を待っています。終わるまでお待ちください。' });
     var st = S, res;
     try {
       res = await api('submitOrder', payload);
@@ -3150,7 +3444,7 @@
     var payload = { orderId: E.orderId, version: E.version, order: order, submissionId: p.submissionId, needCallConfirmed: !!p.needCallConfirmed };
     if (p.allowMissing) payload.allowMissing = true;
     if (p.allowWarnings) payload.allowWarnings = true;
-    var layer = startBusy('修正を送っています…', { sub: '返事が来るまで、この画面のままお待ちください' });
+    var layer = startBusy('修正を送っています…', { sub: '返事が来るまで、この画面のままお待ちください', hold: '修正の返事を待っています。終わるまでお待ちください。' });
     var res;
     try {
       res = await api('updateOrder', payload);
@@ -3281,8 +3575,7 @@
       r.storeMessage ? h('div', { 'class': 'osechi-small', 'data-step': 'done-store-message', text: r.storeMessage }) : null,
       r.warnings && r.warnings.length ? h('div', { 'class': 'osechi-small', 'data-step': 'done-warnings' }, [h('b', { text: '確かめたうえで受け付けた注意: ' })].concat(r.warnings.map(function (m) { return h('div', { text: '・' + m }); }))) : null
     ]);
-    var camInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', 'class': 'osechi-file', 'data-act': 'camera-input', tabindex: '-1', 'aria-label': 'カメラで撮影' });
-    camInput.addEventListener('change', function () { onPhotoChosen(camInput); });
+    var camInput = pickerInput({ type: 'file', accept: 'image/*', capture: 'environment', 'class': 'osechi-file', 'data-act': 'camera-input', tabindex: '-1', 'aria-label': 'カメラで撮影' });
     var next = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary osechi-camera', 'data-act': 'next' }, [
       h('span', { 'class': 'osechi-camera-ico', text: '📷' }), h('span', { text: '次の注文を撮影する' })
     ]);
@@ -3325,8 +3618,8 @@
     var body = h('ol', { 'class': 'osechi-guide-steps', 'data-step': 'guide' }, [
       step('📷', '撮る', '「注文書を撮影して読み取る」を押し、注文書の全体を真上から撮ります。写真なしで手で入れることもできます。'),
       step('✏️', '見比べて直す', 'AI が読んだ内容が出ます。注文書と見比べて違う所を直します。おせちは申込書と同じく「店渡し」と「宅配」の個数を分けて入れます。', mini(['店渡し 2', '宅配 1'])),
-      step('📅', 'お渡し日を選ぶ商品', '日付を押して選び（いくつでも）、選んだ日ごとに個数を入れます。用紙の個数欄は1つなので、日ごとの個数はお客様に確かめます。空のままは送れません。', mini(['12/30 ✓', '12/31 ✓', '12/30 の個数 2', '合計 3 個'])),
-      step('🏬', '店', '店のアカウント・店長は自分の店に決まっています。本部の方は、送るたびに「店舗名」で店を選びます。'),
+      step('📅', 'お渡し日を選ぶ商品', '先に「注文数」（用紙の個数）を入れます。数が空のあいだは「受注なし」と出て、日付は押せません。数を入れると日付が出るので押して選びます（いくつでも）。2日以上なら、日ごとの個数も入れます。', mini(['注文数 3', '12/30 ✓', '12/31 ✓', '12/30 の個数 2'])),
+      step('🏬', '店・受付係員', '店のアカウント・店長は自分の店に決まっています。注文書の店名が違うときは、送る前に確かめます。本部の方は、注文書の店名から店が選ばれています（違えば選び直します）。受付係員は、書いていなければ「記載なし」のまま送ります。'),
       step('📨', '送る', '「この内容で送信」を押します。黄色の注意が出たら、お客様に確かめて「確認したうえでこのまま送る」。似た注文があれば「上書き／別の注文として受注する／やめる」を選びます。'),
       step('✅', '受付番号', '受付番号が出たら完了です。続けて「次の注文を撮影する」を押せます。')
     ]);
@@ -3337,7 +3630,8 @@
       step('📋', '開く', '上の「お客様リスト」を押します。店渡し・宅配・集計を切り替えて見ます。本部の方は、毎回、見る店を選びます。'),
       step('🔍', '探す', '氏名・電話・受付番号で探せます。ひらがな・カタカナ・ローマ字、全角・半角のどれで打っても当たります。空白で区切ると、どの言葉も含む行だけ。漢字の氏名を読み（やまだ）で探すことはできません。', mini(['すずき', 'suzuki', '090-1234'])),
       step('✏️', '直す・取り消す', '行を押すと注文を直せます（「修正を送る」）。取り消すときは、理由を入れます。ほかの人が先に直していたら、最新の内容を読み込み直します。'),
-      step('📥', '報告する', '締め日と報告日は上の帯に出ます。報告日は「報告用ファイル（Excel）をダウンロード」か「印刷」。回数に上限があるので、1回押したら終わるまで待ちます。')
+      step('📥', '報告する', '締め日と報告日は上の帯に出ます。報告日は「報告用ファイル（Excel）をダウンロード」か「印刷」。回数に上限があるので、1回押したら終わるまで待ちます。'),
+      step('🍣', '受注状況一覧表', '上の「受注状況一覧表」で、受け渡しの日ごと・担当（惣菜・鮮魚・サービスカウンター）ごとに、作る数と、いちばん早い受取の時刻を見られます（お客様の名前は出しません）。印刷は A4 横・1日1ページ、Excel にもできます。')
     ]);
     var listExtra = h('div', { 'class': 'osechi-small', text: '・お客様の氏名・住所・電話は、この端末に残しません。閉じる・店を変える・サインアウトで画面から消えます。' });
     var close = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'guide-close', text: '閉じる', on: { click: function () { closeSub(); } } });
@@ -3458,7 +3752,11 @@
         cleanMissing: cleanMissing, serverFieldToKey: serverFieldToKey, hasBlockingWarning: hasBlockingWarning,
         selectedDates: selectedDates, dateTotal: dateTotal, dateQtyKey: dateQtyKey, dateGroupKey: dateGroupKey,
         getField: getField, setField: setField, formQtyByItem: formQtyByItem, formFromOrder: formFromOrder, baselineOf: baselineOf, listModuleUrl: listModuleUrl, VIEWS: VIEWS, viewsFor: viewsFor, LAYERS: LAYERS, ACTION_OPTS: ACTION_OPTS,
-        RESUME_KEY: RESUME_KEY, RESUME_TTL_MS: RESUME_TTL_MS, safeFileName: safeFileName, listModuleProblem: listModuleProblem
+        RESUME_KEY: RESUME_KEY, RESUME_TTL_MS: RESUME_TTL_MS, safeFileName: safeFileName, listModuleProblem: listModuleProblem,
+        RESUME_DB: RESUME_DB, parseResumeMark: parseResumeMark, resumeNoteFor: resumeNoteFor,
+        sanitizePaperStore: sanitizePaperStore, paperStoreDiffers: paperStoreDiffers, paperStoreAuto: paperStoreAuto,
+        dateOrderQty: dateOrderQty, dateOrderKey: dateOrderKey, effectiveDateQtys: effectiveDateQtys, syncSingleDate: syncSingleDate,
+        fillOrderQtyFromDates: fillOrderQtyFromDates, RECEPTIONIST_NONE: RECEPTIONIST_NONE
       }
     };
   }
