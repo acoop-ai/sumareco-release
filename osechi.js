@@ -39,17 +39,25 @@
  *   人が「確認したうえでこのまま送る」を選んだときだけ allowWarnings:true を付けて送る（空いている必須の欄は allowMissing）。
  *   窓口が「確かめてから」と断る形は NEEDS_CONFIRM（error.missing・error.warnings）。古い形（BAD_REQUEST）にも合わせる。
  *
- * 後から足す画面（お客様リスト＝SPEC §17）のための作り:
+ * 後から足す画面（受注状況＝SPEC §17）のための作り:
  *   ・窓口を呼ぶのは api(action, args) の1か所（action ごとの待ち時間・送り直しは ACTION_OPTS の表）。
- *   ・モードの中の切り替え（「注文を入れる」「お客様リスト」）は VIEWS の表に1行足すと、上部の切り替えに出る
+ *   ・モードの中の切り替え（「注文を入れる」「受注状況」）は VIEWS の表に1行足すと、上部の切り替えに出る
  *     （2つ以上あるときだけ出す）。中身は host（api・小窓・処理中・階層2・本文と下の操作の場所）を受け取って描く。
  *   ・階層2（#osechi-sub）は openSub(title, body)／closeSub() の1か所で出し入れする。
+ *
+ * 速さ（2026-10-31 段2.5・PO「すべての工程を速く」。窓口の往復は1本 約1.5秒＝直列に呼ぶ本数を減らす）:
+ *   ・開くとき: 新しいタブは startSession の返事に添えられた設定を使う（getConfig を呼ばない）。同じタブで開き直したときは、
+ *     前に受け取った設定（ページのメモリ・個人情報なし）を先に使い、裏で getConfig を読み直す（送るときは窓口が必ず確かめる）
+ *   ・受注状況は openList の1本（osechi_list.js）。「注文を直す」は、その中身から開く（getOrder を呼ばない・送るときに版で守る）
+ *   ・新しい注文: 確認の画面で入力が落ち着いたら、似た注文の確認（checkOrder）を裏で先に済ませ、送信のときはその返事を使う
+ *   ・窓口を呼ぶたびに、操作・往復の時間・窓口の中の時間（返事の ms）を、最後の50回だけメモリに持つ（端末に保存しない）。
+ *     画面の下の版の行を長押し（または5回続けて押す）すると「待ち時間の記録」が出る
  */
 (function (root) {
   'use strict';
 
   // ===== 版・定数 =====
-  var OSECHI_UI_BUILD = 'osechi-ui-2026-10-29a';
+  var OSECHI_UI_BUILD = 'osechi-ui-2026-10-31a';
   var SESSION_KEY = 'osechi_session_v1';        // sessionStorage（このタブだけ・閉じれば消える）
   var LAST_DONE_KEY = 'osechi_last_done_v1';    // sessionStorage（直前の受付番号だけ）
   var DRAFT_DB = 'osechi_drafts_v1';            // IndexedDB（作りかけ・12時間）
@@ -75,7 +83,7 @@
   var JPEG_QUALITY = 0.82;
   var MAX_ITEMS = 40;
   var STYLE_ID = 'osechi-style';
-  // この osechi.js を読み込んだアドレス（お客様リストの部品 osechi_list.js を、同じ場所・同じ版で読むため）
+  // この osechi.js を読み込んだアドレス（受注状況の部品 osechi_list.js を、同じ場所・同じ版で読むため）
   var SELF_SRC = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) ? String(document.currentScript.src) : '';
   // 重ねる画面（階層）。スマレコの OVERLAY_LEVEL と同じ値・同じ z-index（sumareco_hook.patch・static_safety で照合）
   var LAYERS = {
@@ -99,22 +107,43 @@
     submitOrder: { timeoutMs: 45000, retryNetwork: true },
     adminStatus: { timeoutMs: 60000, retryNetwork: true },
     adminExportNow: { timeoutMs: 60000, retryNetwork: false },
-    // お客様リスト（SPEC §17・BACKEND_NOTES §6）。読むだけの操作は通信の失敗で1回送り直す。
+    // 受注状況（お客様リスト・集計など。SPEC §17・BACKEND_NOTES §6）。読むだけの操作は通信の失敗で1回送り直す。
     //   書く操作（修正・取消）は submissionId を付けるので送り直しても1回。取り出し（xlsx・CSV）と印刷の記録は
     //   回数の上限に数えられるので、自動では送り直さない
-    listCustomers: { timeoutMs: 30000, retryNetwork: true },
-    getSummary: { timeoutMs: 30000, retryNetwork: true },
+    //   openList（2026-10-31）＝受注状況の全部を1本で（店渡し・宅配・集計・店内受注品一覧・注文の中身）。大きな店で数百 KB＝待ちを長めに。
+    //   前の listCustomers・getSummary・getProductionList（切り替えごとに1本）は呼ばない。getOrder は「ほかの人が先に直した」ときの読み直しだけ
+    openList: { timeoutMs: 60000, retryNetwork: true },
     getOrder: { timeoutMs: 20000, retryNetwork: true },
     updateOrder: { timeoutMs: 45000, retryNetwork: true },
     cancelOrder: { timeoutMs: 30000, retryNetwork: true },
     exportReport: { timeoutMs: 90000, retryNetwork: false, retryBusy: false },
     exportCsv: { timeoutMs: 60000, retryNetwork: false, retryBusy: false },
     logPrint: { timeoutMs: 15000, retryNetwork: false, retryBusy: false },
-    // 受注状況一覧表（2026-10-29・REPORT_NOTES §8）: 見るのは送り直してよい・Excel は取り出しの上限に数えるので自動では送り直さない
-    getProductionList: { timeoutMs: 30000, retryNetwork: true },
-    exportProduction: { timeoutMs: 90000, retryNetwork: false, retryBusy: false }
+    // 店内受注品一覧（2026-10-29・REPORT_NOTES §8）の Excel: 取り出しの上限に数えるので自動では送り直さない（見るのは openList の中）
+    exportProduction: { timeoutMs: 90000, retryNetwork: false, retryBusy: false },
+    // 全店の注文（本部だけ・PO 2026-10-31）: 取り出しの上限に数える＝自動では送り直さない。全店分で大きいので待ちを長めに
+    exportAllOrders: { timeoutMs: 120000, retryNetwork: false, retryBusy: false }
   };
   var DEFAULT_ACTION_OPTS = { timeoutMs: 30000, retryNetwork: false };
+  // 待ち時間の記録（2026-10-31 段2.5・公開後の実測）: 窓口を呼ぶたびに 操作・往復の時間・窓口の中の時間（返事の ms）を、最後の50回だけ持つ。
+  //   持つのは操作の名前と数だけ（個人情報なし）。ページのメモリだけ（localStorage・sessionStorage・IndexedDB に入れない＝読み込み直すと消える）
+  var CALL_LOG_MAX = 50;
+  var CallLog = [];
+  // 待ち時間の記録の、操作の呼び名（画面の言葉）
+  var ACTION_LABELS = {
+    ping: '窓口の確かめ', startSession: 'ログインの確かめ', getConfig: '設定を読む', ocr: '写真の読み取り', checkOrder: '似た注文の確認',
+    submitOrder: '注文を送る', openList: '受注状況を開く', getOrder: '注文を読み直す', updateOrder: '修正を送る', cancelOrder: '取り消す',
+    exportReport: '報告用 Excel', exportCsv: 'CSV', exportProduction: '店内受注品一覧 Excel', exportAllOrders: '全店の注文 Excel', logPrint: '印刷の記録',
+    adminStatus: '管理の件数', adminExportNow: '管理の転記'
+  };
+  // 返事の ms の部分の呼び名（窓口の中の内訳）
+  var MS_PART_LABELS = { auth: 'ログインの確かめ', session: 'スマレコへの問い合わせ', cfg: '設定', read: '注文を読む', build: '表を作る', lock: '順番待ち', write: '書く', metrics: '計測', audit: '記録' };
+  // 設定（getConfig）のページのメモリ（2026-10-31）: 同じタブでモードを開き直したとき、前に受け取った設定を先に使い、裏で読み直す。
+  //   個人情報なし（商品の番号・状態・受付期間・店の名前）・端末に保存しない。人（メール）・区分・店が同じときだけ使う。
+  //   売り切れ・受付期間は、送るときに窓口が必ず確かめる（古い設定のまま送っても断られる）＝先に出しても危ないことは無い
+  var CfgMemo = null;
+  // 似た注文の確認を先に済ませる（2026-10-31）: 入力が落ち着いてから始める・1つの注文の画面で先に確かめるのは6回まで
+  var PRECHECK_DELAY_MS = 900, PRECHECK_MAX = 6;
   // 注意のうち、確認しても越えられないもの（日ごとの個数が空＝人が入れるまで送れない・追補 v3）
   var BLOCKING_WARNINGS = { DATE_QTY_NEEDED: 1 };
   // 元日（1/1）。受け渡しができるのは元日営業の店だけ（申込書の注記・窓口が店ごとに注意を返す）
@@ -494,7 +523,7 @@
     });
     return b;
   }
-  /** お客様リストの部品のアドレス（この osechi.js と同じ場所・同じ版）。分からなければ '' */
+  /** 受注状況の部品のアドレス（この osechi.js と同じ場所・同じ版）。分からなければ '' */
   function listModuleUrl(selfSrc, build) {
     var m = str(selfSrc).match(/^(https?:\/\/[^?#]*\/)osechi\.js(?:[?#].*)?$/);
     return m ? m[1] + 'osechi_list.js?v=' + encodeURIComponent(build) : '';
@@ -922,15 +951,42 @@
     return out;
   }
 
+  /** 返事の ms（窓口の中の時間）を、数だけの形にする（名前は英小文字・値は 0 以上の数。ほかは捨てる） */
+  function cleanMs(ms) {
+    if (!ms || typeof ms !== 'object' || Array.isArray(ms)) return null;
+    var out = {}, n = 0;
+    Object.keys(ms).slice(0, 20).forEach(function (k) {
+      var v = ms[k];
+      if (/^[a-z]{1,12}$/.test(k) && typeof v === 'number' && isFinite(v) && v >= 0) { out[k] = Math.round(v); n++; }
+    });
+    return n ? out : null;
+  }
+  /** 待ち時間の記録に1つ足す（最後の50回だけ） */
+  function logCall(e) {
+    CallLog.push(e);
+    if (CallLog.length > CALL_LOG_MAX) CallLog.splice(0, CallLog.length - CALL_LOG_MAX);
+  }
+
   /**
    * 窓口との通信。札は sessionStorage。AUTH_REQUIRED は静かに1回だけ札を取り直して続ける。
    * BUSY は1回だけ間隔を置いて同じ中身で送り直す（送信番号も同じ）。やり直しても変わらない断りは送り直さない。
-   * o: { apiUrl, fetch, getSumarecoToken, storage, sleep, expectEmail, expectShop, random }
+   * o: { apiUrl, fetch, getSumarecoToken, storage, sleep, expectEmail, expectShop, random, onCall（待ち時間の記録・任意） }
    */
   function createApi(o) {
     var fetchImpl = o.fetch, storage = o.storage, sleep = o.sleep, rnd = o.random || Math.random;
     var session = null, sessionPromise = null;
+    var freshConfig = null;   // startSession に添えられた設定（新しいタブで getConfig を呼ばずに済ませる・1回だけ使う）
     var stats = { calls: 0, reauth: 0, busyRetry: 0, netRetry: 0 };
+    var clock = function () { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); };
+    /** 1回の往復の記録（操作の名前・往復の時間・窓口の中の時間・結果のコードだけ） */
+    function record(action, t0, json, code, attempt) {
+      if (typeof o.onCall !== 'function') return;
+      var ms = cleanMs(json && json.ms);
+      try {
+        o.onCall({ action: cleanText(action, 40), at: Date.now(), rtt: Math.round(clock() - t0), server: ms ? (ms.total || 0) + (ms.audit || 0) : null,
+          ms: ms, code: code, attempt: attempt || 0 });
+      } catch (e) { /* 記録の失敗で通信を止めない */ }
+    }
 
     function loadStored() {
       try {
@@ -954,7 +1010,7 @@
       opt = opt || {};
       stats.calls++;
       var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
-      var timedOut = false, timer = null, onAbort = null;
+      var timedOut = false, timer = null, onAbort = null, t0 = clock();
       if (ctrl) {
         timer = setTimeout(function () { timedOut = true; ctrl.abort(); }, opt.timeoutMs || 30000);
         if (opt.signal) {
@@ -973,18 +1029,20 @@
           signal: ctrl ? ctrl.signal : undefined
         });
       } catch (e) {
-        if (opt.signal && opt.signal.aborted) throw new OsechiError('ABORTED', 'やめました', false);
+        if (opt.signal && opt.signal.aborted) { record(body.action, t0, null, 'ABORTED', opt.attempt); throw new OsechiError('ABORTED', 'やめました', false); }
+        record(body.action, t0, null, timedOut ? 'TIMEOUT' : 'NETWORK', opt.attempt);
         throw new OsechiError(timedOut ? 'TIMEOUT' : 'NETWORK', '', true);
       } finally {
         if (timer) clearTimeout(timer);
         if (opt.signal && onAbort) opt.signal.removeEventListener('abort', onAbort);
       }
-      if (!res || !res.ok) throw new OsechiError(res && res.status >= 500 ? 'SERVER_ERROR' : 'NETWORK', '', true);
+      if (!res || !res.ok) { record(body.action, t0, null, 'HTTP', opt.attempt); throw new OsechiError(res && res.status >= 500 ? 'SERVER_ERROR' : 'NETWORK', '', true); }
       var json;
-      try { json = await res.json(); } catch (e) { throw new OsechiError('SERVER_ERROR', '', true); }
-      if (!json || typeof json !== 'object') throw new OsechiError('SERVER_ERROR', '', true);
-      if (json.ok === true) return json;
-      var er = (json.error && typeof json.error === 'object') ? json.error : {};
+      try { json = await res.json(); } catch (e) { record(body.action, t0, null, 'BAD_JSON', opt.attempt); throw new OsechiError('SERVER_ERROR', '', true); }
+      if (!json || typeof json !== 'object') { record(body.action, t0, null, 'BAD_JSON', opt.attempt); throw new OsechiError('SERVER_ERROR', '', true); }
+      var er = (json.ok === true) ? null : ((json.error && typeof json.error === 'object') ? json.error : {});
+      record(body.action, t0, json, er ? (cleanText(er.code, 40) || 'SERVER_ERROR') : 'OK', opt.attempt);
+      if (!er) return json;
       throw new OsechiError(cleanText(er.code, 40) || 'SERVER_ERROR', er.message, er.retry === true,
         { field: er.field, missing: er.missing || (json.flags && json.flags.missing), warnings: er.warnings || (json.flags && json.flags.warnings) });
     }
@@ -1010,7 +1068,8 @@
         throw new OsechiError('SERVER_ERROR', '', true);
       }
       session = { token: r.token, expiresAt: exp, me: me };
-      store(session);
+      store(session);   // 札と区分だけ（設定は入れない＝メモリだけ）
+      freshConfig = (r.config && typeof r.config === 'object' && !Array.isArray(r.config)) ? r.config : null;
       return session;
     }
     async function ensureSession() {
@@ -1031,13 +1090,14 @@
       var opt = {}, base = ACTION_OPTS[action] || DEFAULT_ACTION_OPTS;
       Object.keys(base).forEach(function (k) { opt[k] = base[k]; });
       Object.keys(extra || {}).forEach(function (k) { if (extra[k] !== undefined) opt[k] = extra[k]; });
-      var reauthed = false, busyRetried = false, netRetried = false;
+      var reauthed = false, busyRetried = false, netRetried = false, attempt = 0;
       await ensureSession();
       for (;;) {
         var body = {};
         Object.keys(payload || {}).forEach(function (k) { if (k !== 'action' && k !== 'token') body[k] = payload[k]; });
         body.action = action;
         body.token = session.token;
+        opt.attempt = attempt++;
         try {
           return await raw(body, opt);
         } catch (e) {
@@ -1065,7 +1125,9 @@
     }
     return {
       ensureSession: ensureSession, call: call, forget: forget, stats: stats,
-      me: function () { return session ? session.me : null; }
+      me: function () { return session ? session.me : null; },
+      /** startSession に添えられた設定（1回だけ渡す。無ければ null＝getConfig を呼ぶ） */
+      takeConfig: function () { var c = freshConfig; freshConfig = null; return c; }
     };
   }
 
@@ -1296,7 +1358,7 @@
     'name': 1, 'data-field': 1, 'data-no': 1, 'data-act': 1, 'data-step': 1, 'data-kind': 1, 'enterkeyhint': 1,
     'title': 1, 'disabled': 1, 'spellcheck': 1, 'autocapitalize': 1, 'alt': 1, 'lang': 1, 'value': 1,
     'aria-current': 1, 'aria-hidden': 1, 'data-layer': 1, 'data-view': 1,
-    // お客様リスト（osechi_list.js）で使う: 表の結合・見出しの範囲・スマホのカードの見出し・切り替えの印・行の注文番号
+    // 受注状況（osechi_list.js）で使う: 表の結合・見出しの範囲・スマホのカードの見出し・切り替えの印・行の注文番号
     'colspan': 1, 'rowspan': 1, 'scope': 1, 'data-label': 1, 'aria-selected': 1, 'data-tab': 1, 'data-order': 1, 'data-method': 1
   };
   function h(tag, attrs, children) {
@@ -1484,8 +1546,6 @@
     '.osechi-sum{font-size:16px;font-weight:800;color:#3d2a20;margin:0 0 6px;text-align:center}',
     '.osechi-views{display:flex;gap:6px;padding:6px 10px;background:#f3e7d6;border-bottom:2px solid #e2cfb4}',
     '.osechi-views>.osechi-btn{min-height:48px;font-size:17px}',
-    // スマホ（幅375）でも3つが1段に読める（2026-10-30: 上の切り替えに「受注状況一覧表」を足して3つに）
-    '@media (max-width:480px){.osechi-views{gap:4px;padding:6px 6px}.osechi-views>.osechi-btn{padding:4px 2px;font-size:15px;letter-spacing:-.02em}}',
     '.osechi-views>.osechi-btn[aria-current="page"]{background:#8f1d2c;color:#fff;border-color:#6e1521}',
     '.osechi-badge{display:inline-block;font-size:13px;font-weight:900;border-radius:8px;padding:0 6px;margin-top:3px}',
     '.osechi-badge-soldout{background:#c62828;color:#fff}',
@@ -1522,8 +1582,24 @@
     '.osechi-busy{text-align:center;font-size:22px;font-weight:900}',
     '.osechi-busy-sub{font-size:16px;font-weight:700;color:#4a4f57;margin-top:4px}',
     '.osechi-spin{width:56px;height:56px;margin:4px auto 12px;border-radius:50%;border:6px solid #f1dfc0;border-top-color:#8f1d2c;animation:osechiSpin .9s linear infinite}',
+    // 小さな動く印（「読み込み直しています…」「確かめています…」の文字の左。押した所・一覧のすぐそばに出す）
+    '.osechi-spin-s{display:inline-block;width:16px;height:16px;margin:0 6px -3px 0;border-radius:50%;border:3px solid #f1dfc0;border-top-color:#8f1d2c;animation:osechiSpin .9s linear infinite;flex:0 0 auto}',
+    '.osechi-cfgcheck{display:flex;align-items:center;margin-top:4px}',
     '@keyframes osechiSpin{to{transform:rotate(360deg)}}',
-    '@media (prefers-reduced-motion:reduce){.osechi-spin{animation-duration:3s}.osechi-flash{animation:none;outline:3px solid #e2b93b}}'
+    '@media (prefers-reduced-motion:reduce){.osechi-spin,.osechi-spin-s{animation-duration:3s}.osechi-flash{animation:none;outline:3px solid #e2b93b}}',
+    // 待ち時間の記録（版の行を長押し）: 大きな字・数は右にそろえる
+    '.osechi-foot{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;cursor:default;padding:8px 0}',
+    '.osechi-tlist{list-style:none;margin:6px 0;padding:0}',
+    '.osechi-tlist>li{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;padding:8px 4px;border-bottom:1px solid #eee3d3}',
+    '.osechi-tlist .osechi-tat{font-size:14px;color:#4a4f57;min-width:4.5em}',
+    '.osechi-tlist .osechi-tname{font-size:17px;font-weight:800;flex:1 1 9em}',
+    '.osechi-tlist .osechi-tsec{font-size:18px;font-weight:900;white-space:nowrap}',
+    '.osechi-tlist .osechi-tsub{flex:1 1 100%;font-size:14px;color:#3f4650}',
+    '.osechi-tlist .osechi-tbad{color:#b42318;font-weight:800}',
+    '.osechi-tsum{width:100%;border-collapse:collapse;font-size:15px;margin:4px 0 10px}',
+    '.osechi-tsum th,.osechi-tsum td{border-bottom:1px solid #eee3d3;padding:6px 4px;text-align:left}',
+    '.osechi-tsum .osechi-tnum{text-align:right;white-space:nowrap}',   // 数の列は見出しも右にそろえる（数と見出しの位置を合わせる）
+    '.osechi-tsum td.osechi-tnum{font-weight:800}'
   ].join('\n');
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -1544,7 +1620,9 @@
       ready: false, readyPromise: null, readyError: null, timing: {}, inputs: {}, rows: {},
       draftOffer: null, lastNote: '', listeners: [],
       capture: '', captureTimer: 0,          // 開き直しの印の段階（camera／photo）
-      paper: null, storeAuto: '', storeDiffOk: false   // 用紙の店名（flags.paperStore）・本部が最初から選んだ店・店と店長が「違う店名」を確かめた
+      paper: null, storeAuto: '', storeDiffOk: false,  // 用紙の店名（flags.paperStore）・本部が最初から選んだ店・店と店長が「違う店名」を確かめた
+      cfgChecking: false, cfgStale: false,   // 前に受け取った設定で開き、裏で読み直している／読み直せなかった
+      pre: null, preCount: 0, preForm: null, precheckTimer: 0   // 先に済ませる似た注文の確認（いまの中身・この注文の画面での回数・その注文の入力）
     };
   }
   function isStoreRole() { return !!(S.me && (S.me.role === 'store' || S.me.role === 'lead')); }
@@ -1749,19 +1827,18 @@
     return S.api.call(action, args || {}, extra);
   }
   /**
-   * 後から足す画面（お客様リストなど）へ渡す道具。画面はこれだけを使って描く（中の状態に直接触らない）。
+   * 後から足す画面（受注状況など）へ渡す道具。画面はこれだけを使って描く（中の状態に直接触らない）。
    *   api … 窓口 ／ ask・alert・confirm … 確認の小窓 ／ busy・endBusy … 処理中 ／ openSub・closeSub … 階層2
    *   wrap・setFooter … 本文と下の操作の場所 ／ me・cfg … 区分と設定（読むだけ） ／ h … 要素を作る道具（textContent だけ）
    */
   function makeHost() {
-    var seq = S.seq, view = S.view;   // 部品を開いた入口（お客様リスト／受注状況一覧表）。入口が替わったら、その部品は止まる
+    var seq = S.seq;
     return {
       build: OSECHI_UI_BUILD,
       api: api, ask: ask, alert: uiAlert, confirm: uiConfirm, busy: startBusy, endBusy: endBusy, isBusy: isBusy,
       openSub: openSub, closeSub: closeSub, h: h, clear: clear, lines: lines, setFooter: setFooter,
       wrap: S.els ? S.els.wrap : null, body: S.els ? S.els.body : null, me: S.me, cfg: S.cfg, idx: S.idx,
-      alive: function () { return alive(seq) && S.view === view; },
-      onlyTab: view === 'production' ? 'production' : '',   // 上の切り替えの「受注状況一覧表」から開いた＝表だけ（中の切り替えを出さない）
+      alive: function () { return alive(seq) && S.view === 'customers'; },
       editOrder: editOrder, saveFile: saveFile, stop: showAuthStop,
       util: { str: str, cleanText: cleanText, toInt: toInt, nfkc: nfkc, isDefinitive: isDefinitive, makeSubmissionId: makeSubmissionId }
     };
@@ -1777,6 +1854,8 @@
       if (S.saveTimer) { clearTimeout(S.saveTimer); S.saveTimer = 0; }
       clearResumeMark();
       draftForgetAll();
+      forgetListMemory();   // 受注状況のページのメモリ（お客様の情報）も捨てる
+      CfgMemo = null;
     }
     renderMessage({ tone: 'error', title: e && e.code === 'AUTH_DENIED' ? 'このアカウントでは使えません' : 'ログインの確認ができません', text: (e && e.message) || DEFAULT_MESSAGES.AUTH_REQUIRED });
   }
@@ -1822,7 +1901,7 @@
     var profile = ctx.profile || {};
     S.api = createApi({
       apiUrl: ctx.apiUrl, fetch: root.fetch.bind(root), getSumarecoToken: ctx.getSumarecoToken,
-      storage: safeSessionStorage(), sleep: sleep, expectEmail: profile.email, expectShop: profile.shop
+      storage: safeSessionStorage(), sleep: sleep, expectEmail: profile.email, expectShop: profile.shop, onCall: logCall
     });
     showView(S.view);
     S.readyPromise = prepare(S.seq);
@@ -1841,7 +1920,8 @@
   /** 後片付け。discard＝サインアウト（作りかけを保存し直さない＝消したあとに書き戻さない） */
   function teardown(discard) {
     if (S.phase === 'review' && !discard) saveDraftNow();
-    if (discard) { S.form = null; S.pending = null; S.discarded = true; }
+    if (discard) { S.form = null; S.pending = null; S.discarded = true; forgetListMemory(); CfgMemo = null; }
+    dropPrecheck();
     if (S.layer && S.layer.kind === 'busy' && S.layer.cancelable && S.layer.onCancel) { try { S.layer.onCancel(); } catch (e) { /* 何もしない */ } }
     hideLayer();
     if (S.sub) { S.sub.onClose = null; closeSub(); }
@@ -1877,7 +1957,18 @@
   }
   function requestClose() { close({}); }
 
-  /** 札 → 設定 → 作りかけの順に用意する。撮影はこれを待たずに始められる */
+  /** 受け取った設定（窓口の getConfig の形）を使う。ページのメモリにも置く（同じタブで開き直したとき先に使う） */
+  function useConfig(raw) {
+    S.cfg = sanitizeConfig(raw);
+    S.idx = buildIndex(S.cfg);
+    CfgMemo = { key: cfgMemoKey(S.me), raw: raw };
+  }
+  function cfgMemoKey(me) { return me ? [me.email, me.role, me.store].join('|') : ''; }
+  /**
+   * 札 → 設定 → 作りかけの順に用意する。撮影はこれを待たずに始められる。
+   * 設定（2026-10-31）: 新しいタブは startSession に添えられた設定を使う（getConfig を呼ばない）。同じタブで開き直したときは、
+   *   前に受け取った設定（ページのメモリ）で先に開き、裏で getConfig を読み直す（待たない）。どちらも無ければ getConfig を待つ
+   */
   async function prepare(seq) {
     try {
       await S.api.ensureSession();
@@ -1885,11 +1976,15 @@
       S.me = S.api.me();
       updateHeader();
       var purged = draftPurge(S.me.email);   // 設定の読み込みと並べて行う（待ち時間を足さない）
-      var cfg = await api('getConfig');
+      var fresh = S.api.takeConfig ? S.api.takeConfig() : null;
+      var memo = (!fresh && CfgMemo && CfgMemo.key === cfgMemoKey(S.me)) ? CfgMemo : null;
+      var cfg = fresh || (memo ? memo.raw : await api('getConfig'));
       await purged;
       if (!alive(seq)) return false;
-      S.cfg = sanitizeConfig(cfg);
-      S.idx = buildIndex(S.cfg);
+      useConfig(cfg);
+      S.cfgChecking = !!memo;
+      S.cfgStale = false;
+      if (memo) recheckConfig(seq);
       S.ready = true;
       S.readyError = null;
       var d = await draftGet(S.me.email);
@@ -1917,16 +2012,15 @@
     refreshIntro();
   }
 
-  // ===== モードの中の切り替え（後でお客様リストを足す） =====
+  // ===== モードの中の切り替え（注文を入れる｜受注状況） =====
   //   1行足すと、上部の切り替えに出る（2つ以上あるときだけ出す）。render(host) は本文 host.wrap と下の操作 host.setFooter に描く。
   //   区分で出し分けるときは roles に区分を並べる（使えるかどうかは、いつも窓口が決める）。
   var VIEWS = [
     { id: 'order', label: '注文を入れる', roles: ['store', 'lead', 'hq'],
       render: function () { if (S.form && S.ready) renderReview(); else renderIntro(); },
       leave: function () { if (S.phase === 'review') saveDraftNow(); } },
-    { id: 'customers', label: 'お客様リスト', roles: ['store', 'lead', 'hq'], render: renderCustomersView, leave: disposeListModule },
-    // 受注状況一覧表（PO 2026-10-30「上の切り替えに足す」）: お客様リストの部品を、表だけの形で開く
-    { id: 'production', label: '受注状況一覧表', roles: ['store', 'lead', 'hq'], render: renderCustomersView, leave: disposeListModule }
+    // 2つめの名前は「受注状況」（PO 2026-10-31・中は 店渡し／宅配／集計／店内受注品一覧）。id は変えない（試験・入口の印）
+    { id: 'customers', label: '受注状況', roles: ['store', 'lead', 'hq'], render: renderCustomersView, leave: disposeListModule }
   ];
   /** 区分で使える切り替え。区分が分かるまでは最初の1つだけ（切り替えは出さない） */
   function viewsFor(role) { return role ? VIEWS.filter(function (v) { return v.roles.indexOf(role) >= 0; }) : VIEWS.slice(0, 1); }
@@ -1940,15 +2034,15 @@
     v.render(makeHost());
   }
 
-  // ===== お客様リスト（SPEC §15・§17）: 部品 osechi_list.js は、開いたときに初めて読む（注文を入れる画面を重くしない） =====
+  // ===== 受注状況（SPEC §15・§17）: 部品 osechi_list.js は、開いたときに初めて読む（注文を入れる画面を重くしない） =====
   var listModPromise = null;
-  /** お客様リストの部品の具合: ''＝使える／'missing'＝まだ無い／'skew'＝版が違う（配信の切り替わりの途中など。電波では直らない＝画面の読み直しが要る） */
+  /** 受注状況の部品の具合: ''＝使える／'missing'＝まだ無い／'skew'＝版が違う（配信の切り替わりの途中など。電波では直らない＝画面の読み直しが要る） */
   function listModuleProblem(mod, build) {
     if (!mod) return 'missing';
     return mod.build === build ? '' : 'skew';
   }
   function skewError() {
-    var e = new Error('おせち受注の画面が新しくなっています（入れ替えの途中です）。お客様リストを開くには、画面を読み込み直してください。');
+    var e = new Error('おせち受注の画面が新しくなっています（入れ替えの途中です）。受注状況を開くには、画面を読み込み直してください。');
     e.code = 'VERSION_SKEW';
     return e;
   }
@@ -1958,16 +2052,16 @@
     if (pr === 'skew') return Promise.reject(skewError());   // 一度入った部品は差し替えられない（読み直しのほかに直す方法が無い）
     if (listModPromise) return listModPromise;
     var url = listModuleUrl(SELF_SRC, OSECHI_UI_BUILD);
-    if (!url) return Promise.reject(new Error('お客様リストの部品の場所が分かりません'));
+    if (!url) return Promise.reject(new Error('受注状況の部品の場所が分かりません'));
     listModPromise = new Promise(function (resolve, reject) {
       var sc = document.createElement('script');
       sc.async = true;
       sc.onload = function () {
         var p2 = listModuleProblem(root.OsechiListModule, OSECHI_UI_BUILD);
         if (!p2) resolve(root.OsechiListModule);
-        else { listModPromise = null; reject(p2 === 'skew' ? skewError() : new Error('お客様リストの部品を読み込めません')); }
+        else { listModPromise = null; reject(p2 === 'skew' ? skewError() : new Error('受注状況の部品を読み込めません')); }
       };
-      sc.onerror = function () { listModPromise = null; if (sc.parentNode) sc.parentNode.removeChild(sc); reject(new Error('お客様リストの部品を読み込めません')); };
+      sc.onerror = function () { listModPromise = null; if (sc.parentNode) sc.parentNode.removeChild(sc); reject(new Error('受注状況の部品を読み込めません')); };
       setSafeScriptSrc(sc, url);
       (document.head || document.documentElement).appendChild(sc);
     });
@@ -1976,18 +2070,18 @@
   function renderCustomersView() {
     if (!S.open) return;
     S.phase = 'list';
-    var w = S.els.wrap, seq = S.seq, view = S.view;
+    var w = S.els.wrap, seq = S.seq;
     clear(w);
     setFooter(null);
     updateHeader();
-    var box = h('div', { 'class': 'osechi-card', 'data-step': 'list-loading', role: 'status', text: view === 'production' ? '受注状況一覧表を開いています…' : 'お客様リストを開いています…' });
+    var box = h('div', { 'class': 'osechi-card', 'data-step': 'list-loading', role: 'status', text: '受注状況を開いています…' });
     w.appendChild(box);
     Promise.resolve(S.readyPromise).then(loadListModule).then(function (mod) {
-      if (!alive(seq) || S.view !== view) return;
+      if (!alive(seq) || S.view !== 'customers') return;
       S.listMod = mod;
       mod.render(makeHost());
     }, function (e) {
-      if (!alive(seq) || S.view !== view) return;
+      if (!alive(seq) || S.view !== 'customers') return;
       if (isAuthStop(S.readyError)) return;   // 準備の段階で案内を出してある
       clear(w);
       if (e && e.code === 'VERSION_SKEW') {
@@ -2003,9 +2097,9 @@
         return;
       }
       w.appendChild(h('div', { 'class': 'osechi-error', role: 'alert' }, [
-        h('div', { text: (S.readyError && S.readyError.message) || 'お客様リストを開けませんでした。電波の良い所で、もう一度お試しください。' }),
+        h('div', { text: (S.readyError && S.readyError.message) || '受注状況を開けませんでした。電波の良い所で、もう一度お試しください。' }),
         h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-retry', text: 'もう一度開く',
-          on: { click: function () { if (S.readyError) retryPrepare(); renderCustomersView(); } } })   // いまの入口（お客様リスト／受注状況一覧表）のまま開き直す
+          on: { click: function () { if (S.readyError) retryPrepare(); renderCustomersView(); } } })
       ]));
     });
   }
@@ -2013,6 +2107,11 @@
     var m = S.listMod;
     S.listMod = null;
     if (m && typeof m.dispose === 'function') { try { m.dispose(); } catch (e) { /* 何もしない */ } }
+  }
+  /** 受注状況のページのメモリ（店ごとの最後の一覧・お客様の情報）を捨てる（サインアウト・使えないアカウント） */
+  function forgetListMemory() {
+    var m = root.OsechiListModule;
+    if (m && typeof m.forget === 'function') { try { m.forget(); } catch (e) { /* 何もしない */ } }
   }
   function refreshViewTabs() {
     if (!S.els) return;
@@ -2147,6 +2246,9 @@
       if (!S.idx.soldout.length && !S.idx.needcall.length) st.appendChild(h('div', { 'class': 'osechi-status osechi-status-none', text: 'いま、売り切れ・要電話確認の商品はありません。' }));
       var season = seasonText(S.cfg.season);
       if (season) st.appendChild(h('p', { 'class': 'osechi-note', text: season }));
+      // 前に受け取った設定で開いた（同じタブ）: 裏で読み直している間・読み直せなかったときは、小さく知らせる（古い設定を「今」と見せない）
+      if (S.cfgChecking) st.appendChild(h('div', { 'class': 'osechi-small osechi-cfgcheck', 'data-step': 'cfg-checking', role: 'status' }, [h('span', { 'class': 'osechi-spin-s', 'aria-hidden': 'true' }), '前に読んだ設定を出しています（いまの設定を確かめています…）']));
+      else if (S.cfgStale) st.appendChild(h('div', { 'class': 'osechi-small', 'data-step': 'cfg-stale', role: 'status', text: '設定を最新にできませんでした（前に読んだ設定です。送るときに窓口が確かめます）。' }));
       // 受付期間の外（窓口が open:false を返した）。入力はできるが、送ると断られる＝先に知らせる
       if (S.cfg.season.isOpen === false) st.appendChild(h('div', { 'class': 'osechi-error', 'data-kind': 'closed', text: 'いまは受付期間の外です。注文を送ることはできません。' }));
     }
@@ -2169,8 +2271,70 @@
     if (m[4] && !(m[4] === '00' && m[5] === '00')) t += (m[4] === '12' && m[5] === '00') ? ' 正午' : ' ' + Number(m[4]) + ':' + m[5];
     return t;
   }
+  /** 画面の下の版の行。長押し（0.7秒）か、続けて5回押すと「待ち時間の記録」を開く（係の人が速さを確かめるため・ふだんは目立たせない） */
   function footNote() {
-    return h('div', { 'class': 'osechi-foot', text: '画面 ' + OSECHI_UI_BUILD + (S.cfg && S.cfg.build ? ' ／ 窓口 ' + S.cfg.build : '') });
+    var el = h('div', { 'class': 'osechi-foot', 'data-act': 'foot', tabindex: '0', 'aria-label': '版（長押しで待ち時間の記録）', text: '画面 ' + OSECHI_UI_BUILD + (S.cfg && S.cfg.build ? ' ／ 窓口 ' + S.cfg.build : '') });
+    var timer = 0, taps = [];
+    var stop = function () { if (timer) { clearTimeout(timer); timer = 0; } };
+    el.addEventListener('pointerdown', function () { stop(); timer = setTimeout(function () { timer = 0; showTimings(); }, 700); });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { el.addEventListener(ev, stop); });
+    el.addEventListener('click', function () {
+      var t = Date.now();
+      taps = taps.filter(function (x) { return t - x < 2500; }).concat([t]);
+      if (taps.length >= 5) { taps = []; stop(); showTimings(); }
+    });
+    el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') showTimings(); });
+    el.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });   // 長押しで端末のメニューを出さない
+    return el;
+  }
+  /** 秒の書き方（0.1秒まで）: 1834 → 「1.8秒」 */
+  function secText(ms) { return (Math.round(Math.max(0, ms) / 100) / 10).toFixed(1) + '秒'; }
+  /** 待ち時間の記録の1行の字: 「受注状況を開く 1.8秒（窓口 0.6秒）」と、窓口の中の内訳 */
+  function timingLine(e) {
+    var name = ACTION_LABELS[e.action] || e.action;
+    var main = name + ' ' + secText(e.rtt) + (e.server != null ? '（窓口 ' + secText(e.server) + '）' : '');
+    var parts = [];
+    if (e.ms) {
+      Object.keys(MS_PART_LABELS).forEach(function (k) { if (e.ms[k] >= 50) parts.push(MS_PART_LABELS[k] + ' ' + secText(e.ms[k])); });
+      if (e.ms.rows) parts.push('注文 ' + e.ms.rows.toLocaleString('ja-JP') + ' 行');
+    }
+    var bad = e.code && e.code !== 'OK' ? (e.code === 'NETWORK' || e.code === 'TIMEOUT' ? '通信できなかった' : '断られた（' + e.code + '）') : '';
+    return { main: main, sub: parts.join('・'), bad: bad, retry: e.attempt > 0 };
+  }
+  /** 待ち時間の記録（階層2）。操作ごとの回数・真ん中の値・いちばん遅い値と、最後の50回（新しい順）。ページのメモリだけ */
+  function showTimings() {
+    if (isBusy() || S.sub) return;
+    var list = CallLog.slice().reverse();
+    var by = {};
+    CallLog.forEach(function (e) { if (e.code === 'OK') (by[e.action] = by[e.action] || []).push(e.rtt); });
+    var median = function (a) { var b = a.slice().sort(function (x, y) { return x - y; }); return b[Math.floor((b.length - 1) / 2)]; };
+    var sumRows = Object.keys(by).map(function (k) {
+      return h('tr', null, [h('td', { text: ACTION_LABELS[k] || k }), h('td', { 'class': 'osechi-tnum', text: by[k].length + ' 回' }),
+        h('td', { 'class': 'osechi-tnum', text: secText(median(by[k])) }), h('td', { 'class': 'osechi-tnum', text: secText(Math.max.apply(null, by[k])) })]);
+    });
+    var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+    var items = list.map(function (e) {
+      var d = new Date(e.at), t = timingLine(e);
+      return h('li', { 'data-kind': e.action }, [
+        h('span', { 'class': 'osechi-tat', text: p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()) }),
+        h('span', { 'class': 'osechi-tname', text: t.main }),
+        t.bad || t.retry ? h('span', { 'class': 'osechi-tbad', text: [t.bad, t.retry ? '送り直し' : ''].filter(Boolean).join('・') }) : null,
+        t.sub ? h('span', { 'class': 'osechi-tsub', text: '窓口の中: ' + t.sub }) : null
+      ]);
+    });
+    var body = [
+      h('p', { 'class': 'osechi-small', text: '窓口を呼んだときの待ち時間です（押してから返事まで。「窓口」は窓口の中で使った時間・残りは通信）。この画面のメモリだけに最後の' + CALL_LOG_MAX + '回を覚えています（端末には残しません。画面を読み込み直すと消えます）。' }),
+      sumRows.length ? h('table', { 'class': 'osechi-tsum', 'data-step': 'timing-summary' }, [
+        h('thead', null, h('tr', null, [h('th', { scope: 'col', text: '操作' }), h('th', { scope: 'col', 'class': 'osechi-tnum', text: '回数' }), h('th', { scope: 'col', 'class': 'osechi-tnum', text: '真ん中' }), h('th', { scope: 'col', 'class': 'osechi-tnum', text: 'いちばん遅い' })])),
+        h('tbody', null, sumRows)]) : null,
+      items.length ? h('ol', { 'class': 'osechi-tlist', 'data-step': 'timing-list' }, items)
+        : h('div', { 'class': 'osechi-info', 'data-step': 'timing-empty', text: 'まだ記録がありません（窓口を呼ぶと、ここに出ます）。' }),
+      h('div', { 'class': 'osechi-btn-row' }, [
+        h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'timing-clear', text: '記録を消す', on: { click: function () { CallLog.length = 0; closeSub(); showTimings(); } } }),
+        h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'timing-close', text: '閉じる', on: { click: function () { closeSub(); } } })
+      ])
+    ];
+    openSub('待ち時間の記録', body);
   }
   function readLastDone() {
     try {
@@ -2382,6 +2546,7 @@
   function scheduleSave() {
     if (S.saveTimer) clearTimeout(S.saveTimer);
     S.saveTimer = setTimeout(function () { S.saveTimer = 0; saveDraftNow(); }, 700);
+    schedulePrecheck();   // 入力が落ち着いたら、似た注文の確認を先に済ませる（下）
   }
   function saveDraftNow() {
     if (!S.open || S.phase !== 'review' || !S.form || !S.me || S.edit) return;
@@ -2515,6 +2680,8 @@
     updateSummary();
     updateSubmitState();
     scrollTop();
+    if (S.preForm !== S.form) { dropPrecheck(); S.preCount = 0; S.preForm = S.form; }   // 新しい注文の入力（読み取り・手入力・作りかけ）は数え直す
+    schedulePrecheck();
   }
   /** 商品どうしでお渡し日の候補が同じなら、その日付（例 12/31）。違えば '' */
   function commonDates(nos) {
@@ -2939,6 +3106,7 @@
     });
     syncInputs();
     saveDraftNow();
+    schedulePrecheck();
     note('お届け先とご依頼主を入れ替えました。内容を確かめてから送信してください。');
   }
   async function onClear(kind) {
@@ -2971,12 +3139,60 @@
     renderIntro();
   }
   async function discardCurrent() {
+    dropPrecheck();
     S.form = null; S.pending = null; S.flags = null; S.edited = {}; S.restored = false;
     revokePhoto();
     S.phase = 'intro';
     if (S.me) await draftDelete(S.me.email);
   }
   function note(text) { if (S.els && S.els.submitNote) S.els.submitNote.textContent = text; }
+
+  // ===== 似た注文の確認を先に済ませる（2026-10-31 段2.5） =====
+  //   確認の画面で入力が落ち着いたら（0.9秒）、送る前の確かめ（checkOrder＝似た注文と、窓口の注意）を裏で始める。
+  //   「この内容で送信」を押したとき、同じ中身の確かめがあれば、その返事を使う（まだ返っていなければ待つ）＝送信の前の往復（約1.5秒）が減る。
+  //   中身が変われば確かめ直す（前の確かめは捨てる）。返事は画面に出さない（送信のときに今までどおり見せる）。checkOrder は読むだけ（何も書かない）。
+  //   先に確かめないとき: 修正の画面（checkOrder を使わない）・本部で店が未選択・数量の無い注文・直す所が残っている（数量の形・日ごとの個数）・
+  //   1つの注文の画面で6回を超えた（回数の上限 1人240回/時 に近づかない）。そのときは、送信のときに今までどおり確かめる
+  function precheckOrder() {
+    if (!S.open || S.phase !== 'review' || S.edit || !S.form || !S.ready || !S.me) return null;
+    if (!isStoreRole() && !S.form.store) return null;
+    var bad = S.idx.methodNos.some(function (no) { var it = S.form.items[no]; return parseQty(it.storeQty).error || parseQty(it.deliveryQty).error; }) ||
+      S.idx.dateNos.some(function (no) { return dateOrderQty(S.form.dateItems[no]).error; });
+    if (bad || dateQtyMissing()) return null;
+    var f;
+    try { f = JSON.parse(JSON.stringify(S.form)); } catch (e) { return null; }
+    applySameWordAutofill(f);   // 送るときと同じ直し（「同上」をご依頼主の値で埋める）を写しに当てる
+    var order = buildOrder(f, { idx: S.idx, role: S.me.role, store: S.me.store });
+    return (order.items.length || order.datedItems.length) ? order : null;
+  }
+  function schedulePrecheck() {
+    if (S.precheckTimer) clearTimeout(S.precheckTimer);
+    S.precheckTimer = setTimeout(function () { S.precheckTimer = 0; startPrecheck(); }, PRECHECK_DELAY_MS);
+  }
+  function startPrecheck() {
+    if (isBusy()) return;
+    var order = precheckOrder();
+    if (!order) return;
+    var fp = fingerprint(order);
+    if (S.pre && S.pre.fp === fp && !S.pre.err) return;   // 同じ中身は、確かめ済み（か確かめ中）
+    if (S.preCount >= PRECHECK_MAX) return;
+    dropPrecheck();
+    S.preCount++;
+    var ac = (typeof AbortController === 'function') ? new AbortController() : null;
+    var pre = { fp: fp, ac: ac, done: false, res: null, err: null, promise: null };
+    pre.promise = api('checkOrder', { order: order }, { signal: ac ? ac.signal : null }).then(
+      function (r) { pre.done = true; pre.res = r; return r; },
+      function (e) { pre.done = true; pre.err = e; throw e; });
+    pre.promise.catch(function () { /* 送信のときに見る */ });
+    S.pre = pre;
+  }
+  /** 先に始めた確かめを捨てる（中身が変わった・注文をやめた・閉じた） */
+  function dropPrecheck() {
+    if (S.precheckTimer) { clearTimeout(S.precheckTimer); S.precheckTimer = 0; }
+    var p = S.pre;
+    S.pre = null;
+    if (p && !p.done && p.ac) { try { p.ac.abort(); } catch (e) { /* 何もしない */ } }
+  }
 
   // ===== ④ 似た注文の確認 → ⑤ 送信 =====
   async function onSubmit() {
@@ -3059,21 +3275,25 @@
       return sendSubmission(seq, prev, order, fp);
     }
 
-    // 似た注文と、窓口の注意
+    // 似た注文と、窓口の注意。同じ中身の確かめを先に始めてあれば、その返事を使う（まだなら待つ）＝ここで新しく往復しない
     var replaceOrderId = '', replaceVersion = 0, allowWarnings = false;
-    var ac = (typeof AbortController === 'function') ? new AbortController() : null, cancelled = false;
-    var layer = startBusy('似た注文がないか確かめています…', { cancelable: true, onCancel: function () { cancelled = true; if (ac) ac.abort(); } });
+    if (S.precheckTimer) { clearTimeout(S.precheckTimer); S.precheckTimer = 0; }
+    var pre = (S.pre && S.pre.fp === fp && !(S.pre.done && S.pre.err)) ? S.pre : null;
+    var ac = pre ? pre.ac : ((typeof AbortController === 'function') ? new AbortController() : null), cancelled = false;
+    var layer = (pre && pre.done) ? null : startBusy('似た注文がないか確かめています…', { cancelable: true, onCancel: function () { cancelled = true; if (ac) ac.abort(); } });
     var cres;
     try {
-      cres = await api('checkOrder', { order: order }, { signal: ac ? ac.signal : null });
+      cres = pre ? await pre.promise : await api('checkOrder', { order: order }, { signal: ac ? ac.signal : null });
     } catch (e) {
-      endBusy(layer);
+      if (layer) endBusy(layer);
+      if (S.pre === pre) S.pre = null;
       if (!alive(seq)) return;
       if (cancelled || e.code === 'ABORTED') { note('送信をやめました。'); return; }
       await handleSendError(e, false, order);
       return;
     }
-    endBusy(layer);
+    if (layer) endBusy(layer);
+    if (S.pre === pre) S.pre = null;   // 使った確かめは捨てる（送ったあと・やめたあとに、古い返事を使わない）
     if (!alive(seq) || cancelled) return;
     var extraMissing = cleanMissing(cres && cres.flags && cres.flags.missing).filter(function (k) { return missing.indexOf(k) < 0 && !trim(getField(S.form, k)); });
     if (extraMissing.length && !allowMissing) {
@@ -3304,34 +3524,68 @@
     try {
       var cfg = await api('getConfig');
       if (!S.open || !S.form) return null;
-      S.cfg = sanitizeConfig(cfg);
-      var oldIdx = S.idx;
-      S.idx = buildIndex(S.cfg);
-      // 商品の並びが変わったときは、今の入力を新しい並びへ移す（無くなった番号は捨てる）
+      return applyNewConfig(cfg);
+    } catch (e) { return null; }
+  }
+  /**
+   * 読み直した設定に入れ替える。入力の途中なら、今の入力を新しい商品の並びへ移す（無くなった番号は捨てる）。返り値は前の索引。
+   * 中身が前と同じなら、何も描き直さない（裏の読み直しで画面を動かさない）
+   */
+  function applyNewConfig(cfg) {
+    var same = !!(CfgMemo && CfgMemo.key === cfgMemoKey(S.me) && fingerprint(CfgMemo.raw) === fingerprint(cfg));
+    var oldIdx = S.idx;
+    useConfig(cfg);
+    if (same) return oldIdx;
+    if (S.form) {
       var f = emptyForm(S.idx);
       Object.keys(f.items).forEach(function (no) { if (S.form.items[no]) f.items[no] = S.form.items[no]; });
       Object.keys(f.dateItems).forEach(function (no) { if (S.form.dateItems[no]) f.dateItems[no] = S.form.dateItems[no]; });
-      f.store = S.form.store; f.pickupTime = S.form.pickupTime; f.receiver = S.form.receiver; f.requester = S.form.requester;
+      f.store = S.form.store; f.pickupTime = S.form.pickupTime; f.receptionist = S.form.receptionist; f.receiver = S.form.receiver; f.requester = S.form.requester;
       S.form = f;
-      if (S.phase === 'review') { var keep = S.els.body.scrollTop; renderReview(); S.els.body.scrollTop = keep; }
-      return oldIdx;
-    } catch (e) { return null; }
+    }
+    if (S.phase === 'review' && S.form) { var keep = S.els.body.scrollTop; renderReview(); S.els.body.scrollTop = keep; }
+    return oldIdx;
+  }
+  /** 前に受け取った設定で開いたあと、裏で読み直す（待たない）。読めなければ前の設定のまま（送るときに窓口が確かめる） */
+  function recheckConfig(seq) {
+    api('getConfig').then(function (cfg) {
+      if (!alive(seq)) return;
+      S.cfgChecking = false;
+      applyNewConfig(cfg);
+      if (S.phase === 'intro') refreshIntro();
+    }, function (e) {
+      if (!alive(seq)) return;
+      S.cfgChecking = false;
+      if (isAuthStop(e)) { showAuthStop(e); return; }
+      S.cfgStale = true;
+      if (S.phase === 'intro') refreshIntro();
+    });
   }
 
   // ===== 注文の修正・取消（お客様リストの行から・SPEC §17 updateOrder／cancelOrder） =====
   //   修正の画面は階層2（#osechi-sub）に出し、注文を入れる画面の部品（renderReview）をそのまま使う。
   //   いま入力中の新しい注文（作りかけ）は退避して、修正が終わったら元に戻す。修正の中身は端末に残さない（窓口にある）。
   //   版（version）を持って送る。ほかの人が先に直していたら（CONFLICT）、最新を読み込み直す。
+  //   2026-10-31: 受注状況の一覧と一緒に受け取った注文の中身（opts.order・openList の orders）から、すぐに開く（getOrder を呼ばない＝約1.5秒の往復を省く）。
+  //     一覧を読んだあとにほかの人が直していても、送るときに窓口が版を確かめて止める（CONFLICT → 最新を読み直す）。中身が無いときだけ getOrder
+  //   opts.onDone(changed, 知らせの文, info) … info＝{ mode:'update'|'cancel'|'gone', orderId, version?, store?, order?（送った中身） }（一覧がその行を手元で直す）
   async function editOrder(orderId, opts) {
     opts = opts || {};
     if (isBusy() || S.edit || !S.open) return false;
     var seq = S.seq;
     try { await S.readyPromise; } catch (e) { return false; }
     if (!alive(seq) || !S.ready) return false;
-    var order = await fetchOrderForEdit(orderId);
+    var order = usableOrder(opts.order, orderId);
+    if (!order) order = await fetchOrderForEdit(orderId);
     if (!order || !alive(seq)) return false;
     openEditor(order, opts);
     return true;
+  }
+  /** 一覧と一緒に受け取った注文の中身が、直す画面に使える形か（番号・版・取消でない）。使えなければ null（getOrder で読む） */
+  function usableOrder(o, orderId) {
+    if (!o || typeof o !== 'object') return null;
+    if (str(o.orderId) !== str(orderId) || !/^\d{8}-\d{6}$/.test(str(o.orderId)) || !(toInt(o.version) >= 1) || o.status === '取消') return null;
+    return o;
   }
   /** getOrder（読み込み中の表示・断りの案内つき）。読めなければ null */
   async function fetchOrderForEdit(orderId) {
@@ -3376,8 +3630,11 @@
     S.edit.store = cleanText(order.store, LIMITS.store) || S.edit.store;   // 読み直した注文の店（本部が店を変える確認の基準）
     renderReview();
   }
-  /** 修正の画面を閉じて、退避した新しい注文の入力を戻す。changed＝窓口の注文が変わった（一覧を読み直す） */
-  function leaveEdit(changed, noteText) {
+  /**
+   * 修正の画面を閉じて、退避した新しい注文の入力を戻す。changed＝窓口の注文が変わった（一覧はその行を手元で直し、裏で読み直す）。
+   * info＝{ mode, orderId, version, store, order }（何が変わったか。一覧が手元の行を直すのに使う）
+   */
+  function leaveEdit(changed, noteText, info) {
     var E = S.edit;
     if (!E) return;
     S.edit = null;
@@ -3387,7 +3644,7 @@
     S.photo = st.photo; S.phase = st.phase; S.els = st.els;
     if (S.sub) { S.sub.onClose = null; closeSub(); }
     S.subEls = null;
-    if (E.onDone) { try { E.onDone(!!changed, noteText || ''); } catch (e) { /* 何もしない */ } }
+    if (E.onDone) { try { E.onDone(!!changed, noteText || '', changed ? (info || { mode: 'gone', orderId: E.orderId }) : null); } catch (e) { /* 何もしない */ } }
   }
   async function editFlow(seq) {
     var E = S.edit;
@@ -3500,7 +3757,8 @@
       return reloadAfterConflict(seq, E, true);
     }
     var v = toInt(res && res.version);
-    leaveEdit(true, '受付番号 ' + E.orderId + ' を直しました' + (v >= 1 ? '（版 ' + v + '）' : '') + '。');
+    leaveEdit(true, '受付番号 ' + E.orderId + ' を直しました' + (v >= 1 ? '（版 ' + v + '）' : '') + '。',
+      { mode: 'update', orderId: E.orderId, version: v >= 1 ? v : 0, store: cleanText(res && res.store, LIMITS.store) || order.store, order: order });
   }
   /** ほかの人が先に直した（CONFLICT）・前の修正が届いていた → 知らせて、最新の内容を読み込み直す（直した所は消える） */
   async function reloadAfterConflict(seq, E, lostEarlier) {
@@ -3540,7 +3798,7 @@
         var res = await api('cancelOrder', { orderId: E.orderId, version: E.version, reason: reason, submissionId: sid });
         endBusy(layer);
         if (S.edit !== E) return;
-        leaveEdit(true, '受付番号 ' + E.orderId + ' を取り消しました' + (res && res.already ? '（すでに取り消されていました）' : '') + '。');
+        leaveEdit(true, '受付番号 ' + E.orderId + ' を取り消しました' + (res && res.already ? '（すでに取り消されていました）' : '') + '。', { mode: 'cancel', orderId: E.orderId });
         return;
       } catch (e) {
         endBusy(layer);
@@ -3570,8 +3828,8 @@
       h('div', { 'class': 'osechi-small', text: '受付番号' }),
       h('span', { 'class': 'osechi-done-id', 'data-field': 'orderId', text: r.orderId || '（番号を受け取れませんでした）' }),
       h('p', { 'class': 'osechi-note', text: '店: ' + (r.store || '') + '　／　' + (r.mode === 'replace' ? '前の注文を差し替え' : '新しい注文') }),
-      r.replayed ? h('div', { 'class': 'osechi-info', text: '通信が切れる前に、すでに受け付けられていました（同じ注文は1件だけです）。' + (r.changedAfterAttempt ? '送り直す前に直した所は反映されていません。必要なら、お客様リストからこの注文を直してください。' : '') }) : null,
-      r.storeDiffers ? h('div', { 'class': 'osechi-warn', 'data-step': 'done-store-differs', text: '受付の店は「' + r.store + '」です（送り直す前に選んだ「' + r.sentStore + '」ではありません）。店を直すときは、お客様リストからこの注文を直してください。' }) : null,
+      r.replayed ? h('div', { 'class': 'osechi-info', text: '通信が切れる前に、すでに受け付けられていました（同じ注文は1件だけです）。' + (r.changedAfterAttempt ? '送り直す前に直した所は反映されていません。必要なら、受注状況からこの注文を直してください。' : '') }) : null,
+      r.storeDiffers ? h('div', { 'class': 'osechi-warn', 'data-step': 'done-store-differs', text: '受付の店は「' + r.store + '」です（送り直す前に選んだ「' + r.sentStore + '」ではありません）。店を直すときは、受注状況からこの注文を直してください。' }) : null,
       r.storeMessage ? h('div', { 'class': 'osechi-small', 'data-step': 'done-store-message', text: r.storeMessage }) : null,
       r.warnings && r.warnings.length ? h('div', { 'class': 'osechi-small', 'data-step': 'done-warnings' }, [h('b', { text: '確かめたうえで受け付けた注意: ' })].concat(r.warnings.map(function (m) { return h('div', { text: '・' + m }); }))) : null
     ]);
@@ -3624,16 +3882,17 @@
       step('✅', '受付番号', '受付番号が出たら完了です。続けて「次の注文を撮影する」を押せます。')
     ]);
     var extra = h('div', { 'class': 'osechi-small' }, lines('・1枚の申込書が1件の注文です（同じ内容でも、別の申込書なら「別の注文として受注する」）。\n・売り切れの商品は数量を入れられません。\n・要電話確認の商品は、お客様に電話で確かめてから送ります。\n・入力の途中は、この端末に12時間だけ残ります（写真は残しません）。サインアウトすると消えます。\n・送信を何回押しても、通信が切れて送り直しても、同じ注文は1件だけ登録されます。'));
-    // お客様リスト（上の切り替え）の使い方
-    var listHead = h('div', { 'class': 'osechi-h2', text: 'お客様リスト' });
+    // 受注状況（上の切り替え）の使い方
+    var listHead = h('div', { 'class': 'osechi-h2', text: '受注状況' });
     var listBody = h('ol', { 'class': 'osechi-guide-steps', 'data-step': 'guide-list' }, [
-      step('📋', '開く', '上の「お客様リスト」を押します。店渡し・宅配・集計を切り替えて見ます。本部の方は、毎回、見る店を選びます。'),
+      step('📋', '開く', '上の「受注状況」を押します。店渡し・宅配・集計・店内受注品一覧を切り替えて見ます。本部の方は、毎回、見る店を選びます。'),
       step('🔍', '探す', '氏名・電話・受付番号で探せます。ひらがな・カタカナ・ローマ字、全角・半角のどれで打っても当たります。空白で区切ると、どの言葉も含む行だけ。漢字の氏名を読み（やまだ）で探すことはできません。', mini(['すずき', 'suzuki', '090-1234'])),
-      step('✏️', '直す・取り消す', '行を押すと注文を直せます（「修正を送る」）。取り消すときは、理由を入れます。ほかの人が先に直していたら、最新の内容を読み込み直します。'),
+      step('✏️', '直す・取り消す', '行を押すと、すぐに注文を直す画面が出ます（「修正を送る」）。取り消すときは、理由を入れます。送ったあとも一覧はそのまま使えます（直した行は「直しました」の印・一覧の上に「読み込み直しています…」）。ほかの人が先に直していたら、最新の内容を読み込み直します。'),
       step('📥', '報告する', '締め日と報告日は上の帯に出ます。報告日は「報告用ファイル（Excel）をダウンロード」か「印刷」。回数に上限があるので、1回押したら終わるまで待ちます。'),
-      step('🍣', '受注状況一覧表', '上の「受注状況一覧表」で、受け渡しの日ごと・担当（惣菜・鮮魚・サービスカウンター）ごとに、作る数と、いちばん早い受取の時刻を見られます（お客様の名前は出しません）。印刷は A4 横・1日1ページ、Excel にもできます。')
+      step('🍣', '店内受注品一覧', '受注状況の4つめ「店内受注品一覧」で、店で作る商品（惣菜・鮮魚・サービスカウンターの担当）を、受け渡しの日ごと・担当ごとに、作る数と、いちばん早い受取の時刻で見られます（お客様の名前は出しません）。印刷は A4 横・1日1ページ、Excel にもできます。'),
+      step('🗂️', '全店の注文（本部の方）', '店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」で、全店の注文（取消を除く）を1つの Excel にできます。店を選ばなくても押せます。1行が1件の注文（1枚の申込書）で、左に店の名前、そのあとに注文の項目と商品ごとの数（日付の商品 20〜32番も）が並びます。')
     ]);
-    var listExtra = h('div', { 'class': 'osechi-small', text: '・お客様の氏名・住所・電話は、この端末に残しません。閉じる・店を変える・サインアウトで画面から消えます。' });
+    var listExtra = h('div', { 'class': 'osechi-small' }, lines('・お客様の氏名・住所・電話は、この端末に残しません（同じ画面で開き直したときにすぐ出せるよう、画面のメモリにだけ置きます。サインアウトで消えます）。\n・待ち時間の記録は、画面のいちばん下の版の行を長押し（または5回続けて押す）すると出ます。'));
     var close = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'guide-close', text: '閉じる', on: { click: function () { closeSub(); } } });
     openSub('おせち受注の使い方', [body, extra, listHead, listBody, listExtra, close]);
   }
@@ -3756,7 +4015,10 @@
         RESUME_DB: RESUME_DB, parseResumeMark: parseResumeMark, resumeNoteFor: resumeNoteFor,
         sanitizePaperStore: sanitizePaperStore, paperStoreDiffers: paperStoreDiffers, paperStoreAuto: paperStoreAuto,
         dateOrderQty: dateOrderQty, dateOrderKey: dateOrderKey, effectiveDateQtys: effectiveDateQtys, syncSingleDate: syncSingleDate,
-        fillOrderQtyFromDates: fillOrderQtyFromDates, RECEPTIONIST_NONE: RECEPTIONIST_NONE
+        fillOrderQtyFromDates: fillOrderQtyFromDates, RECEPTIONIST_NONE: RECEPTIONIST_NONE,
+        // 待ち時間の記録（2026-10-31・メモリだけ）・設定のページのメモリ・先に済ませる確かめの決まり
+        CALL_LOG_MAX: CALL_LOG_MAX, CallLog: CallLog, logCall: logCall, cleanMs: cleanMs, timingLine: timingLine, secText: secText, ACTION_LABELS: ACTION_LABELS,
+        PRECHECK_DELAY_MS: PRECHECK_DELAY_MS, PRECHECK_MAX: PRECHECK_MAX
       }
     };
   }

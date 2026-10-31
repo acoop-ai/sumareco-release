@@ -1,23 +1,31 @@
 /*
- * osechi_list.js — おせち受注「お客様リスト」（SPEC §15・§17・追補 v2・v3／窓口 docs/BACKEND_NOTES.md §6）
+ * osechi_list.js — おせち受注「受注状況」（店渡し・宅配のお客様リスト・集計・店内受注品一覧。SPEC §15・§17・追補 v2・v3／窓口 docs/BACKEND_NOTES.md §6）
  *
- * osechi.js が、上部の切り替えで「お客様リスト」を開いたときに初めて読み込む（同じ場所・同じ版）。
- *   公開するのは window.OsechiListModule = { build, render(host), dispose() } だけ（書き換えられない）。
+ * osechi.js が、上部の切り替えで「受注状況」を開いたときに初めて読み込む（同じ場所・同じ版）。
+ *   公開するのは window.OsechiListModule = { build, render(host), dispose(), forget() } だけ（書き換えられない）。
  *   host は osechi.js が渡す道具（api・小窓・処理中・階層2・要素を作る h・注文の修正 editOrder・ファイルの保存 saveFile）。
  *
+ * 速さ（2026-10-31 段2.5・窓口の往復は1本 約1.5秒）:
+ *   ・店を決めたら openList の1本で、4つの切り替え・印刷・「注文を直す」の中身を受け取る。切り替え・印刷・行を押すのは、窓口へ取りに行かない
+ *     （前は切り替えごとに listCustomers・getSummary・getProductionList、行を押すたびに getOrder）
+ *   ・修正・取消のあとも一覧を消さない: その行を手元で直し（「直しました（反映を待っています）」の印）、裏で読み直す
+ *     （一覧のすぐ上に動く印と「読み込み直しています…」。読み直しの間も押せる・探せる・切り替えられる）
+ *   ・同じ画面で開き直した・同じ店を選び直したときは、前に読んだ一覧（ページのメモリ・30分まで）をすぐ出して、裏で読み直す
+ *
  * 店の区分（店舗アカウント・店長）は自店だけ（店は選べない）。本部は毎回、店を選ぶ（前回の店を引き継がない）。
- * 個人情報（氏名・住所・電話）は、この部品のメモリ（L）だけに置く。IndexedDB・localStorage・sessionStorage に入れない。
- *   閉じる・切り替える・店を変える・サインアウトで dispose（L を捨て、画面と印刷用の領域を消す）。
+ * 個人情報（氏名・住所・電話）は、ページのメモリ（L と、店ごとの最後の一覧 MEM）だけに置く。IndexedDB・localStorage・sessionStorage に入れない。
+ *   閉じる・切り替える・店を変えるで dispose（L を捨て、画面と印刷用の領域を消す）。サインアウト・使えないアカウントで forget（MEM も捨てる）。
  * 画面へは host.h（textContent と許可した属性だけ）。HTML を文字で差し込まない（static_safety で機械検査）。
  * ダウンロード（xlsx・CSV）と印刷の記録は回数に上限がある＝自動で送り直さない（osechi.js の ACTION_OPTS）。
- * 切り替えの4つめ「受注状況一覧表」（2026-10-29・REPORT_NOTES §8）: 窓口 getProductionList の production を、そのまま描く
+ * 切り替えの4つめ「店内受注品一覧」（2026-10-29・REPORT_NOTES §8）: 窓口 openList の production を、そのまま描く
  *   （日・列・担当の組は返事のまま＝画面で決め打ちしない）。個人情報は無い。印刷は A4 横・1日＝1ページ・logPrint {method:'production'}。
  *   Excel は exportProduction（取り出しの上限に数える＝自動で送り直さない）。
+ * 本部だけ: 店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」（2026-10-31）＝窓口 exportAllOrders（店を送らない・店の区分にはボタンを作らない）。
  */
 (function (root) {
   'use strict';
 
-  var BUILD = 'osechi-ui-2026-10-29a';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
+  var BUILD = 'osechi-ui-2026-10-31a';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
   var STYLE_ID = 'osechi-list-style';
   var PRINT_ID = 'osechi-print';
   var PRINT_ROWS = 15;                   // ひな形の1ページの行数（15行を超えたら「（続き）」）
@@ -27,8 +35,8 @@
   var REPORT_RULES = '報告は別紙の報告書に記入し、ガルーンで送ります（北関東＝関東生鮮惣菜課の栗原さん／首都圏＝首都圏運営課の清田さん）。' +
     '宅配は FAX とガルーンで（報告日）。最終確認は 12/24（木）午前中（申込台帳と申込書の控えを照合）。';
   var DOW = ['日', '月', '火', '水', '木', '金', '土'];
-  // 切り替え（順はそのまま画面の並び）。受注状況一覧表は惣菜・鮮魚の担当主任が見る＝お客様の情報の3つの後ろに置く
-  var TABS = [['store', '店渡し'], ['delivery', '宅配'], ['summary', '集計'], ['production', '受注状況一覧表']];
+  // 切り替え（順はそのまま画面の並び）。店内受注品一覧は惣菜・鮮魚の担当主任が見る＝お客様の情報の3つの後ろに置く
+  var TABS = [['store', '店渡し'], ['delivery', '宅配'], ['summary', '集計'], ['production', '店内受注品一覧']];
   var NONE_MARK = '受注なし';            // 注文の無い商品・日は空白にせず、これを出す（PO 2026-10-29）
   var RECEPTIONIST_NONE = '記載なし';     // 受付係員が空（窓口と同じ言葉）
   // 担当の組の色（xlsx の RPT_PROD_DEPT_FILL_ と同じ色。文字でも担当を書く＝色だけに頼らない）。ほかの値は灰・担当未設定は黄
@@ -319,8 +327,9 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var s = str(v).replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').trim();
     return max && s.length > max ? s.slice(0, max) : s;
   }
-  // 壊れた応答で画面を重くしない上限（1ページの行・全体の行・探す語の字数）
-  var PAGE_ROWS_MAX = 500, TOTAL_ROWS_MAX = 20000, SEARCH_MAX = 100;
+  // 壊れた応答で画面を重くしない上限（全体の行・探す語の字数）。1つの店の店渡し＋宅配の行は、多い店でも千行ほど（全店で5千件前後）
+  //   ＝5000 行を超える返事は壊れている。超えた分は描かず「報告用ファイル（Excel）で見てください」
+  var TOTAL_ROWS_MAX = 5000, SEARCH_MAX = 100;
   function searchLimit(s) { return str(s).slice(0, SEARCH_MAX); }
   /** 検索語が空か（空白だけも空） */
   function searchText(s) { return nfkc(searchLimit(s)).replace(/\s+/g, ''); }
@@ -364,61 +373,6 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     //   （お店の人の名字＝お客様の名字と同じことが多い。お客様を探すと、その人が受けた注文まで当たって探せなくなる）
     c.keys = rowKeys(c);
     return c;
-  }
-  /**
-   * 1ページ分（listCustomers の blocks）を、読み込み済みのブロックへ足す（同じ番号のブロックは行を続けて足す・同じ行は足さない）。
-   *   壊れた応答で画面を重くしない: 1ページで足すのは PAGE_ROWS_MAX 行まで・全体は TOTAL_ROWS_MAX 行まで。
-   *   返す並びに印: truncated＝このページを途中で切った／full＝全体の上限に達した
-   */
-  function mergeBlocks(have, pageBlocks) {
-    var out = have.slice(), total = loadedRows(have), budget = PAGE_ROWS_MAX, truncated = false;
-    (Array.isArray(pageBlocks) ? pageBlocks : []).slice(0, 100).forEach(function (b) {
-      if (!b || typeof b !== 'object') return;
-      var no = toInt(b.no);
-      if (!(no >= 1)) return;
-      var cur = out.filter(function (x) { return x.no === no; })[0];
-      if (!cur) {
-        cur = { no: no, title: cleanText(b.title, 120), method: cleanText(b.method, 20), lines: toInt(b.lines) >= 0 ? toInt(b.lines) : 0, rows: [] };
-        out.push(cur);
-      }
-      var seen = {};
-      cur.rows.forEach(function (x) { seen[x.n] = 1; });
-      var rows = Array.isArray(b.rows) ? b.rows : [];
-      for (var i = 0; i < rows.length; i++) {
-        if (budget <= 0 || total >= TOTAL_ROWS_MAX) { truncated = true; break; }
-        var c = cleanRow(rows[i]);
-        if (!c.n || seen[c.n]) continue;
-        seen[c.n] = 1;
-        cur.rows.push(c);
-        budget--; total++;
-      }
-      cur.rows.sort(function (a, b2) { return a.n - b2.n; });
-    });
-    out.sort(function (a, b) { return a.no - b.no; });
-    out.truncated = truncated;
-    out.full = total >= TOTAL_ROWS_MAX;
-    return out;
-  }
-  /**
-   * 印刷のために全部のページを読む。load() は1ページ読む（読み込み中なら、その読み込みの Promise を返す）。
-   *   ページが進まない・回数が上限（pageCount＋1、最大 TOTAL_ROWS_MAX/PAGE_ROWS_MAX＋1）を超えたら止める（壊れた応答で読み続けない）
-   *   返す: { ok, reason: ''|'error'|'stuck', message }
-   */
-  async function readAllPages(get, load) {
-    var tries = 0;
-    for (;;) {
-      var d = get();
-      if (!d) return { ok: false, reason: 'error', message: '' };
-      if (d.error) return { ok: false, reason: 'error', message: d.error };
-      if (d.loaded && !d.loading && (!d.hasMore || d.full)) return { ok: true, reason: '' };
-      var limit = Math.min(Math.ceil(TOTAL_ROWS_MAX / PAGE_ROWS_MAX) + 1, (toInt(d.pageCount) >= 1 ? toInt(d.pageCount) : 1) + 1);
-      if (tries >= limit) return { ok: false, reason: 'stuck', message: '' };
-      var before = d.loaded ? toInt(d.page) : -1, wasLoading = !!d.loading;
-      tries++;
-      await load();
-      d = get();
-      if (d && !d.error && d.loaded && d.hasMore && !wasLoading && toInt(d.page) <= before) return { ok: false, reason: 'stuck', message: '' };
-    }
   }
   function loadedRows(blocks) { return blocks.reduce(function (s, b) { return s + b.rows.length; }, 0); }
   /** 検索語で絞る（当たる行のあるブロックだけ）。検索語が空なら、そのまま */
@@ -512,7 +466,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     return { main: main, sub: sub, today: today };
   }
 
-  // ---- 受注状況一覧表（getProductionList の production）: 部品（DOM を使わない） ----
+  // ---- 店内受注品一覧（getProductionList の production）: 部品（DOM を使わない） ----
   //   壊れた応答で画面を重くしない上限。今年は 6日・3組・1日に最大13商品・列は時台＋3つ
   var PROD_MAX = { slots: 40, days: 40, groups: 12, items: 80, out: 30, warns: 10 };
   var SLOT_KINDS = { hour: 1, am: 1, pm: 1, none: 1 };
@@ -623,29 +577,149 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     return { rowMm: rowMm, hourMm: hourMm };
   }
 
-  // ===== 画面 =====
-  var L = null;   // 状態（個人情報を含む。dispose で捨てる）
-  function freshData() {
-    var m = function () { return { loaded: false, loading: false, error: '', blocks: [], page: 0, pageCount: 1, hasMore: false, total: 0, orderCount: 0, truncated: false, full: false, promise: null }; };
-    return { store: m(), delivery: m(), summary: null, summaryError: '', summaryLoading: false,
-      production: { loaded: false, loading: false, error: '', model: null, promise: null, ms: 0 } };
+  // ===== 受注状況の中身（openList の返事）を、画面で使う形に（DOM を使わない＝Node で試験できる） =====
+  /**
+   * 店渡し・宅配の1つ（openList の lists.store／lists.delivery）を掃除する。ページに切らない（全部の行）。
+   *   壊れた応答で画面を重くしない: 全体で TOTAL_ROWS_MAX 行まで（budget を店渡しと宅配で分け合う）。同じ番号の行は1つだけ。
+   *   返す: { blocks:[{no, title, method, lines, rows}], total, truncated }
+   */
+  function cleanList(src, budget) {
+    src = objOf(src);
+    var out = { blocks: [], total: toInt(src.totalRows) >= 0 ? toInt(src.totalRows) : 0, truncated: false };
+    listOf(src.blocks, 100).forEach(function (b) {
+      b = objOf(b);
+      var no = toInt(b.no);
+      if (!(no >= 1) || out.blocks.some(function (x) { return x.no === no; })) return;
+      var cur = { no: no, title: cleanText(b.title, 120), method: cleanText(b.method, 20), lines: toInt(b.lines) >= 0 ? toInt(b.lines) : 0, rows: [] };
+      var seen = {};
+      var rows = Array.isArray(b.rows) ? b.rows : [];
+      for (var i = 0; i < rows.length; i++) {
+        if (budget.left <= 0) { out.truncated = true; break; }
+        var c = cleanRow(rows[i]);
+        if (!c.n || seen[c.n]) continue;
+        seen[c.n] = 1;
+        cur.rows.push(c);
+        budget.left--;
+      }
+      cur.rows.sort(function (x, y) { return x.n - y.n; });
+      out.blocks.push(cur);
+    });
+    out.blocks.sort(function (x, y) { return x.no - y.no; });
+    if (!out.total) out.total = loadedRows(out.blocks);
+    return out;
   }
-  function tabOk(t) { return TABS.some(function (x) { return x[0] === t; }); }
+  /**
+   * openList の返事 → 画面のデータ。切り替え（店渡し・宅配・集計・店内受注品一覧）・印刷・「注文を直す」は、ここから描く（窓口へ取りに行かない）。
+   *   { at（受け取った時刻）, asOf（窓口の時計）, store, orderCount, lists:{store, delivery}, truncated,
+   *     summary:{summary, sandwich, deadline}|null, summaryError, production|null, productionError, orders:{OrderID: 注文の中身} }
+   */
+  function buildData(r, now) {
+    r = objOf(r);
+    var lists = objOf(r.lists), pe = objOf(r.partErrors), budget = { left: TOTAL_ROWS_MAX };
+    var d = { at: now || Date.now(), asOf: cleanText(r.asOf, 20), store: cleanText(r.store, 40), orderCount: count0(r.orderCount), lists: {}, orders: {},
+      summary: null, summaryError: '', production: null, productionError: '', truncated: false };
+    ['store', 'delivery'].forEach(function (m) { d.lists[m] = cleanList(lists[m], budget); if (d.lists[m].truncated) d.truncated = true; });
+    if (r.summary && typeof r.summary === 'object') d.summary = { summary: r.summary, sandwich: objOf(r.sandwich), deadline: r.deadline || null };
+    else d.summaryError = cleanText(pe.summary, 200) || '集計を読み込めませんでした。';
+    if (r.production && typeof r.production === 'object') d.production = cleanProduction(r.production);
+    else d.productionError = cleanText(pe.production, 200) || '店内受注品一覧を読み込めませんでした。';
+    var orders = objOf(r.orders), n = 0;
+    Object.keys(orders).forEach(function (id) {
+      if (n >= TOTAL_ROWS_MAX || !/^\d{8}-\d{6}$/.test(id) || !orders[id] || typeof orders[id] !== 'object') return;
+      d.orders[id] = orders[id];
+      n++;
+    });
+    return d;
+  }
+  /** 'yyyy/MM/dd HH:mm:ss' → 'HH:mm'（いつの内容かを短く） */
+  function hhmm(s) { var m = str(s).match(/(\d{1,2}):(\d{2})/); return m ? (m[1].length < 2 ? '0' : '') + m[1] + ':' + m[2] : ''; }
+  /**
+   * 修正・取消のあと、その注文の行を手元で直す（裏の読み直しを待たずに、一覧を正しく見せる）。
+   *   info: { mode:'update'|'cancel'|'gone', orderId, version, store, order（送った中身） }
+   *   取消・見つからない・本部がほかの店へ移した → その注文の行を消す。修正 → 数量・お客様・受付係員・版を直す（数の無くなった商品の行は消し、
+   *   増えた商品の行は最後に足す）。直した行には印（pending）を付ける（読み直しが届くと消える）。集計・店内受注品一覧は読み直しを待つ
+   */
+  function patchData(d, info) {
+    var id = str(info && info.orderId);
+    if (!d || !id) return;
+    var drop = function (m, b) {
+      var before = b.rows.length;
+      b.rows = b.rows.filter(function (r) { return r.orderId !== id; });
+      var gone = before - b.rows.length;
+      b.lines = Math.max(0, b.lines - gone);
+      d.lists[m].total = Math.max(0, d.lists[m].total - gone);
+    };
+    var moved = info.mode === 'update' && info.store && cleanText(info.store, 40) !== d.store;
+    if (info.mode !== 'update' || moved) {
+      ['store', 'delivery'].forEach(function (m) { d.lists[m].blocks.forEach(function (b) { drop(m, b); }); });
+      if (d.orders[id]) { delete d.orders[id]; d.orderCount = Math.max(0, d.orderCount - 1); }
+      return;
+    }
+    var o = objOf(info.order), prev = objOf(d.orders[id]);
+    var version = toInt(info.version) >= 1 ? toInt(info.version) : (toInt(prev.version) >= 1 ? toInt(prev.version) + 1 : 1);
+    var merged = Object.assign({}, prev, { store: d.store, pickupTime: o.pickupTime, receptionist: o.receptionist, receiver: o.receiver, requester: o.requester,
+      items: Array.isArray(o.items) ? o.items : [], datedItems: Array.isArray(o.datedItems) ? o.datedItems : [], version: version });
+    d.orders[id] = merged;
+    var qtyOf = function (no, m) {
+      var it = merged.items.filter(function (x) { return x && toInt(x.no) === no; })[0];
+      var q = it ? toInt(m === 'store' ? it.storeQty : it.deliveryQty) : 0;
+      return q > 0 ? q : 0;
+    };
+    ['store', 'delivery'].forEach(function (m) {
+      d.lists[m].blocks.forEach(function (b) {
+        var q = qtyOf(b.no, m), hit = -1;
+        for (var i = 0; i < b.rows.length; i++) if (b.rows[i].orderId === id) { hit = i; break; }
+        if (!q) { if (hit >= 0) drop(m, b); return; }
+        var base = hit >= 0 ? b.rows[hit] : null;
+        var row = cleanRow({ n: base ? base.n : (b.rows.length ? b.rows[b.rows.length - 1].n + 1 : 1), page: base ? base.page : 0,
+          receivedAt: base ? base.receivedAt : str(prev.registeredAt).slice(0, 16), orderId: id, version: version, qty: q,
+          receiver: m === 'delivery' ? merged.receiver : {}, requester: merged.requester, receptionist: merged.receptionist });
+        row.pending = true;
+        if (hit >= 0) b.rows[hit] = row;
+        else { b.rows.push(row); b.lines++; d.lists[m].total++; }
+      });
+    });
+  }
+
+  // ===== 受注状況のページのメモリ（2026-10-31） =====
+  //   同じ画面（ページ）で受注状況を開き直したとき・本部が同じ店を選び直したとき、前に読んだ一覧をすぐ出し（「読み込み直しています…」の印）、
+  //   裏で読み直す。お客様の氏名・住所・電話を含む＝ページのメモリだけ（localStorage・sessionStorage・IndexedDB に入れない。店の端末は共有）。
+  //   持つのは同じ人（メール）の、最後に開いた店から6店まで・読んでから30分まで。サインアウト・使えないアカウントで捨てる（osechi.js が forget を呼ぶ）
+  var MEM_MAX = 6, MEM_TTL_MS = 30 * 60 * 1000;
+  var MEM = { owner: '', list: [] };   // list: [{ store, data }]（新しい順）
+  function memOwner() { return str(L && L.host && L.host.me && L.host.me.email).toLowerCase(); }
+  function memGet(store, now) {
+    var owner = memOwner();
+    if (!owner || MEM.owner !== owner) { MEM.list = []; MEM.owner = owner; return null; }
+    var t = now || Date.now();
+    MEM.list = MEM.list.filter(function (e) { return t - e.data.at < MEM_TTL_MS; });
+    var hit = MEM.list.filter(function (e) { return e.store === store; })[0];
+    return hit ? hit.data : null;
+  }
+  function memPut(store, data) {
+    var owner = memOwner();
+    if (!owner || !store || !data) return;
+    if (MEM.owner !== owner) { MEM.list = []; MEM.owner = owner; }
+    MEM.list = [{ store: store, data: data }].concat(MEM.list.filter(function (e) { return e.store !== store; })).slice(0, MEM_MAX);
+  }
+  /** ページのメモリを捨てる（サインアウト・使えないアカウント。osechi.js から呼ぶ） */
+  function forget() { MEM.list = []; MEM.owner = ''; }
+
+  // ===== 画面 =====
+  var L = null;   // 状態（個人情報を含む。dispose で捨てる。店ごとの最後の一覧は上のページのメモリ）
   function render(host) {
     dispose();
     injectStyle();
     var me = host.me || {};
-    // host.startTab（任意）: はじめに開く切り替え（例: 'production'。osechi.js から受注状況一覧表を直接開くとき）
-    // host.onlyTab（任意）: 'production' なら受注状況一覧表だけ（上の切り替えの「受注状況一覧表」から開いたとき。中の切り替えは出さない）
-    var only = host.onlyTab === 'production' ? 'production' : '';
-    L = { host: host, h: host.h, seq: 1, store: me.role === 'hq' ? '' : str(me.store), tab: only || (tabOk(host.startTab) ? host.startTab : 'store'), only: only, query: '', data: freshData(), dl: false, els: {}, prodDay: '' };
+    L = { host: host, h: host.h, seq: 1, store: me.role === 'hq' ? '' : str(me.store), tab: 'store', query: '', data: null, dl: false, els: {}, prodDay: '',
+      refreshing: false, refreshError: '', wantGen: 0, patches: [], open: {} };
     buildFrame();
     L.wrapEl = host.wrap;
     L.wrapEl.classList.add('osechi-lwide');   // PC では横幅を使う（ほかの画面に戻すと外す）
-    // 受注状況一覧表の表が横に入りきらない幅では、カードの形にする（窓の幅が変わったら測り直す）
+    // 店内受注品一覧の表が横に入りきらない幅では、カードの形にする（窓の幅が変わったら測り直す）
     L.onResize = function () { if (L && L.resizeTimer) clearTimeout(L.resizeTimer); if (L) L.resizeTimer = setTimeout(function () { fitProdTable(); }, 120); };
     root.addEventListener('resize', L.onResize);
-    if (L.store) loadAll();
+    if (L.store) openStore();
     else renderContent();
   }
   function dispose() {
@@ -672,9 +746,14 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       sel.addEventListener('change', function () { onStoreChange(sel.value); });
       E.storeSel = sel;
       E.storeCount = h('span', { 'class': 'osechi-small', 'data-step': 'list-store-count', 'aria-live': 'polite' });
-      E.storeRow.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-l-store', text: L.only ? 'どの店の受注状況一覧表を見ますか（毎回選びます）' : 'どの店を見ますか（お客様リスト・集計・受注状況一覧表。毎回選びます）' }));
+      E.storeRow.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-l-store', text: 'どの店を見ますか（店渡し・宅配・集計・店内受注品一覧。毎回選びます）' }));
       E.storeRow.appendChild(sel);
       E.storeRow.appendChild(E.storeCount);
+      // 全店の注文（本部だけ・PO 2026-10-31）: 店を選ぶ前でも押せる。店の区分にはボタンを作らない（窓口も断る）
+      E.btnAll = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-all-xlsx', text: '全店の注文（Excel）をダウンロード' });
+      E.btnAll.addEventListener('click', function () { download('all'); });
+      E.storeRow.appendChild(h('div', { 'class': 'osechi-lall', 'data-step': 'list-all' }, [E.btnAll,
+        h('div', { 'class': 'osechi-small', text: '店を選ばなくても、全店の注文（取消を除く・1行が1件の注文）を1つの Excel にできます。' })]));
     } else {
       E.storeRow.appendChild(h('div', { 'class': 'osechi-fixed', 'data-field': 'list-store' }, [h('span', { text: '店: ' + L.store }), h('small', { text: '自店だけ（変更できません）' })]));
       E.storeCount = h('span', { 'class': 'osechi-small', 'data-step': 'list-store-count', 'aria-live': 'polite' });
@@ -685,7 +764,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       h('summary', { text: '報告のしかた（送り先・宅配・最終確認）' }), h('p', { text: REPORT_RULES })
     ]);
     E.note = h('div', { 'data-step': 'list-note', 'aria-live': 'polite' });
-    E.tabs = h('div', { 'class': 'osechi-ltabs', role: 'tablist', 'aria-label': 'お客様リストの切り替え', 'data-step': 'list-tabs' });
+    E.tabs = h('div', { 'class': 'osechi-ltabs', role: 'tablist', 'aria-label': '受注状況の切り替え', 'data-step': 'list-tabs' });
     TABS.forEach(function (t) {
       var b = h('button', { type: 'button', role: 'tab', 'class': 'osechi-btn osechi-btn-secondary', 'data-tab': t[0], 'aria-selected': 'false', text: t[1] });
       b.addEventListener('click', function () { onTab(t[0]); });
@@ -698,174 +777,152 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     E.btnPrint = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-print', text: '印刷' });
     E.btnPrint.addEventListener('click', onPrint);
     E.actions = h('div', { 'class': 'osechi-lactions', 'data-step': 'list-actions' }, [E.btnXlsx, h('div', { 'class': 'osechi-btn-row' }, [E.btnCsv, E.btnPrint])]);
-    // 受注状況一覧表の操作（同じ場所に入れ替えて出す＝いま見ている表の Excel と印刷だけ。お客様リストの報告用ファイルと混ぜない）
+    // 店内受注品一覧の操作（同じ場所に入れ替えて出す＝いま見ている表の Excel と印刷だけ。お客様リストの報告用ファイルと混ぜない）
     //   表を最初の画面に入れるため、2つを1段に（補助の操作で上を占めない）
-    E.btnProdXlsx = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-gold', 'data-act': 'prod-xlsx', 'aria-label': '受注状況一覧表（Excel）をダウンロード', text: 'Excel をダウンロード' });
+    E.btnProdXlsx = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-gold', 'data-act': 'prod-xlsx', 'aria-label': '店内受注品一覧（Excel）をダウンロード', text: 'Excel をダウンロード' });
     E.btnProdXlsx.addEventListener('click', function () { download('production'); });
-    E.btnProdPrint = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'prod-print', 'aria-label': '受注状況一覧表を印刷（A4 横・1日1ページ）', text: '印刷（A4 横）' });
+    E.btnProdPrint = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'prod-print', 'aria-label': '店内受注品一覧を印刷（A4 横・1日1ページ）', text: '印刷（A4 横）' });
     E.btnProdPrint.addEventListener('click', onProdPrint);
     E.prodActions = h('div', { 'class': 'osechi-lactions osechi-prod-actions osechi-hidden', 'data-step': 'prod-actions' }, h('div', { 'class': 'osechi-btn-row' }, [E.btnProdXlsx, E.btnProdPrint]));
     E.search = h('input', { type: 'search', 'class': 'osechi-input', 'data-field': 'list-search', maxlength: String(SEARCH_MAX), placeholder: '氏名・電話・受付番号で探す', 'aria-label': 'お客様を探す（氏名・電話・受付番号）', autocomplete: 'off', spellcheck: 'false', enterkeyhint: 'search' });
     E.search.addEventListener('input', function () { L.query = searchLimit(E.search.value); renderContent(); });   // 貼り付けなどで長くても100字で切る
     E.searchBox = h('div', { 'class': 'osechi-lsearch' }, [E.search]);
+    // 読み直しの印（2026-10-31）: 一覧のすぐ上。読み直している間も一覧はそのまま使える（押せる・探せる・切り替えられる）
+    E.fresh = h('div', { 'class': 'osechi-lfresh', 'data-step': 'list-fresh', role: 'status', 'aria-live': 'polite' });
     E.count = h('div', { 'class': 'osechi-small', 'data-step': 'list-count', 'aria-live': 'polite' });
     E.content = h('div', { 'data-step': 'list-body' });
-    if (L.only) E.tabs.classList.add('osechi-hidden');   // この入口では表だけ（お客様リストの切り替えは「お客様リスト」の中に）
-    E.root = h('div', { 'class': 'osechi-list', 'data-step': 'list', 'data-view': L.only || null }, [E.storeRow, E.deadline, E.rules, E.note, E.tabs, E.actions, E.prodActions, E.searchBox, E.count, E.content]);
+    E.root = h('div', { 'class': 'osechi-list', 'data-step': 'list' }, [E.storeRow, E.deadline, E.rules, E.note, E.tabs, E.actions, E.prodActions, E.searchBox, E.fresh, E.count, E.content]);
     w.appendChild(E.root);
     refreshChrome();
   }
-  /** 店・切り替え・ボタンの状態（店が決まるまで押せない） */
+  /** 店・切り替え・ボタンの状態（店が決まるまで押せない・はじめの読み込みが終わるまで印刷とダウンロードは押せない。読み直しの間は押せる） */
   function refreshChrome() {
-    var E = L.els, has = !!L.store;
+    var E = L.els, has = !!L.store, ready = !!L.data;
     Array.prototype.forEach.call(E.tabs.querySelectorAll('[data-tab]'), function (b) {
       var on = b.getAttribute('data-tab') === L.tab;
       b.setAttribute('aria-selected', on ? 'true' : 'false');
       b.classList.toggle('osechi-on', on);
       b.disabled = !has;
     });
-    // 読み込み中は押せない（読み込みと印刷・ダウンロードを重ねない）
-    var prod = L.tab === 'production', pd = L.data.production;
-    var loading = L.tab === 'summary' ? !!(L.data.summaryLoading && !L.data.summary) : !!(L.data[L.tab] && L.data[L.tab].loading);
-    [E.btnXlsx, E.btnCsv, E.btnPrint].forEach(function (b) { b.disabled = !has || L.dl || loading; });
-    E.btnProdXlsx.disabled = !has || L.dl || pd.loading;
-    E.btnProdPrint.disabled = !has || L.dl || pd.loading || !pd.model || !pd.model.days.length;   // 印刷は画面の数をそのまま使う＝読めてから
+    var prod = L.tab === 'production', pm = ready ? L.data.production : null;
+    [E.btnXlsx, E.btnCsv, E.btnPrint].forEach(function (b) { b.disabled = !has || L.dl || !ready; });
+    if (E.btnAll) E.btnAll.disabled = L.dl;   // 全店の注文は店を選ばなくても押せる
+    E.btnProdXlsx.disabled = !has || L.dl || !ready;
+    E.btnProdPrint.disabled = !has || L.dl || !pm || !pm.days.length;   // 印刷は画面の数をそのまま使う＝読めてから
     E.actions.classList.toggle('osechi-hidden', prod);
     E.prodActions.classList.toggle('osechi-hidden', !prod);
-    // 締め日の帯・報告のしかた・申込書の枚数は、報告（お客様リスト）のためのもの＝受注状況一覧表では畳んで、表を最初の画面に入れる
+    // 締め日の帯・報告のしかた・申込書の枚数は、報告（お客様リスト）のためのもの＝店内受注品一覧では畳んで、表を最初の画面に入れる
     [E.deadline, E.rules, E.storeCount].forEach(function (el) { el.classList.toggle('osechi-hidden', prod); });
-    E.searchBox.classList.toggle('osechi-hidden', !has || L.tab === 'summary' || prod);   // 受注状況一覧表は商品が1日に十数行・お客様の名前なし＝探す場面が無い
+    E.searchBox.classList.toggle('osechi-hidden', !has || L.tab === 'summary' || prod);   // 店内受注品一覧は商品が1日に十数行・お客様の名前なし＝探す場面が無い
+    E.storeCount.textContent = ready ? '申込書 ' + L.data.orderCount + ' 枚（取消を除く）' : '';
+    renderFresh();
+  }
+  /** 読み直しの印: 読み直している間は動く印と「読み込み直しています…」（いつの内容かも）。失敗したら、いつの内容かと「もう一度」 */
+  function renderFresh() {
+    var E = L.els, h = L.h;
+    L.host.clear(E.fresh);
+    if (!L.data) return;
+    var when = hhmm(L.data.asOf);
+    if (L.refreshing) {
+      E.fresh.appendChild(h('div', { 'class': 'osechi-lfresh-on', 'data-kind': 'refreshing' }, [h('span', { 'class': 'osechi-spin-s', 'aria-hidden': 'true' }),
+        h('span', { text: '読み込み直しています…' + (when ? '（いまの表は ' + when + ' の内容・このまま使えます）' : '（このまま使えます）') })]));
+    } else if (L.refreshError) {
+      E.fresh.appendChild(h('div', { 'class': 'osechi-warn osechi-lfresh-ng', 'data-kind': 'stale' }, [
+        h('span', { text: (when ? when + ' の内容です。' : '') + '最新にできませんでした（' + L.refreshError + '）' }),
+        h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-refresh', text: 'もう一度読み込む', on: { click: function () { refresh(); } } })]));
+    }
   }
   function onStoreChange(v) {
     if (!L || L.host.isBusy()) { if (L && L.els.storeSel) L.els.storeSel.value = L.store; return; }
-    // 店を変えたら、前の店のお客様の情報は捨てる（メモリにも残さない）
+    // 店を変えたら、前の店のお客様の情報は画面から消す（ページのメモリの一覧は、同じ店を選び直したときに先に出すため、30分まで残る）
     L.store = str(v);
     L.seq++;
-    L.data = freshData();
+    L.data = null;
+    L.patches = [];
+    L.refreshing = false; L.refreshError = ''; L.wantGen = 0;
     L.prodDay = '';
     L.query = '';
+    L.open = {};
     L.els.search.value = '';
     setNote('');
-    L.els.storeCount.textContent = '';
     renderDeadline();
     refreshChrome();
-    if (L.store) loadAll(); else renderContent();
+    if (L.store) openStore(); else renderContent();
   }
   function onTab(t) {
-    if (!L || !L.store || L.host.isBusy() || (L.only && t !== L.only)) return;
-    L.tab = t;
+    if (!L || !L.store || L.host.isBusy()) return;
+    L.tab = t;   // 4つとも、受け取った中身から描く（窓口へ取りに行かない）
     refreshChrome();
     renderContent();
-    var seq = L.seq;
-    if (t === 'summary') { if (!L.data.summary && !L.data.summaryLoading) loadSummary(seq); }
-    else if (t === 'production') { if (!L.data.production.loaded && !L.data.production.loading) loadProduction(seq); }
-    else if (!L.data[t].loaded && !L.data[t].loading) loadPage(t, seq);
   }
   function setNote(text) {
     var E = L.els;
     L.host.clear(E.note);
     if (text) E.note.appendChild(L.h('div', { 'class': 'osechi-info', role: 'status', text: text }));
   }
-  /** 店が決まったら: 締め日の帯と集計・いまの切り替えのリストを並べて読む（先に枠を出して、あとから埋める） */
-  function loadAll() {
-    var seq = L.seq;
+  /** 店が決まったら: ページのメモリに前の一覧があれば、すぐ出して裏で読み直す。無ければ読み込む（先に枠を出して、あとから埋める） */
+  function openStore() {
+    var hit = memGet(L.store);
+    if (hit) {
+      L.data = hit;
+      if (!L.data.production || !L.data.production.days.some(function (x) { return x.date === L.prodDay; })) L.prodDay = L.data.production ? defaultProdDay(L.data.production) : '';
+      renderDeadline();
+    }
+    refreshChrome();
     renderContent();
-    if (L.only) { loadProduction(seq); return; }   // 受注状況一覧表だけの入口: 集計・一覧は読まない
-    loadSummary(seq);
-    if (L.tab === 'production') loadProduction(seq);
-    else if (L.tab !== 'summary') loadPage(L.tab, seq);
+    refresh();
   }
   /**
-   * 受注状況一覧表を読む（見るのは回数の上限なし・通信の失敗は osechi.js が1回だけ送り直す）。読み込み中に呼ばれたら、その Promise を返す。
-   *   読み直し（「最新の数にする」）の間は、前の表を出したまま「読み込んでいます…」を添える（空白にしない）
+   * 受注状況を読み直す（openList の1本）。一覧があれば出したまま裏で読み、届いたら差し替える（場所・切り替え・探す語はそのまま）。
+   * 読み直しの途中にもう一度頼まれたら、終わってから1回だけ読み直す（修正のあとの読み直しが、前の読み直しの古い中身で終わらないように）。
+   * 読み直しを始めたあとに手元で直した行（修正・取消）は、届いた中身にもう一度当てる
    */
-  function loadProduction(seq) {
-    var d = L.data.production;
-    if (d.loading && d.promise) return d.promise;
-    d.loading = true; d.error = '';
-    refreshChrome();
-    if (L.tab === 'production') renderContent();
-    var t0 = Date.now();
-    d.promise = (async function () {
-      try {
-        var r = await L.host.api('getProductionList', storeArg());
-        if (!alive(seq)) return;
-        d.model = cleanProduction(r && r.production);
-        d.loaded = true; d.loading = false; d.ms = Date.now() - t0;
-        if (!d.model.days.some(function (x) { return x.date === L.prodDay; })) L.prodDay = defaultProdDay(d.model);
-        refreshChrome();
-        if (L.tab === 'production') renderContent();
-      } catch (e) {
-        if (!alive(seq)) return;
-        d.loading = false;
-        refreshChrome();
-        if (handleAuth(e)) return;
-        d.error = e.message;
-        if (L.tab === 'production') renderContent();
-      } finally {
-        if (L && L.data.production === d) d.promise = null;
-      }
-    })();
-    return d.promise;
+  function refresh() {
+    if (!L || !L.store) return;
+    L.wantGen++;
+    if (L.refreshing) { renderFresh(); return; }
+    runRefresh();
   }
-  async function loadSummary(seq) {
-    var d = L.data;
-    d.summaryLoading = true; d.summaryError = '';
+  async function runRefresh() {
+    var seq = L.seq, gen = L.wantGen, t0 = Date.now();
+    L.refreshing = true; L.refreshError = '';
     refreshChrome();
-    if (L.tab === 'summary') renderContent();
+    if (!L.data) renderContent();
+    var ok = false;
     try {
-      var r = await L.host.api('getSummary', storeArg());
+      var r = await L.host.api('openList', storeArg());
       if (!alive(seq)) return;
-      d.summary = r; d.summaryLoading = false;
-      refreshChrome();
+      var d = buildData(r);
+      L.patches = L.patches.filter(function (p) { return p.at > t0; });   // 読み直しを始める前に直した分は、届く中身に入っている
+      L.patches.forEach(function (p) { patchData(d, p.info); });
+      var first = !L.data;
+      L.data = d;
+      memPut(L.store, d);
+      if (!d.production || !d.production.days.some(function (x) { return x.date === L.prodDay; })) L.prodDay = d.production ? defaultProdDay(d.production) : '';
+      ok = true;
       renderDeadline();
-      if (L.tab === 'summary') renderContent();
+      keepScroll(renderContent, first);
     } catch (e) {
       if (!alive(seq)) return;
-      d.summaryLoading = false;
-      refreshChrome();
       if (handleAuth(e)) return;
-      d.summaryError = e.message;
-      if (L.tab === 'summary') renderContent();
+      L.refreshing = false;
+      // 古い窓口（openList を知らない）＝画面だけ先に新しくなった。電波では直らないので、そう伝える
+      L.refreshError = (e && e.code === 'BAD_REQUEST' && e.field === 'action') ? '窓口がまだ新しくなっていません。本部へお知らせください' : ((e && e.message) || '読み込めませんでした');
+      if (!L.data) renderContent();
+      else if (L.tab === 'production') keepScroll(renderContent, false);   // 「最新の数にする」の釦を戻す
+    } finally {
+      if (alive(seq)) {
+        L.refreshing = false;
+        refreshChrome();
+        if (ok && L.wantGen > gen) runRefresh();   // 読み直しの途中に頼まれた分
+      }
     }
   }
-  /** 1ページ読む。読み込み中に呼ばれたら、いまの読み込みの Promise を返す（待てる＝印刷の繰り返しが空回りしない） */
-  function loadPage(method, seq) {
-    var d = L.data[method];
-    if (d.loading && d.promise) return d.promise;
-    if (d.full) return Promise.resolve();   // 全体の上限に達した: もう読まない
-    d.loading = true; d.error = '';
-    refreshChrome();
-    if (L.tab === method) renderContent();
-    d.promise = (async function () {
-      try {
-        var r = await L.host.api('listCustomers', Object.assign({ method: method, page: d.page + 1 }, storeArg()));
-        if (!alive(seq)) return;
-        var merged = mergeBlocks(d.blocks, r && r.blocks);
-        d.blocks = merged;
-        d.truncated = d.truncated || !!merged.truncated;
-        d.full = !!merged.full;
-        d.page = toInt(r.page) >= 1 ? toInt(r.page) : d.page + 1;
-        d.pageCount = Math.min(toInt(r.pageCount) >= 1 ? toInt(r.pageCount) : 1, 1000);
-        d.hasMore = r.hasMore === true && !d.full;
-        d.total = toInt(r.totalRows) >= 0 ? toInt(r.totalRows) : loadedRows(d.blocks);
-        d.orderCount = toInt(r.orderCount) >= 0 ? toInt(r.orderCount) : 0;
-        d.loaded = true; d.loading = false;
-        L.els.storeCount.textContent = '申込書 ' + d.orderCount + ' 枚（取消を除く）';
-        refreshChrome();
-        if (L.tab === method) renderContent();
-      } catch (e) {
-        if (!alive(seq)) return;
-        d.loading = false;
-        refreshChrome();
-        if (handleAuth(e)) return;
-        d.error = e.message;
-        if (L.tab === method) renderContent();
-      } finally {
-        if (L && L.data[method] === d) d.promise = null;
-      }
-    })();
-    return d.promise;
+  /** 描き直しても、見ている場所を動かさない（はじめの読み込みのときは上から） */
+  function keepScroll(fn, first) {
+    var b = L.host.body, keep = b ? b.scrollTop : 0;
+    fn();
+    if (b && !first) b.scrollTop = keep;
   }
   /** ログインの確認ができない・使えないアカウント → osechi.js の案内（静かな再交換はしない）。扱ったら true */
   function handleAuth(e) {
@@ -877,7 +934,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   function renderDeadline() {
     var E = L.els, h = L.h;
     L.host.clear(E.deadline);
-    var v = L.data.summary ? deadlineView(L.data.summary.deadline) : null;
+    var v = (L.data && L.data.summary) ? deadlineView(L.data.summary.deadline) : null;
     if (!v) return;
     E.deadline.appendChild(h('div', { 'class': 'osechi-ldead' + (v.today ? ' osechi-ldead-today' : ''), 'data-kind': v.today ? 'report-day' : 'deadline' }, [
       h('div', { 'class': 'osechi-ldead-main', text: v.main }),
@@ -892,74 +949,71 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     host.clear(E.content);
     E.count.textContent = '';
     if (!L.store) {
-      E.content.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'list-choose-store', text: '店を選ぶと、その店のお客様リスト・集計・受注状況一覧表が出ます。' }));
+      E.content.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'list-choose-store', text: '店を選ぶと、その店の店渡し・宅配・集計・店内受注品一覧が出ます。' }));
+      return;
+    }
+    if (!L.data) {
+      if (L.refreshError && !L.refreshing) E.content.appendChild(errorBox(L.refreshError, function () { refresh(); }));
+      else E.content.appendChild(h('div', { 'class': 'osechi-card osechi-lskeleton', 'data-step': 'list-loading', role: 'status' }, [h('span', { 'class': 'osechi-spin-s', 'aria-hidden': 'true' }), '受注状況を読み込んでいます…']));
       return;
     }
     if (L.tab === 'summary') return renderSummary();
     if (L.tab === 'production') return renderProduction();
-    var d = L.data[L.tab];
-    if (!d.loaded) {
-      if (d.error) E.content.appendChild(errorBox(d.error, function () { loadPage(L.tab, L.seq); }));
-      else E.content.appendChild(h('div', { 'class': 'osechi-card osechi-lskeleton', 'data-step': 'list-loading', role: 'status', text: METHOD_LABEL[L.tab] + 'のお客様リストを読み込んでいます…' }));
-      return;
-    }
+    var d = L.data.lists[L.tab];
     var view = filterBlocks(d.blocks, L.query), loaded = loadedRows(d.blocks);
     var hits = view.reduce(function (s, x) { return s + x.rows.length; }, 0);
     E.count.textContent = searchText(L.query)
-      ? '見つかった ' + hits + ' 行（読み込んだ ' + loaded + ' 行の中から' + (d.hasMore ? '・続きは「続きを読む」' : '') + '）'
-      : METHOD_LABEL[L.tab] + ' ' + d.total + ' 行' + (d.hasMore ? '（いま ' + loaded + ' 行を表示）' : '') + '・行を押すと、その注文を直せます（取り消しも）';
+      ? '見つかった ' + hits + ' 行（' + loaded + ' 行の中から）'
+      : METHOD_LABEL[L.tab] + ' ' + loaded + ' 行・行を押すと、その注文を直せます（取り消しも）';
     var searching = !!searchText(L.query);
     var full = view.filter(function (x) { return searching || x.block.lines > 0; });
     var empty = searching ? [] : view.filter(function (x) { return !x.block.lines; });
     if (!full.length) E.content.appendChild(h('div', { 'class': 'osechi-info', text: searching ? '当たる行がありません。' : 'まだ注文はありません。' }));
     full.forEach(function (x) { E.content.appendChild(blockView(x.block, x.rows, searching)); });
     if (empty.length) E.content.appendChild(emptyGroup(empty));
-    if (d.truncated || d.full) E.content.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'list-limit', text: (d.full ? '表示の上限（' + TOTAL_ROWS_MAX + ' 行）に達しました。' : '受け取った行が多すぎるため、1回に ' + PAGE_ROWS_MAX + ' 行までを表示しています（上限）。') + 'すべての行は「報告用ファイル（Excel）」で見てください。' }));
-    if (d.loading) E.content.appendChild(h('div', { 'class': 'osechi-small', role: 'status', text: '続きを読み込んでいます…' }));
-    else if (d.error) E.content.appendChild(errorBox(d.error, function () { loadPage(L.tab, L.seq); }));
-    else if (d.hasMore) {
-      E.content.appendChild(h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-more',
-        text: '続きを読む（読み込んだ ' + loaded + ' 行 ／ 全 ' + d.total + ' 行）', on: { click: function () { loadPage(L.tab, L.seq); } } }));
-    }
+    if (d.truncated || L.data.truncated) E.content.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'list-limit', text: '表示の上限（' + TOTAL_ROWS_MAX + ' 行）に達しました。すべての行は「報告用ファイル（Excel）」で見てください。' }));
   }
   function errorBox(msg, retry) {
     var h = L.h;
     return h('div', { 'class': 'osechi-error', role: 'alert' }, [h('div', { text: msg }),
       h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-retry', text: 'もう一度読み込む', on: { click: retry } })]);
   }
-  /** 注文のない商品は、1つの見出しにまとめて畳む（注文のある商品の行までの、送る量を減らす）。畳んだ見出しにも「受注なし」と番号を出す（空白に見せない） */
-  function emptyGroup(empty) {
-    var h = L.h;
-    var body = h('div', { 'class': 'osechi-lbody osechi-hidden' }, empty.map(function (x) { return blockView(x.block, x.rows, false); }));
-    var head = h('button', { type: 'button', 'class': 'osechi-lhead', 'aria-expanded': 'false', 'data-act': 'list-empty' }, [
-      h('span', { 'class': 'osechi-lhead-title', text: '注文のない商品（' + empty.length + ' 品）' }),
-      h('span', { 'class': 'osechi-lhead-meta' }, [h('span', { 'class': 'osechi-lnone', text: NONE_MARK }), ' ' + empty.map(function (x) { return x.block.no; }).join('・') + ' 番（見出しを押すと開く・閉じる）'])
-    ]);
+  /** 見出しを押して開く・閉じる（読み直しで描き直しても、開け閉めはそのまま） */
+  function toggler(head, body, key, open) {
     head.addEventListener('click', function () {
       var nowOpen = head.getAttribute('aria-expanded') !== 'true';
       head.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
       body.classList.toggle('osechi-hidden', !nowOpen);
+      if (L) L.open[key] = nowOpen;
     });
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    body.classList.toggle('osechi-hidden', !open);
+  }
+  function openOf(key, dflt) { return Object.prototype.hasOwnProperty.call(L.open, key) ? L.open[key] : dflt; }
+  /** 注文のない商品は、1つの見出しにまとめて畳む（注文のある商品の行までの、送る量を減らす）。畳んだ見出しにも「受注なし」と番号を出す（空白に見せない） */
+  function emptyGroup(empty) {
+    var h = L.h;
+    var body = h('div', { 'class': 'osechi-lbody' }, empty.map(function (x) { return blockView(x.block, x.rows, false); }));
+    var head = h('button', { type: 'button', 'class': 'osechi-lhead', 'data-act': 'list-empty' }, [
+      h('span', { 'class': 'osechi-lhead-title', text: '注文のない商品（' + empty.length + ' 品）' }),
+      h('span', { 'class': 'osechi-lhead-meta' }, [h('span', { 'class': 'osechi-lnone', text: NONE_MARK }), ' ' + empty.map(function (x) { return x.block.no; }).join('・') + ' 番（見出しを押すと開く・閉じる）'])
+    ]);
+    toggler(head, body, L.tab + ':empty', openOf(L.tab + ':empty', false));
     return h('section', { 'class': 'osechi-lblock osechi-lempty', 'data-step': 'list-empty' }, [head, body]);
   }
   /** 商品ごとのブロック（見出しを押すと開閉。空の商品は畳んでおく） */
   function blockView(b, rows, searching) {
     var h = L.h, method = L.tab;
-    var open = searching || b.lines > 0;
     var dates = (L.host.idx && L.host.idx.byNo[b.no] && L.host.idx.byNo[b.no].dates.join('・')) || '12/31';
-    var head = h('button', { type: 'button', 'class': 'osechi-lhead', 'aria-expanded': open ? 'true' : 'false', 'data-act': 'list-block' }, [
+    var head = h('button', { type: 'button', 'class': 'osechi-lhead', 'data-act': 'list-block' }, [
       h('span', { 'class': 'osechi-lhead-title', text: b.title || ('商品 ' + b.no) }),
-      b.lines ? h('span', { 'class': 'osechi-lhead-meta', text: (method === 'store' ? 'お渡し日 ' : '宅配日 ') + dates + '・' + b.lines + ' 件' + (b.rows.length < b.lines ? '（いま ' + b.rows.length + ' 件を表示）' : '') })
+      b.lines ? h('span', { 'class': 'osechi-lhead-meta', text: (method === 'store' ? 'お渡し日 ' : '宅配日 ') + dates + '・' + b.lines + ' 件' })
         : h('span', { 'class': 'osechi-lhead-meta' }, [(method === 'store' ? 'お渡し日 ' : '宅配日 ') + dates + '・', h('span', { 'class': 'osechi-lnone', text: NONE_MARK })])
     ]);
-    var body = h('div', { 'class': 'osechi-lbody' + (open ? '' : ' osechi-hidden') });
+    var body = h('div', { 'class': 'osechi-lbody' });
     if (!b.lines) body.appendChild(h('div', { 'class': 'osechi-small', 'data-kind': 'none' }, [h('span', { 'class': 'osechi-lnone', text: NONE_MARK }), ' まだ注文はありません。']));
     else body.appendChild(tableView(b, rows));
-    head.addEventListener('click', function () {
-      var nowOpen = head.getAttribute('aria-expanded') !== 'true';
-      head.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
-      body.classList.toggle('osechi-hidden', !nowOpen);
-    });
+    toggler(head, body, method + ':' + b.no, searching || openOf(method + ':' + b.no, b.lines > 0));
     return h('section', { 'class': 'osechi-lblock' + (b.lines ? '' : ' osechi-lblock-empty'), 'data-no': String(b.no), 'data-method': method }, [head, body]);
   }
   var PARTY_COLS = [['zip', '郵便番号'], ['tel', '電話番号'], ['address', '住所'], ['name', '氏名']];
@@ -968,6 +1022,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
    * 行の表（PC は表・スマホは CSS で1行をカードに）。店渡しはご依頼主だけ。数量の列は画面にだけ（2以上を強調）。
    *   受付係員（追補 v6）は数量のすぐ右（受付・数量と同じ「受けたときのこと」の並び。番号・受付・数量の位置は前の版と同じ）。
    *   空は「記載なし」（窓口と同じ言葉・薄くしすぎない灰）。印刷（ひな形の15行）には入れない＝ひな形に欄が無い・住所の幅が足りなくなる
+   *   直したばかりの行（読み直しの前）は「直しました（反映を待っています）」の印
    */
   function tableView(b, rows) {
     var h = L.h, method = L.tab, delivery = method === 'delivery';
@@ -983,13 +1038,14 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       prevPage = r.page;
       var cells = [
         h('td', { 'class': 'osechi-ln', 'data-label': '番号', text: String(r.n) }),
-        h('td', { 'class': 'osechi-lrecv', 'data-label': '受付', text: r.receivedAt + (r.orderId ? '　' + r.orderId : '') }),
+        h('td', { 'class': 'osechi-lrecv', 'data-label': '受付' }, [r.receivedAt + (r.orderId ? '　' + r.orderId : ''),
+          r.pending ? h('span', { 'class': 'osechi-lpend', 'data-kind': 'pending', text: '直しました（反映を待っています）' }) : null]),
         h('td', { 'class': 'osechi-lqty' + (r.qty >= 2 ? ' osechi-lqty2' : ''), 'data-label': '数量', text: r.qty + ' 個' }),
         h('td', { 'class': 'osechi-lrcp' + (r.receptionist === RECEPTIONIST_NONE ? ' osechi-lrcp-none' : ''), 'data-label': '受付係員', 'data-kind': 'receptionist', text: r.receptionist })
       ];
       if (delivery) PARTY_COLS.forEach(function (c) { cells.push(h('td', { 'class': NOWRAP[c[0]] || null, 'data-label': 'お届け先 ' + c[1], text: r.receiver[c[0]] })); });
       PARTY_COLS.forEach(function (c) { cells.push(h('td', { 'class': NOWRAP[c[0]] || null, 'data-label': 'ご依頼主 ' + c[1], text: r.requester[c[0]] })); });
-      var tr = h('tr', { 'class': 'osechi-lrow', tabindex: '0', role: 'button', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' の注文を直す' }, cells);
+      var tr = h('tr', { 'class': 'osechi-lrow' + (r.pending ? ' osechi-lrow-pending' : ''), tabindex: '0', role: 'button', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' の注文を直す' }, cells);
       var go = function () { onRowEdit(r.orderId); };
       tr.addEventListener('click', go);
       tr.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(); } });
@@ -999,14 +1055,27 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       h('thead', null, h('tr', null, heads)), h('tbody', null, body)
     ]));
   }
+  /**
+   * 行を押した → 一覧と一緒に受け取った注文の中身から、すぐ「注文を直す」を開く（窓口へ取りに行かない・送るときに版で守る）。
+   * 送ったら（修正・取消）: 一覧は消さずに、その行を手元で直し、裏で読み直す（「読み込み直しています…」）。読み直しの間も一覧は使える
+   */
   function onRowEdit(orderId) {
     if (!orderId || !L || L.host.isBusy()) return;
     var seq = L.seq;
     L.host.editOrder(orderId, {
-      onDone: function (changed, text) {
+      order: L.data && L.data.orders[orderId],
+      onDone: function (changed, text, info) {
         if (!alive(seq)) return;
         if (text) setNote(text);
-        if (changed) { L.seq++; var t = L.tab; L.data = freshData(); L.tab = t; loadAll(); }
+        if (!changed) return;
+        if (L.data && info) {
+          L.patches.push({ at: Date.now(), info: info });
+          patchData(L.data, info);
+          memPut(L.store, L.data);
+          renderDeadline();
+          keepScroll(renderContent, false);
+        }
+        refresh();
       }
     });
   }
@@ -1014,9 +1083,8 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   // ---- 集計（おせち集計・サンド） ----
   function renderSummary() {
     var E = L.els, h = L.h, d = L.data;
-    if (!d.summary) {
-      if (d.summaryError) E.content.appendChild(errorBox(d.summaryError, function () { loadSummary(L.seq); }));
-      else E.content.appendChild(h('div', { 'class': 'osechi-card osechi-lskeleton', 'data-step': 'list-loading', role: 'status', text: '集計を読み込んでいます…' }));
+    if (!d.summary) {   // 窓口が集計だけ作れなかった（ほかの切り替えは使える）
+      E.content.appendChild(errorBox(d.summaryError || '集計を読み込めませんでした。', function () { refresh(); }));
       return;
     }
     var s = d.summary.summary || {};
@@ -1058,26 +1126,24 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     return h('div', { 'class': 'osechi-lscroll osechi-sscroll' }, h('table', { 'class': 'osechi-stable', 'data-step': 'summary-' + method }, [h('thead', null, h('tr', null, head)), h('tbody', null, body)]));
   }
 
-  // ---- 受注状況一覧表（惣菜・鮮魚の担当主任が「何を・いくつ・何時までに」作るかを見る表） ----
+  // ---- 店内受注品一覧（惣菜・鮮魚の担当主任が「何を・いくつ・何時までに」作るかを見る表） ----
   //   上から: いつの時点か（数の札）→ 気づいたこと（候補の外・注意）→ 日の切り替え（日ごとの申込書の件数・受注なし）→ 選んだ日の表。
   //   表は xlsx と同じ並び（日 → 担当の組 → 商品・列は slots の順）。横に入りきらない幅ではカードにする（fitProdTable）
   function renderProduction() {
-    var E = L.els, h = L.h, d = L.data.production, m = d.model;
-    if (!m) {
-      if (d.error) E.content.appendChild(errorBox(d.error, function () { loadProduction(L.seq); }));
-      else E.content.appendChild(h('div', { 'class': 'osechi-card osechi-lskeleton', 'data-step': 'list-loading', role: 'status', text: '受注状況一覧表を読み込んでいます…' }));
+    var E = L.els, h = L.h, m = L.data.production;
+    if (!m) {   // 窓口が店内受注品一覧だけ作れなかった（ほかの切り替えは使える）
+      E.content.appendChild(errorBox(L.data.productionError || '店内受注品一覧を読み込めませんでした。', function () { refresh(); }));
       return;
     }
     E.count.textContent = (m.asOf ? m.asOf + ' 現在の受注（取消を除く）' : 'いまの受注（取消を除く）') + '・お渡し日の商品の申込書 ' + m.orderCount + ' 件';
-    var reload = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary osechi-prod-reload', 'data-act': 'prod-reload', text: d.loading ? '読み込んでいます…' : '最新の数にする' });
-    reload.disabled = d.loading || L.dl;
-    reload.addEventListener('click', function () { if (!L.host.isBusy() && !L.dl) loadProduction(L.seq); });
+    // 「最新の数にする」＝受注状況の全部を読み直す（読み直しの間も、いまの表を出したまま・一覧の上に「読み込み直しています…」）
+    var reload = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary osechi-prod-reload', 'data-act': 'prod-reload', text: L.refreshing ? '読み込んでいます…' : '最新の数にする' });
+    reload.disabled = L.refreshing || L.dl;
+    reload.addEventListener('click', function () { if (!L.host.isBusy() && !L.dl) { refresh(); renderContent(); } });
     E.content.appendChild(h('div', { 'class': 'osechi-prod-intro', 'data-step': 'prod-intro' }, [
       h('p', { 'class': 'osechi-small', text: '惣菜・鮮魚・サービスカウンターの担当が「何を・いくつ・何時までに」作るかの表です（お客様の名前は出ません）。' }),
       reload
     ]));
-    if (d.loading) E.content.appendChild(h('div', { 'class': 'osechi-small', role: 'status', 'data-step': 'prod-reloading', text: '最新の数を読み込んでいます…（いまの表は ' + (m.asOf || '前') + ' の数）' }));
-    else if (d.error) E.content.appendChild(errorBox(d.error, function () { loadProduction(L.seq); }));
     if (m.warnings.length || m.outOfCandidates.length) {
       // 短く: 候補の外の数量は1行ずつ（作る数に入っていない＝見落とすと作り漏れ）。同じことを言う注意（OUT_OF_CANDIDATES）は、その見出しにまとめる
       var lines = [h('b', { text: '気づいたこと' })];
@@ -1109,7 +1175,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     }));
     E.content.appendChild(chips);
     var tbox = h('div', { 'class': 'osechi-prod-tbox' + ((root.innerWidth || 1024) <= 760 ? ' osechi-prod-cards' : '') },
-      h('table', { 'class': 'osechi-prod-table', 'data-step': 'prod-table', 'aria-label': '受注状況一覧表 ' + cur.label }, [h('thead', null, prodHeads(m, 'osechi-prod-')), h('tbody', null, prodBodyRows(m, cur, 'osechi-prod-'))]));
+      h('table', { 'class': 'osechi-prod-table', 'data-step': 'prod-table', 'aria-label': '店内受注品一覧 ' + cur.label }, [h('thead', null, prodHeads(m, 'osechi-prod-')), h('tbody', null, prodBodyRows(m, cur, 'osechi-prod-'))]));
     E.content.appendChild(h('section', { 'class': 'osechi-prod-sec', 'data-step': 'prod-day', 'data-kind': cur.date }, [
       h('div', { 'class': 'osechi-prod-title' }, [h('h3', { text: cur.label }), h('span', { 'class': 'osechi-prod-store', text: m.storeLabel || L.store })]),
       h('div', { 'class': 'osechi-prod-sub' + (cur.closedNewYear && !cur.noOrders ? ' osechi-prod-subwarn' : ''), 'data-step': 'prod-sub', text: prodDaySub(m, cur, true) }),
@@ -1140,21 +1206,24 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   var DOWNLOADS = {
     xlsx: { action: 'exportReport', args: {}, busy: '報告用ファイル（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: 'おせち報告書_' },
     csv: { action: 'exportCsv', args: { kind: 'orders' }, busy: 'CSV を作っています…', ext: '.csv', mime: 'text/csv', fallback: 'おせちお客様リスト_' },
-    production: { action: 'exportProduction', args: {}, busy: '受注状況一覧表（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: 'おせち受注状況一覧表_' }
+    production: { action: 'exportProduction', args: {}, busy: '店内受注品一覧（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: '店内受注品一覧_' },
+    // 全店の注文（本部だけ・PO 2026-10-31）: 店を選ばなくても押せる（店を送らない）。窓口も本部かを確かめる
+    all: { action: 'exportAllOrders', args: {}, busy: '全店の注文（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: 'おせち注文_全店_', allStores: true }
   };
   async function download(kind) {
-    if (!L || !L.store || L.dl || L.host.isBusy() || !own(DOWNLOADS, kind)) return;
-    var seq = L.seq, host = L.host, D = DOWNLOADS[kind];
+    var D = own(DOWNLOADS, kind) ? DOWNLOADS[kind] : null;
+    if (!L || !D || L.dl || L.host.isBusy() || (D.allStores ? !isHq() : !L.store)) return;
+    var seq = L.seq, host = L.host;
     L.dl = true;
     refreshChrome();
     var layer = host.busy(D.busy, { sub: '回数に上限があるので、終わるまでお待ちください' });
     try {
-      var r = await host.api(D.action, Object.assign({}, D.args, storeArg()));
+      var r = await host.api(D.action, Object.assign({}, D.args, D.allStores ? {} : storeArg()));
       host.endBusy(layer);
       if (!alive(seq)) return;
       var bytes = base64ToBytes(r.base64);
       if (D.ext === '.xlsx' && !isZipBytes(bytes)) throw new Error('受け取ったファイルが Excel の形ではありません');
-      var name = /\.(xlsx|csv)$/i.test(str(r.filename)) ? str(r.filename) : D.fallback + L.store + D.ext;
+      var name = /\.(xlsx|csv)$/i.test(str(r.filename)) ? str(r.filename) : D.fallback + (D.allStores ? '' : L.store) + D.ext;
       var saved = host.saveFile(bytes, D.mime, name, D.ext);
       setNote('ダウンロードしました: ' + saved + (r.reportDate ? '（報告日 ' + str(r.reportDate) + '）' : ''));
     } catch (e) {
@@ -1169,7 +1238,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
 
   // ---- 印刷（A4 横・商品ごとに改ページ・ひな形に近い見た目）。印刷のたびに記録・印刷用の領域は終わったら消す ----
   async function onPrint() {
-    if (!L || !L.store || L.host.isBusy() || L.dl) return;
+    if (!L || !L.store || !L.data || L.host.isBusy() || L.dl) return;
     var host = L.host, seq = L.seq;
     var method = L.tab === 'delivery' ? 'delivery' : 'store';
     if (L.tab === 'summary') {
@@ -1178,20 +1247,12 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       if (pick !== 'store' && pick !== 'delivery') return;
       method = pick;
     }
-    if (!alive(seq)) return;
-    // 全部の行を読む（印刷は全ページ）。読み込み中ならそれを待つ・ページが進まなければ止める（読み続けない・画面を止めない）
-    var layer = host.busy('印刷する行を読み込んでいます…');
-    var got = await readAllPages(function () { return L && L.seq === seq ? L.data[method] : null; }, function () { return loadPage(method, seq); });
-    host.endBusy(layer);
-    if (!alive(seq)) return;
-    if (!got.ok) {
-      await host.alert(got.reason === 'stuck' ? '印刷する行を読み込めません（窓口の返事が途中で進まないため、読み込みを止めました）。少し待ってから、もう一度お試しください。' : (got.message || '読み込めませんでした。'), '', '印刷する行を読み込めませんでした');
-      return;
-    }
-    var d = L.data[method];
+    if (!alive(seq) || !L.data) return;
+    // 全部の行は、受注状況を開いたときに受け取っている（openList）＝窓口へ取りに行かない。画面の行（直したばかりの行も）をそのまま印刷する
+    var d = L.data.lists[method];
     var pages = printPages(d.blocks);
     if (!pages.length) { await host.alert(METHOD_LABEL[method] + 'のお客様リストに、まだ行がありません。', '', '印刷する行がありません'); return; }
-    var ok = await host.confirm(METHOD_LABEL[method] + 'のお客様リスト（' + d.total + ' 行・' + pages.length + ' ページ・A4 横）を印刷します。\n印刷が終わると、印刷用の画面は消えます。',
+    var ok = await host.confirm(METHOD_LABEL[method] + 'のお客様リスト（' + loadedRows(d.blocks) + ' 行・' + pages.length + ' ページ・A4 横）を印刷します。\n印刷が終わると、印刷用の画面は消えます。',
       { yes: '印刷する', no: 'やめる', title: '印刷の確認' });
     if (!ok || !alive(seq)) return;
     var lay2 = host.busy('印刷の準備をしています…');
@@ -1217,13 +1278,13 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     try { root.print(); } catch (e2) { done(); }
   }
 
-  // ---- 受注状況一覧表の印刷（A4 横・1日＝1ページ・xlsx と同じ並び）。画面の数をそのまま印刷する（いつの時点かを紙にも出す） ----
+  // ---- 店内受注品一覧の印刷（A4 横・1日＝1ページ・xlsx と同じ並び）。画面の数をそのまま印刷する（いつの時点かを紙にも出す） ----
   async function onProdPrint() {
     if (!L || !L.store || L.host.isBusy() || L.dl) return;
-    var d = L.data.production, m = d.model;
-    if (!m || d.loading || !m.days.length) return;
+    var m = L.data && L.data.production;
+    if (!m || !m.days.length) return;
     var host = L.host, seq = L.seq, cur = prodSelected(m);
-    var msg = '受注状況一覧表を印刷します（A4 横・1日＝1ページ・' + (m.asOf ? m.asOf + ' 現在の数' : 'いまの数') + '）。\n印刷が終わると、印刷用の画面は消えます。';
+    var msg = '店内受注品一覧を印刷します（A4 横・1日＝1ページ・' + (m.asOf ? m.asOf + ' 現在の数' : 'いまの数') + '）。\n印刷が終わると、印刷用の画面は消えます。';
     var pick;
     if (m.days.length === 1) pick = (await host.confirm(msg, { yes: '印刷する', no: 'やめる', title: '印刷の確認' })) ? 'all' : '';
     else {
@@ -1287,7 +1348,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     return rows;
   }
   /**
-   * 印刷用の領域（受注状況一覧表）。1日＝1ページ（日ごとに改ページ・入らない日は続きのページへ＝見出しは各ページに出る）。
+   * 印刷用の領域（店内受注品一覧）。1日＝1ページ（日ごとに改ページ・入らない日は続きのページへ＝見出しは各ページに出る）。
    *   題・店・いつの時点か・列の見出しは thead に入れる。全部の日を印刷するときは、候補の外の数量を最後のページに（xlsx と同じ）
    */
   function buildProdPrint(m, days, withOut) {
@@ -1301,7 +1362,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var pages = days.length + (withOut && m.outOfCandidates.length ? 1 : 0);
     days.forEach(function (day, di) {
       var top = h('tr', { 'class': P + 'trow' }, h('th', { colspan: ncol, scope: 'colgroup' }, h('div', { 'class': P + 'thead' }, [
-        h('span', { 'class': P + 'title', text: '受注状況一覧表　' + day.label }),
+        h('span', { 'class': P + 'title', text: '店内受注品一覧　' + day.label }),
         h('span', { 'class': P + 'store', text: (m.storeLabel || L.store) + '　' + (di + 1) + ' / ' + pages })
       ])));
       var sub = h('tr', { 'class': P + 'srow' }, h('th', { colspan: ncol, scope: 'colgroup', 'class': day.closedNewYear && !day.noOrders ? P + 'subwarn' : null, text: prodDaySub(m, day) }));
@@ -1312,7 +1373,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     });
     if (withOut && m.outOfCandidates.length) {
       region.appendChild(h('section', { 'class': P + 'page ' + P + 'out', 'data-kind': 'out' }, [
-        h('div', { 'class': P + 'title', text: '受注状況一覧表　受渡日が商品設定の候補にない数量' }),
+        h('div', { 'class': P + 'title', text: '店内受注品一覧　受渡日が商品設定の候補にない数量' }),
         h('div', { 'class': P + 'outhead', text: '※上の表に入れていません。受渡日か商品設定を確かめてください（' + (m.storeLabel || L.store) + '　' + pages + ' / ' + pages + '）' })
       ].concat(m.outOfCandidates.map(function (e) { return h('div', { 'class': P + 'outrow', text: outLine(e) }); }))));
     }
@@ -1377,6 +1438,11 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   var CSS = [
     '.osechi-list{display:block}',
     '.osechi-lstore{display:flex;flex-direction:column;gap:6px}',
+    // 全店の注文（本部だけ）: 店を選ぶ欄の下に、区切りの線を引いて1つ（店ごとの操作と混ぜない）
+    '.osechi-lall{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-top:4px;padding-top:8px;border-top:1px dashed #d8c3a5}',
+    // PC では文字の幅のボタン＋説明を横に（1つだけのボタンを全幅にしない）。スマホは押しやすく全幅
+    '.osechi-lall>.osechi-btn{min-height:48px;font-size:16px;width:auto;flex:0 0 auto;padding:8px 24px}',
+    '@media (max-width:600px){.osechi-lall>.osechi-btn{width:100%;flex:1 1 100%}}',
     '.osechi-wrap.osechi-lwide{max-width:1480px}',
     '.osechi-lrules{margin:2px 2px 6px;line-height:1.55}',
     '.osechi-lrules>summary{cursor:pointer;font-weight:800;color:#6e1521;min-height:32px;padding:4px 0}',
@@ -1424,14 +1490,21 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     '.osechi-stot{font-weight:900}',
     '.osechi-sscroll{max-height:70vh;overflow:auto;border:1px solid #e6dccd;border-radius:10px}',
     '.osechi-stable-sand{min-width:auto}',
-    '.osechi-lskeleton{color:#4a4f57}',
+    '.osechi-lskeleton{color:#4a4f57;display:flex;align-items:center}',
+    // 読み直しの印（一覧のすぐ上・一覧はそのまま使える）・直したばかりの行の印
+    '.osechi-lfresh{margin:0 0 4px}',
+    '.osechi-lfresh-on{display:flex;align-items:center;gap:2px;font-size:15px;font-weight:800;color:#5a1019;background:#fff8e1;border:1px solid #e2c675;border-radius:10px;padding:6px 10px}',
+    '.osechi-lfresh-ng{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}',
+    '.osechi-lfresh-ng>.osechi-btn{width:auto;min-height:40px;font-size:15px;padding:4px 14px}',
+    '.osechi-lpend{display:inline-block;margin-left:6px;padding:0 8px;border-radius:999px;background:#e8f3ec;border:1px solid #7fb894;color:#1d5b33;font-size:13px;font-weight:800;line-height:1.6;white-space:nowrap}',
+    '.osechi-lrow-pending>td{background:#f4faf6}',
     // 「受注なし」の札（注文の無い商品・日を空白に見せない）・受付係員（空は「記載なし」＝読める濃さの灰）
     '.osechi-lnone{display:inline-block;padding:0 8px;border-radius:999px;background:#eceff3;border:1px solid #c5ccd6;color:#3f4650;font-size:14px;font-weight:800;line-height:1.6}',
     '.osechi-lrcp-none{color:#5f6670}',
     '.osechi-snone{color:#5f6670;font-size:13px;font-weight:700}',
-    // 切り替えは4つ。狭い画面では「受注状況一覧表」を2段目に1つで置く（4つを1段に詰めると名前が折れて読めない）
+    // 切り替えは4つ。狭い画面では「店内受注品一覧」を2段目に1つで置く（4つを1段に詰めると名前が折れて読めない）
     '@media (max-width:760px){.osechi-ltabs{flex-wrap:wrap}.osechi-ltabs>[data-tab="production"]{flex:1 1 100%}}',
-    // ---- 受注状況一覧表（画面）----
+    // ---- 店内受注品一覧（画面）----
     '.osechi-prod-actions>.osechi-btn-row{margin-top:0}',
     '.osechi-prod-intro{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 6px}',
     '.osechi-prod-intro>p{flex:1 1 300px;margin:0}',
@@ -1508,6 +1581,8 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     '.osechi-ltable td{border:0;border-bottom:1px dashed #eee3d3;display:grid;grid-template-columns:7.5em minmax(0,1fr);gap:6px;padding:4px 2px}',
     '.osechi-ltable td::before{content:attr(data-label);font-weight:800;color:#6e1521;font-size:13px}',
     '.osechi-ltable td.osechi-ln{text-align:left!important}',
+    // 直した行の印は値の列に置く（見出しの狭い列に入ると、印の枠から字があふれる）
+    '.osechi-ltable td .osechi-lpend{grid-column:2;justify-self:start;margin-left:0;white-space:normal}',
     '.osechi-lcont td{display:block;border-radius:10px;margin:4px 0}',
     '.osechi-lcont td::before{content:none}',
     '}',
@@ -1536,7 +1611,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     'col.osechi-cn{width:8mm}col.osechi-cz{width:16mm}col.osechi-ct{width:24mm}col.osechi-cm{width:27mm}col.osechi-cq{width:10mm}',
     '.osechi-pn,.osechi-pq{text-align:center}',
     '.osechi-ptable td.osechi-pq{font-weight:700}',
-    // 受注状況一覧表（A4 横・1日＝1ページ・xlsx に近い見た目）。行の高さ・時台の列の幅は、いちばん商品の多い日が1枚に収まるように JS が段を選ぶ
+    // 店内受注品一覧（A4 横・1日＝1ページ・xlsx に近い見た目）。行の高さ・時台の列の幅は、いちばん商品の多い日が1枚に収まるように JS が段を選ぶ
     '.osechi-prodp{-webkit-print-color-adjust:exact;print-color-adjust:exact}',
     '.osechi-prodp-page{break-after:page;page-break-after:always}',
     '.osechi-prodp-page:last-child{break-after:auto;page-break-after:auto}',
@@ -1578,7 +1653,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   }
 
   // ===== 公開 =====
-  var publicApi = Object.freeze({ build: BUILD, render: render, dispose: dispose });
+  var publicApi = Object.freeze({ build: BUILD, render: render, dispose: dispose, forget: forget });
   if (typeof document !== 'undefined' && root && !root.OsechiListModule) {
     try { Object.defineProperty(root, 'OsechiListModule', { value: publicApi, writable: false, configurable: false, enumerable: true }); }
     catch (e) { /* 定義できない環境では出さない */ }
@@ -1588,9 +1663,9 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       OsechiListModule: publicApi,
       _test: {
         BUILD: BUILD, PRINT_ROWS: PRINT_ROWS, REPORT_RULES: REPORT_RULES, searchText: searchText, searchDigits: searchDigits, rowMatches: rowMatches, parseQuery: parseQuery, SN: SN,
-        cleanRow: cleanRow, mergeBlocks: mergeBlocks, loadedRows: loadedRows, filterBlocks: filterBlocks, base64ToBytes: base64ToBytes, isZipBytes: isZipBytes,
+        cleanRow: cleanRow, cleanList: cleanList, buildData: buildData, patchData: patchData, hhmm: hhmm, loadedRows: loadedRows, filterBlocks: filterBlocks, base64ToBytes: base64ToBytes, isZipBytes: isZipBytes,
         mdDow: mdDow, printPages: printPages, summaryTable: summaryTable, sandwichRows: sandwichRows, deadlineView: deadlineView,
-        cleanText: cleanText, CTRL_RE: CTRL_RE, PAGE_ROWS_MAX: PAGE_ROWS_MAX, TOTAL_ROWS_MAX: TOTAL_ROWS_MAX, SEARCH_MAX: SEARCH_MAX, searchLimit: searchLimit, readAllPages: readAllPages,
+        cleanText: cleanText, CTRL_RE: CTRL_RE, TOTAL_ROWS_MAX: TOTAL_ROWS_MAX, SEARCH_MAX: SEARCH_MAX, searchLimit: searchLimit, MEM_MAX: MEM_MAX, MEM_TTL_MS: MEM_TTL_MS,
         TABS: TABS, NONE_MARK: NONE_MARK, RECEPTIONIST_NONE: RECEPTIONIST_NONE, PROD_MAX: PROD_MAX, DOWNLOADS: DOWNLOADS,
         cleanProduction: cleanProduction, defaultProdDay: defaultProdDay, prodGroupTitle: prodGroupTitle, prodDaySub: prodDaySub, prodPrintLayout: prodPrintLayout,
         DEPT_CLASS: DEPT_CLASS, groupClass: groupClass,
