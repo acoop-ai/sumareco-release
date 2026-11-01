@@ -23,11 +23,18 @@
  *   （日・列・担当の組は返事のまま＝画面で決め打ちしない）。個人情報は無い。印刷は A4 横・1日＝1ページ・logPrint {method:'production'}。
  *   Excel は exportProduction（取り出しの上限に数える＝自動で送り直さない）。
  * 本部だけ: 店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」（2026-10-31）＝窓口 exportAllOrders（店を送らない・店の区分にはボタンを作らない）。
+ * 切り替えの名前（2026-11-01 PO・スマレコ v88.11）: 報告書の Excel のシートの名前と同じ（Report_Xlsx.gs の rptNewSheet_）＝PC でもスマホでも
+ *   申込書ごと｜おせち集計｜店渡｜宅配｜サンドイッチ・冷製オードブル｜店内受注品一覧。サンド（27番）は集計の下から、自分の切り替えへ。
+ * PC の形（2026-11-01 PO「PC で開いたときはスマホの形ではなく、横長の PC 画面に合わせて」・幅 1024px 以上で自動・切り替えの釦は作らない）:
+ *   上の操作（店・次の締め日・報告のしかた・Excel/CSV/印刷・探す）を1〜2段に、その下に切り替えの1段。表は残りの高さを全部使い、
+ *   表の枠（list-body）の中だけで縦と横に動く（列の見出しは枠の上に残る）。店渡・宅配は Excel のページの形（見出し「N. 名称 価格」・15行で1ページ・続き）を
+ *   横に2〜3枚並べる（注文の無い商品は名前だけを小さく）。おせち集計は店渡しと宅配を左右に並べ、合計の行を枠の下に残す。
+ *   幅 1023px 以下は、今までのスマホの形のまま（切り替えの名前だけ変わる）。並べ直すのは同じ要素（入力・押した結果はそのまま）。
  */
 (function (root) {
   'use strict';
 
-  var BUILD = 'osechi-ui-2026-11-01a';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
+  var BUILD = 'osechi-ui-2026-11-01b';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
   var STYLE_ID = 'osechi-list-style';
   var PRINT_ID = 'osechi-print';
   var PRINT_ROWS = 15;                   // ひな形の1ページの行数（15行を超えたら「（続き）」）
@@ -39,7 +46,11 @@
   var DOW = ['日', '月', '火', '水', '木', '金', '土'];
   // 切り替え（順はそのまま画面の並び）。店内受注品一覧は惣菜・鮮魚の担当主任が見る＝お客様の情報の3つの後ろに置く
   // 「申込書ごと」はいちばん前（PO 2026-11-01: 開くとここ）。1行＝1件の注文（日付の商品だけの注文も）・直す／取り消す
-  var TABS = [['orders', '申込書ごと'], ['store', '店渡し'], ['delivery', '宅配'], ['summary', '集計'], ['production', '店内受注品一覧']];
+  // 名前は報告書の Excel のシートの名前と同じ（2026-11-01 PO・PC とスマホで同じ並び）。id は前のまま（試験・入口の印）・サンドは新しい切り替え
+  var TABS = [['orders', '申込書ごと'], ['summary', 'おせち集計'], ['store', '店渡'], ['delivery', '宅配'], ['sandwich', 'サンドイッチ・冷製オードブル'], ['production', '店内受注品一覧']];
+  var PC_MIN_WIDTH = 1024;   // これ以上の幅は PC の形（自動・切り替えの釦は作らない）。これ未満は今までのスマホの形
+  var PAGE_GAP = 12;         // PC の店渡・宅配のページの間（CSS の .osechi-lpages の gap と同じ）
+  var PAGE_PAD = 16;         // PC の表の枠の左右の余白の和（CSS の .osechi-lpc>[data-step="list-body"] の padding と同じ）
   var BULK_MAX = 50;   // 本部がまとめて取り消せる件数（1回の操作で。窓口も同じ数で断る）
   var NONE_MARK = '受注なし';            // 注文の無い商品・日は空白にせず、これを出す（PO 2026-10-29）
   var RECEPTIONIST_NONE = '記載なし';     // 受付係員が空（窓口と同じ言葉）
@@ -415,6 +426,40 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     });
     return pages;
   }
+  // ---- PC の形（2026-11-01 PO・幅 1024px 以上）: 部品（DOM を使わない＝Node で試験できる） ----
+  /** その幅は PC の形か（1024px 以上） */
+  function isPcWidth(w) { return Number(w) >= PC_MIN_WIDTH; }
+  /**
+   * 1つの商品の行 → 画面のページ（Excel と印刷と同じく 15 行で1ページ・2ページめから「（続き）」）。
+   *   探しているときはページに切らない（当たった行だけを1枚に・番号は元の番号のまま）
+   */
+  function pagesOf(rows, searching, per) {
+    per = per || PRINT_ROWS;
+    rows = Array.isArray(rows) ? rows : [];
+    if (searching) return [{ index: 0, count: 1, rows: rows, cont: false }];
+    var out = [], count = Math.max(1, Math.ceil(rows.length / per));
+    for (var i = 0; i < rows.length; i += per) out.push({ index: i / per, count: count, rows: rows.slice(i, i + per), cont: i > 0 });
+    return out;
+  }
+  /**
+   * PC の店渡・宅配のページを横に何枚並べるか・1枚の幅で郵便番号の列まで入るか（cw＝表の枠の中の幅 px）。
+   *   1280px の画面＝2枚（1枚 約600px）・1600px 以上＝3枚・2200px 以上＝4枚。1枚が 560px より狭いときは郵便番号の列を省く（住所の幅を残す）
+   */
+  //   1枚の幅の下限: 店渡 460px・宅配 560px（宅配はお届け先とご依頼主の2組）。郵便番号の列まで入る幅: 店渡 560px・宅配 700px
+  var PAGE_MIN = { store: 460, delivery: 560 }, PAGE_WIDE = { store: 560, delivery: 700 };
+  function pageFit(cw, method) {
+    var w = Math.max(0, Number(cw) || 0), m = method === 'delivery' ? 'delivery' : 'store', n = 4;
+    while (n > 1 && (w - (n - 1) * PAGE_GAP) / n < PAGE_MIN[m]) n--;
+    var each = (w - (n - 1) * PAGE_GAP) / n;
+    return { n: n, wide: each >= PAGE_WIDE[m], each: Math.round(each) };
+  }
+  /** 切り替えの名前の、折り返してよい所（「・」の後ろだけ。言葉の途中で折らない） */
+  function tabLabelParts(label) {
+    var s = str(label), out = [], from = 0, i;
+    for (i = 0; i < s.length; i++) if (s.charAt(i) === '・' && i < s.length - 1) { out.push(s.slice(from, i + 1)); from = i + 1; }
+    out.push(s.slice(from));
+    return out;
+  }
   /**
    * 集計（getSummary の summary）→ 表の形。method: 'store'｜'delivery'。
    *   rows（締め日の行）: 今日より先の行は空欄（null）・0 は空欄。
@@ -455,14 +500,20 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var si = -1;
     stores.forEach(function (st, i) { if (si < 0 && st && st.name === sw.onlyStore) si = i; });
     var dates = Array.isArray(sw.dates) ? sw.dates : [];
+    // 元日（1/1）に店が営業しない設定なら、Excel と同じく斜線のセル（数は窓口が表に入れていない＝0 のまま）
+    var closedNewYear = si >= 0 && stores[si] && stores[si].newYearOpen === false;
     var rows = dates.map(function (d, i) {
       var g = Array.isArray(sw.grid) && Array.isArray(sw.grid[i]) ? sw.grid[i] : [];
       var v = si >= 0 ? toInt(g[si]) : NaN;
-      return { date: str(d), qty: v > 0 ? v : '' };
+      return { date: str(d), qty: v > 0 ? v : '', slash: closedNewYear && str(d) === '1/1' };
     });
     var total = si >= 0 && Array.isArray(sw.storeTotals) ? toInt(sw.storeTotals[si]) : NaN;
-    return { label: si >= 0 ? str(stores[si].label || stores[si].name) : '', rows: rows, total: total > 0 ? total : (rows.length ? 0 : ''),
-      notOpenNewYear: Array.isArray(sw.notOpenNewYear) ? sw.notOpenNewYear.length : 0 };
+    var unknown = Array.isArray(sw.unknownDates) ? sw.unknownDates : [];
+    var notOpen = Array.isArray(sw.notOpenNewYear) ? sw.notOpenNewYear : [];
+    return { label: si >= 0 ? str(stores[si].label || stores[si].name) : '', code: si >= 0 ? cleanText(stores[si].code, 12) : '', rows: rows, total: total > 0 ? total : (rows.length ? 0 : ''),
+      notOpenNewYear: notOpen.length, notOpenQty: notOpen.reduce(function (a, e) { return a + (toInt(e && e.qty) > 0 ? toInt(e.qty) : 0); }, 0),
+      unknownCount: unknown.length, unknownQty: unknown.reduce(function (a, u) { return a + (toInt(u && u.qty) > 0 ? toInt(u.qty) : 0); }, 0),
+      itemNo: toInt(sw.itemNo) >= 1 ? toInt(sw.itemNo) : 27 };
   }
   /** 締め日の帯（getSummary の deadline）→ { main, sub, today } */
   function deadlineView(dl) {
@@ -777,21 +828,32 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     injectStyle();
     var me = host.me || {};
     L = { host: host, h: host.h, seq: 1, store: me.role === 'hq' ? '' : str(me.store), tab: 'orders', query: '', data: null, dl: false, els: {}, prodDay: '', sel: {},
-      refreshing: false, refreshError: '', wantGen: 0, patches: [], open: {} };
-    buildFrame();
-    renderChangesBand();   // 本部だけ: 前に受け取った件数（はじめの画面の設定・前の一覧）で、すぐ帯を出す
+      refreshing: false, refreshError: '', wantGen: 0, patches: [], open: {}, pc: false, fitKey: '' };
     L.wrapEl = host.wrap;
     L.wrapEl.classList.add('osechi-lwide');   // PC では横幅を使う（ほかの画面に戻すと外す）
-    // 店内受注品一覧の表が横に入りきらない幅では、カードの形にする（窓の幅が変わったら測り直す）
-    L.onResize = function () { if (L && L.resizeTimer) clearTimeout(L.resizeTimer); if (L) L.resizeTimer = setTimeout(function () { fitProdTable(); }, 120); };
+    buildFrame();
+    renderChangesBand();   // 本部だけ: 前に受け取った件数（はじめの画面の設定・前の一覧）で、すぐ帯を出す
+    // 窓の幅が変わったら: PC とスマホの境（1024px）をまたいだら並べ直して描き直す。PC の店渡・宅配は横に並べる枚数が変わったら描き直す。
+    //   店内受注品一覧の表が横に入りきらない幅では、カードの形にする（測り直す）
+    L.onResize = function () {
+      if (L && L.resizeTimer) clearTimeout(L.resizeTimer);
+      if (L) L.resizeTimer = setTimeout(function () {
+        if (!L) return;
+        if (isPcWidth(root.innerWidth) !== L.pc) { applyMode(); refreshChrome(); renderDeadline(); renderContent(); return; }
+        if (L.pc && (L.tab === 'store' || L.tab === 'delivery') && L.data && fitKeyNow() !== L.fitKey) keepScroll(renderContent, false);
+        fitProdTable();
+      }, 120);
+    };
     root.addEventListener('resize', L.onResize);
     if (L.store) openStore();
     else renderContent();
   }
   function dispose() {
     removePrint();
+    if (L && L.moreIo) { L.moreIo.disconnect(); L.moreIo = null; }
     if (L && L.onResize) { root.removeEventListener('resize', L.onResize); if (L.resizeTimer) clearTimeout(L.resizeTimer); }
-    if (L && L.wrapEl) L.wrapEl.classList.remove('osechi-lwide');
+    if (L && L.wrapEl) { L.wrapEl.classList.remove('osechi-lwide'); L.wrapEl.classList.remove('osechi-lpc-wrap'); }
+    if (L && L.host && L.host.body) L.host.body.classList.remove('osechi-lpc-body');
     if (L && L.els.root && L.els.root.parentNode) L.els.root.parentNode.removeChild(L.els.root);
     L = null;
   }
@@ -812,33 +874,43 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       sel.addEventListener('change', function () { onStoreChange(sel.value); });
       E.storeSel = sel;
       E.storeCount = h('span', { 'class': 'osechi-small', 'data-step': 'list-store-count', 'aria-live': 'polite' });
-      E.storeRow.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-l-store', text: 'どの店を見ますか（申込書ごと・店渡し・宅配・集計・店内受注品一覧。毎回選びます）' }));
+      E.storeRow.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-l-store', text: 'どの店を見ますか（申込書ごと・おせち集計・店渡・宅配・サンドイッチ・冷製オードブル・店内受注品一覧。毎回選びます）' }));
       E.storeRow.appendChild(sel);
       E.storeRow.appendChild(E.storeCount);
       // 全店の注文（本部だけ・PO 2026-10-31）: 店を選ぶ前でも押せる。店の区分にはボタンを作らない（窓口も断る）
-      E.btnAll = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-all-xlsx', text: '全店の注文（Excel）をダウンロード' });
+      E.btnAll = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-all-xlsx',
+        title: '店を選ばなくても、全店の注文（取消を除く・1行が1件の注文）を1つの Excel にできます。', text: '全店の注文（Excel）をダウンロード' });
       E.btnAll.addEventListener('click', function () { download('all'); });
       E.storeRow.appendChild(h('div', { 'class': 'osechi-lall', 'data-step': 'list-all' }, [E.btnAll,
         h('div', { 'class': 'osechi-small', text: '店を選ばなくても、全店の注文（取消を除く・1行が1件の注文）を1つの Excel にできます。' })]));
     } else {
-      E.storeRow.appendChild(h('div', { 'class': 'osechi-fixed', 'data-field': 'list-store' }, [h('span', { text: '店: ' + L.store }), h('small', { text: '自店だけ（変更できません）' })]));
+      E.storeRow.appendChild(h('div', { 'class': 'osechi-fixed', 'data-field': 'list-store', title: '自店だけ（変更できません）' }, [h('span', { text: '店: ' + L.store }), h('small', { text: '自店だけ（変更できません）' })]));
       E.storeCount = h('span', { 'class': 'osechi-small', 'data-step': 'list-store-count', 'aria-live': 'polite' });
       E.storeRow.appendChild(E.storeCount);
     }
     E.deadline = h('div', { 'data-step': 'deadline', 'aria-live': 'polite' });
+    E.rulesSummary = h('summary', { text: '報告のしかた（送り先・宅配・最終確認）' });
     E.rules = h('details', { 'class': 'osechi-small osechi-lrules', 'data-step': 'list-rules' }, [   // 決まりは毎回は読まない＝畳む（一覧を上に）
-      h('summary', { text: '報告のしかた（送り先・宅配・最終確認）' }), h('p', { text: REPORT_RULES })
+      E.rulesSummary, h('p', { text: REPORT_RULES })
     ]);
+    // PC では「報告のしかた」は上の段の小さな窓（表を押し下げない）。Esc で閉じる
+    E.rules.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && E.rules.open) { E.rules.open = false; try { E.rulesSummary.focus(); } catch (e) { /* 何もしない */ } } });
     E.note = h('div', { 'data-step': 'list-note', 'aria-live': 'polite' });
+    // 切り替え（報告書の Excel のシートの名前・PC とスマホで同じ並び）。キーボード: ← → で隣・Home／End で端（押したのと同じに切り替わる）。
+    //   選んでいる切り替えだけを Tab で止まる場所にする（ほかは矢印で）。中身は list-body（tabpanel）
     E.tabs = h('div', { 'class': 'osechi-ltabs', role: 'tablist', 'aria-label': '受注状況の切り替え', 'data-step': 'list-tabs' });
     TABS.forEach(function (t) {
-      var b = h('button', { type: 'button', role: 'tab', 'class': 'osechi-btn osechi-btn-secondary', 'data-tab': t[0], 'aria-selected': 'false', text: t[1] });
+      var parts = tabLabelParts(t[1]), label = [];
+      parts.forEach(function (p, i) { if (i) label.push(h('wbr')); label.push(p); });   // 「・」の後ろだけで折り返す（スマホの2段の切り替え）
+      var b = h('button', { type: 'button', role: 'tab', id: 'osechi-l-tab-' + t[0], 'aria-controls': 'osechi-l-panel', tabindex: '-1',
+        'class': 'osechi-btn osechi-btn-secondary' + (parts.length > 1 ? ' osechi-ltab-2l' : ''), 'data-tab': t[0], 'aria-selected': 'false' }, label);
       b.addEventListener('click', function () { onTab(t[0]); });
       E.tabs.appendChild(b);
     });
-    E.btnXlsx = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-gold', 'data-act': 'list-xlsx', text: '報告用ファイル（Excel）をダウンロード' });
+    E.tabs.addEventListener('keydown', onTabKey);
+    E.btnXlsx = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-gold', 'data-act': 'list-xlsx', title: '報告用ファイル（Excel）をダウンロード', text: '報告用ファイル（Excel）をダウンロード' });
     E.btnXlsx.addEventListener('click', function () { download('xlsx'); });
-    E.btnCsv = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-csv', text: 'CSV をダウンロード' });
+    E.btnCsv = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-csv', title: 'お客様リストの CSV をダウンロード', text: 'CSV をダウンロード' });
     E.btnCsv.addEventListener('click', function () { download('csv'); });
     E.btnPrint = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-print', text: '印刷' });
     E.btnPrint.addEventListener('click', onPrint);
@@ -851,16 +923,59 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     E.btnProdPrint.addEventListener('click', onProdPrint);
     E.prodActions = h('div', { 'class': 'osechi-lactions osechi-prod-actions osechi-hidden', 'data-step': 'prod-actions' }, h('div', { 'class': 'osechi-btn-row' }, [E.btnProdXlsx, E.btnProdPrint]));
     E.search = h('input', { type: 'search', 'class': 'osechi-input', 'data-field': 'list-search', maxlength: String(SEARCH_MAX), placeholder: '氏名・電話・受付番号で探す', 'aria-label': 'お客様を探す（氏名・電話・受付番号）', autocomplete: 'off', spellcheck: 'false', enterkeyhint: 'search' });
-    E.search.addEventListener('input', function () { L.query = searchLimit(E.search.value); renderContent(); });   // 貼り付けなどで長くても100字で切る
+    E.search.addEventListener('input', function () { L.query = searchLimit(E.search.value); L.orderLimit = 0; L.pageLimit = 0; renderContent(); });   // 貼り付けなどで長くても100字で切る
     E.searchBox = h('div', { 'class': 'osechi-lsearch' }, [E.search]);
     // 読み直しの印（2026-10-31）: 一覧のすぐ上。読み直している間も一覧はそのまま使える（押せる・探せる・切り替えられる）
     E.fresh = h('div', { 'class': 'osechi-lfresh', 'data-step': 'list-fresh', role: 'status', 'aria-live': 'polite' });
     E.count = h('div', { 'class': 'osechi-small', 'data-step': 'list-count', 'aria-live': 'polite' });
-    E.content = h('div', { 'data-step': 'list-body' });
+    E.content = h('div', { 'data-step': 'list-body', id: 'osechi-l-panel', role: 'tabpanel', 'aria-labelledby': 'osechi-l-tab-' + L.tab });
     E.changes = h('div', { 'data-step': 'list-changes', 'aria-live': 'polite' });   // 本部だけ: 確定後の変更の帯（2026-11-01）
-    E.root = h('div', { 'class': 'osechi-list', 'data-step': 'list' }, [E.changes, E.storeRow, E.deadline, E.rules, E.note, E.tabs, E.actions, E.prodActions, E.searchBox, E.fresh, E.count, E.content]);
+    // PC の上の2段（applyMode が中身を入れる。スマホの形では使わない＝今までの並びのまま）
+    E.bar1 = h('div', { 'class': 'osechi-lbar osechi-lbar1', 'data-step': 'list-bar1' });
+    E.bar2 = h('div', { 'class': 'osechi-lbar osechi-lbar2', 'data-step': 'list-bar2' });
+    E.root = h('div', { 'class': 'osechi-list', 'data-step': 'list' });
+    applyMode();
     w.appendChild(E.root);
     refreshChrome();
+  }
+  /** スマホの形の並び（v88.10 までと同じ・試験が照合する） */
+  var PHONE_ORDER = ['changes', 'storeRow', 'deadline', 'rules', 'note', 'tabs', 'actions', 'prodActions', 'searchBox', 'fresh', 'count', 'content'];
+  /**
+   * 幅に合わせて並べる（同じ要素を並べ直すだけ＝入力中の字・押した結果・開け閉めはそのまま）。
+   *   PC（1024px 以上）: 確定後の変更の帯 → 上の段（店・次の締め日・報告のしかた・Excel/CSV/印刷・探す）→ 知らせ → 切り替えの段（切り替え・件数・読み直しの印）→ 表の枠
+   *   スマホ: 今までの並び（PHONE_ORDER）
+   */
+  function applyMode() {
+    var E = L.els, pc = isPcWidth(root.innerWidth);
+    L.pc = pc;
+    E.root.classList.toggle('osechi-lpc', pc);
+    if (L.wrapEl) L.wrapEl.classList.toggle('osechi-lpc-wrap', pc);
+    if (L.host.body) L.host.body.classList.toggle('osechi-lpc-body', pc);
+    if (pc) {
+      [E.storeRow, E.deadline, E.rules, E.actions, E.prodActions, E.searchBox].forEach(function (el) { E.bar1.appendChild(el); });
+      [E.tabs, E.count, E.fresh].forEach(function (el) { E.bar2.appendChild(el); });
+      [E.changes, E.bar1, E.note, E.bar2, E.content].forEach(function (el) { E.root.appendChild(el); });
+    } else {
+      PHONE_ORDER.forEach(function (k) { E.root.appendChild(E[k]); });
+      [E.bar1, E.bar2].forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
+    }
+    // PC では上の段を1段に収めるため、ボタンの字を短く（何をするかは title に。押したときの動きは同じ）
+    E.btnXlsx.textContent = pc ? '報告用ファイル（Excel）' : '報告用ファイル（Excel）をダウンロード';
+    E.btnCsv.textContent = pc ? 'CSV' : 'CSV をダウンロード';
+    E.rulesSummary.textContent = pc ? '報告のしかた' : '報告のしかた（送り先・宅配・最終確認）';
+    L.fitKey = '';
+  }
+  /** 切り替えのキーボード: ← → で隣・Home／End で端（押したのと同じ。店が決まるまでは動かない） */
+  function onTabKey(ev) {
+    var dir = { ArrowRight: 1, ArrowLeft: -1, Home: 'first', End: 'last' }[ev.key];
+    if (!dir || !L || !L.store) return;
+    var btns = Array.prototype.slice.call(L.els.tabs.querySelectorAll('[data-tab]'));
+    var i = btns.indexOf(root.document.activeElement);
+    if (i < 0) i = btns.map(function (b) { return b.getAttribute('data-tab'); }).indexOf(L.tab);
+    var j = dir === 'first' ? 0 : (dir === 'last' ? btns.length - 1 : (i + dir + btns.length) % btns.length);
+    ev.preventDefault();
+    onTab(btns[j].getAttribute('data-tab'));
+    try { btns[j].focus(); } catch (e) { /* 何もしない */ }
   }
   /** 店・切り替え・ボタンの状態（店が決まるまで押せない・はじめの読み込みが終わるまで印刷とダウンロードは押せない。読み直しの間は押せる） */
   function refreshChrome() {
@@ -868,9 +983,11 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     Array.prototype.forEach.call(E.tabs.querySelectorAll('[data-tab]'), function (b) {
       var on = b.getAttribute('data-tab') === L.tab;
       b.setAttribute('aria-selected', on ? 'true' : 'false');
+      b.setAttribute('tabindex', on ? '0' : '-1');   // Tab で止まるのは選んでいる切り替えだけ（ほかは ← →）
       b.classList.toggle('osechi-on', on);
       b.disabled = !has;
     });
+    E.content.setAttribute('aria-labelledby', 'osechi-l-tab-' + L.tab);
     var prod = L.tab === 'production', pm = ready ? L.data.production : null;
     [E.btnXlsx, E.btnCsv, E.btnPrint].forEach(function (b) { b.disabled = !has || L.dl || !ready; });
     if (E.btnAll) E.btnAll.disabled = L.dl;   // 全店の注文は店を選ばなくても押せる
@@ -880,15 +997,18 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     E.prodActions.classList.toggle('osechi-hidden', !prod);
     // 締め日の帯・報告のしかた・申込書の枚数は、報告（お客様リスト）のためのもの＝店内受注品一覧では畳んで、表を最初の画面に入れる
     [E.deadline, E.rules, E.storeCount].forEach(function (el) { el.classList.toggle('osechi-hidden', prod); });
-    E.searchBox.classList.toggle('osechi-hidden', !has || L.tab === 'summary' || prod);   // 店内受注品一覧は商品が1日に十数行・お客様の名前なし＝探す場面が無い
+    // 集計・サンド・店内受注品一覧は数の表（お客様の名前なし）＝探す場面が無い
+    E.searchBox.classList.toggle('osechi-hidden', !has || L.tab === 'summary' || L.tab === 'sandwich' || prod);
     // おせち（1〜19）の申込書の枚数（報告の数）。申込書ごとのタブの件数は、日付の商品だけの注文も数える（2026-11-01: 同じ画面で数が食い違って見えないよう、言葉を分ける）
-    E.storeCount.textContent = ready ? 'おせちの申込書 ' + L.data.orderCount + ' 枚（取消を除く）' : '';
+    E.storeCount.textContent = ready ? 'おせちの申込書 ' + L.data.orderCount + ' 枚' + (L.pc ? '' : '（取消を除く）') : '';   // PC は上の段を1段に（「取消を除く」は title）
+    E.storeCount.setAttribute('title', 'おせち（1〜19）の申込書の枚数・取消を除く（報告の数）');
     renderFresh();
   }
   /** 読み直しの印: 読み直している間は動く印と「読み込み直しています…」（いつの内容かも）。失敗したら、いつの内容かと「もう一度」 */
   function renderFresh() {
     var E = L.els, h = L.h;
     L.host.clear(E.fresh);
+    E.fresh.classList.toggle('osechi-lfresh-ov', !!L.refreshing);   // PC: 読み直しの間は表の枠の右上に重ねる（表を押し下げない）
     if (!L.data) return;
     var when = hhmm(L.data.asOf);
     if (L.refreshing) {
@@ -912,6 +1032,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     L.prodDay = '';
     L.query = '';
     L.open = {};
+    L.orderLimit = 0; L.pageLimit = 0;
     L.els.search.value = '';
     setNote('');
     renderDeadline();
@@ -920,9 +1041,13 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   }
   function onTab(t) {
     if (!L || !L.store || L.host.isBusy()) return;
-    L.tab = t;   // 5つとも、受け取った中身から描く（窓口へ取りに行かない）
+    var changed = L.tab !== t;
+    L.tab = t;   // 6つとも、受け取った中身から描く（窓口へ取りに行かない）
+    if (changed) { L.orderLimit = 0; L.pageLimit = 0; }
     refreshChrome();
     renderContent();
+    // PC: 表の枠の中で動く＝別の切り替えは上から（集計は、いまの締め日の行が見える所まで）
+    if (L.pc && changed) { L.els.content.scrollTop = 0; L.els.content.scrollLeft = 0; if (t === 'summary') revealSummaryRow(); }
   }
   function setNote(text) {
     var E = L.els;
@@ -991,9 +1116,14 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   }
   /** 描き直しても、見ている場所を動かさない（はじめの読み込みのときは上から） */
   function keepScroll(fn, first) {
-    var b = L.host.body, keep = b ? b.scrollTop : 0;
+    var b = L.host.body, keep = b ? b.scrollTop : 0, c = L.els.content, ct = c ? c.scrollTop : 0, cl = c ? c.scrollLeft : 0;
     fn();
+    if (!L) return;
     if (b && !first) b.scrollTop = keep;
+    if (L.pc && c) {   // PC は表の枠の中で動く＝枠の位置も保つ（はじめの読み込みは上から・集計はいまの締め日の行まで）
+      if (!first) { c.scrollTop = ct; c.scrollLeft = cl; }
+      else { c.scrollTop = 0; c.scrollLeft = 0; if (L.tab === 'summary') revealSummaryRow(); }
+    }
   }
   /** ログインの確認ができない・使えないアカウント → osechi.js の案内（静かな再交換はしない）。扱ったら true */
   function handleAuth(e) {
@@ -1007,9 +1137,11 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     L.host.clear(E.deadline);
     var v = (L.data && L.data.summary) ? deadlineView(L.data.summary.deadline) : null;
     if (!v) return;
-    E.deadline.appendChild(h('div', { 'class': 'osechi-ldead' + (v.today ? ' osechi-ldead-today' : ''), 'data-kind': v.today ? 'report-day' : 'deadline' }, [
+    // PC は上の段を短く（することは、すぐ右の「報告用ファイル（Excel）」・全文は title）
+    var sub = L.pc ? v.sub.replace(/。報告書をダウンロードして送ってください。$/, '') : v.sub;
+    E.deadline.appendChild(h('div', { 'class': 'osechi-ldead' + (v.today ? ' osechi-ldead-today' : ''), 'data-kind': v.today ? 'report-day' : 'deadline', title: v.sub ? v.main + '。' + v.sub : null }, [
       h('div', { 'class': 'osechi-ldead-main', text: v.main }),
-      v.sub ? h('div', { 'class': 'osechi-ldead-sub', text: v.sub }) : null
+      sub ? h('div', { 'class': 'osechi-ldead-sub', text: sub }) : null
     ]));
   }
 
@@ -1017,10 +1149,11 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   function renderContent() {
     if (!L) return;
     var E = L.els, h = L.h, host = L.host;
+    if (L.moreIo) { L.moreIo.disconnect(); L.moreIo = null; }
     host.clear(E.content);
     E.count.textContent = '';
     if (!L.store) {
-      E.content.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'list-choose-store', text: '店を選ぶと、その店の店渡し・宅配・集計・店内受注品一覧が出ます。' }));
+      E.content.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'list-choose-store', text: '店を選ぶと、その店の申込書ごと・おせち集計・店渡・宅配・サンドイッチ・冷製オードブル・店内受注品一覧が出ます。' }));
       return;
     }
     if (!L.data) {
@@ -1030,7 +1163,9 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     }
     if (L.tab === 'orders') return renderOrders();
     if (L.tab === 'summary') return renderSummary();
+    if (L.tab === 'sandwich') return renderSandwich();
     if (L.tab === 'production') return renderProduction();
+    if (L.pc) return renderPages();   // PC: Excel のページの形を横に並べる
     var d = L.data.lists[L.tab];
     var view = filterBlocks(d.blocks, L.query), loaded = loadedRows(d.blocks);
     var hits = view.reduce(function (s, x) { return s + x.rows.length; }, 0);
@@ -1126,6 +1261,142 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     return h('div', { 'class': 'osechi-lscroll' }, h('table', { 'class': 'osechi-ltable' + (delivery ? ' osechi-ltable-d' : '') }, [
       h('thead', null, h('tr', null, heads)), h('tbody', null, body)
     ]));
+  }
+  // ---- PC の店渡・宅配（2026-11-01 PO「提出物のシート別のページは、一目で全体が見られる」）----
+  //   商品ごとに Excel のページの形（見出し「N. 名称 価格」・★店渡し／☆宅配・お渡し日・番号つきの表・15行で1ページ・続きのページ）を、横に2〜3枚並べる。
+  //   列は Excel のその欄（店渡＝ご依頼主の 郵便番号・電話番号・住所・氏名／宅配＝お届け先の4欄とご依頼主の氏名）と、画面だけの数量。
+  //   受付番号・受付の日時・受付係員・残りの欄は、行に指を置くと出る札（title）と「直す」の画面に。行を押すと今までどおり「注文を直す」。
+  //   注文の無い商品は、名前と「受注なし」だけを小さく並べる（空のページを描かない）
+  /** いまの表の枠の幅で、横に何枚・郵便番号の列まで入るか（窓の幅が変わったら、変わったときだけ描き直す） */
+  function fitNow() { return pageFit((L.els.content.clientWidth || 0) - PAGE_PAD, L.tab); }
+  function fitKeyNow() { var f = fitNow(); return f.n + ':' + (f.wide ? 1 : 0); }
+  function renderPages() {
+    var E = L.els, h = L.h, method = L.tab, d = L.data.lists[method];
+    var searching = !!searchText(L.query);
+    var view = filterBlocks(d.blocks, L.query), loaded = loadedRows(d.blocks);
+    var hits = view.reduce(function (s, x) { return s + x.rows.length; }, 0);
+    E.count.textContent = searching
+      ? '見つかった ' + hits + ' 行（' + loaded + ' 行の中から）'
+      : METHOD_LABEL[method] + ' ' + loaded + ' 行・行を押すと、その注文を直せます（取り消しも）';
+    var fit = fitNow();
+    L.fitKey = fit.n + ':' + (fit.wide ? 1 : 0);
+    var full = view.filter(function (x) { return searching || x.block.lines > 0; });
+    var empty = searching ? [] : view.filter(function (x) { return !x.block.lines; });
+    // 上限の知らせは表の上に（すぐ見える）。注文の無い商品は、ページを全部出したあとに（続きのページが下に足されて、押し下げられないように）
+    if (d.truncated || L.data.truncated) E.content.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'list-limit', text: '表示の上限（' + TOTAL_ROWS_MAX + ' 行）に達しました。すべての行は「報告用ファイル（Excel）」で見てください。' }));
+    var tail = function () { if (empty.length) E.content.appendChild(emptyStrip(empty, method)); };
+    if (!full.length) { E.content.appendChild(h('div', { 'class': 'osechi-info', text: searching ? '当たる行がありません。' : 'まだ注文はありません。' })); tail(); return; }
+    // 大きな店（数十ページ）でも切り替えてすぐ使えるように、はじめは横の枚数 × PAGE_ROWS_FIRST 段のページだけ描き、枠の下に近づいたら続きを足す（申込書ごとと同じ）
+    var specs = [];
+    full.forEach(function (x) { pagesOf(x.rows, searching).forEach(function (pg) { specs.push([x.block, pg]); }); });
+    var limit = Math.min(specs.length, Math.max(fit.n * PAGE_ROWS_FIRST, L.pageLimit || 0));
+    L.pageLimit = limit;
+    var grid = h('div', { 'class': 'osechi-lpages osechi-lpages-n' + fit.n, 'data-step': 'list-pages', 'data-kind': method });
+    specs.slice(0, limit).forEach(function (sp) { grid.appendChild(pageView(sp[0], sp[1], method, fit.wide, searching)); });
+    E.content.appendChild(grid);
+    if (limit >= specs.length) { tail(); return; }
+    var seq = L.seq, sentinel = h('div', { 'class': 'osechi-pmore', 'data-step': 'pages-more' });
+    var label = function () { sentinel.textContent = '続きの ' + (specs.length - L.pageLimit) + ' ページを出しています…（下へ動かすと出ます）'; };
+    label();
+    E.content.appendChild(sentinel);
+    var step = function () {
+      if (!alive(seq) || !sentinel.isConnected) return false;
+      var from = L.pageLimit, to = Math.min(specs.length, from + fit.n);   // 続きは1段ずつ（足すたびの止まりを短く）
+      specs.slice(from, to).forEach(function (sp) { grid.appendChild(pageView(sp[0], sp[1], method, fit.wide, searching)); });
+      L.pageLimit = to;
+      if (to >= specs.length) { sentinel.parentNode.removeChild(sentinel); tail(); return false; }
+      label();
+      return true;
+    };
+    watchMore(sentinel, step);
+  }
+  var PAGE_ROWS_FIRST = 3;   // はじめに描くページの段の数（横の枚数 × 3）。続きは1段（横の枚数）ずつ
+  /** 見張りの印が枠の下 800px まで近づいたら step() で続きを足す（足し終わったら見張りを外す）。見張れない端末は全部描く */
+  function watchMore(sentinel, step) {
+    if (typeof root.IntersectionObserver !== 'function') { while (step()) { /* 全部描く */ } return; }
+    var io = new root.IntersectionObserver(function (ents) {
+      if (!ents.some(function (e) { return e.isIntersecting; })) return;
+      if (!step()) { io.disconnect(); if (L && L.moreIo === io) L.moreIo = null; return; }
+      // 足したあとも見張りがまだ範囲の中なら、次の描画でもう1回（見張り直すと、いまの具合が1回届く＝範囲の中にいる間は1回に1段ずつ足し続ける）
+      io.unobserve(sentinel);
+      io.observe(sentinel);
+    }, { root: L.els.content, rootMargin: '0px 0px 800px 0px' });
+    io.observe(sentinel);
+    L.moreIo = io;
+  }
+  /** 列（Excel の欄の並び）。wide でなければ郵便番号を省く（1枚が狭い画面） */
+  function pageCols(method, wide) {
+    var cols = [['n', '番号', 'osechi-lpg-cn']];
+    var party = method === 'delivery' ? 'receiver' : 'requester';
+    if (wide) cols.push([party + '.zip', '郵便番号', 'osechi-lpg-cz']);
+    cols.push([party + '.tel', '電話番号', 'osechi-lpg-ct'], [party + '.address', '住所', 'osechi-lpg-ca'], [party + '.name', '氏名', 'osechi-lpg-cm']);
+    if (method === 'delivery') cols.push(['requester.name', '氏名', 'osechi-lpg-cm']);
+    cols.push(['qty', '数量（個）', 'osechi-lpg-cq'], ['receptionist', '受付係員', 'osechi-lpg-cr']);   // 画面だけの列（Excel・印刷には無い）
+    return cols;
+  }
+  function partyLine(p) { return [p.name, p.tel, p.zip ? '〒' + p.zip : '', p.address].filter(function (x) { return !!x; }).join('　'); }
+  /** 1ページ（Excel の1ページの形）。見出しは表の thead（表の枠の上に残る・読み上げも見出し） */
+  function pageView(b, pg, method, wide, searching) {
+    var h = L.h, delivery = method === 'delivery', cols = pageCols(method, wide), ncol = String(cols.length);
+    var dates = (L.host.idx && L.host.idx.byNo[b.no] && L.host.idx.byNo[b.no].dates.join('・')) || '12/31';
+    var countText = searching ? '当たった ' + pg.rows.length + ' 行' : (pg.count > 1 ? (pg.index + 1) + ' / ' + pg.count + ' ページ・' : '') + b.lines + ' 件';
+    var titleText = (b.title || ('商品 ' + b.no)) + (pg.cont ? '（続き）' : '');
+    var title = h('tr', { 'class': 'osechi-lpg-trow' }, h('th', { scope: 'colgroup', colspan: ncol }, [   // Excel の見出し: 1行め「N. 名称 価格」・2行め「★店渡し お渡し日」と件数
+      h('div', { 'class': 'osechi-lpg-title', title: titleText, text: titleText }),
+      h('div', { 'class': 'osechi-lpg-t' }, [
+        h('span', { 'class': 'osechi-lpg-mark', text: METHOD_MARK[method] + '　' + (delivery ? '宅配日 ' : 'お渡し日 ') + dates }),
+        h('span', { 'class': 'osechi-lpg-count', text: countText })
+      ])
+    ]));
+    // 2段の見出し（Excel と同じ: お届け先／ご依頼主 → 欄の名前）。番号・数量は2段ぶん
+    var g1 = [h('th', { scope: 'col', rowspan: '2', 'class': 'osechi-lpg-hn', text: '番号' })];
+    var nParty = cols.length - 3 - (delivery ? 1 : 0);
+    g1.push(h('th', { scope: 'colgroup', colspan: String(nParty), text: delivery ? 'お届け先' : 'ご依頼主' }));
+    if (delivery) g1.push(h('th', { scope: 'colgroup', text: 'ご依頼主' }));
+    g1.push(h('th', { scope: 'col', rowspan: '2', 'class': 'osechi-lpg-hq', text: '数量（個）' }), h('th', { scope: 'col', rowspan: '2', 'class': 'osechi-lpg-hq', text: '受付係員' }));
+    var g2 = cols.slice(1, cols.length - 2).map(function (c) { return h('th', { scope: 'col', text: c[1] }); });
+    var body = pg.rows.map(function (r) { return pageRow(r, cols, delivery); });
+    return h('section', { 'class': 'osechi-lpage', 'data-no': String(b.no), 'data-method': method, 'data-kind': pg.cont ? 'cont' : 'first', 'data-step': 'list-page' },
+      h('table', { 'class': 'osechi-lpg-table' }, [
+        h('colgroup', null, cols.map(function (c) { return h('col', { 'class': c[2] }); })),
+        h('thead', null, [title, h('tr', { 'class': 'osechi-lpg-grow' }, g1), h('tr', { 'class': 'osechi-lpg-frow' }, g2)]),
+        h('tbody', null, body)
+      ]));
+  }
+  function pageRow(r, cols, delivery) {
+    var h = L.h;
+    var cells = cols.map(function (c) {
+      if (c[0] === 'n') return h('td', { 'class': 'osechi-ln', text: String(r.n) });
+      if (c[0] === 'qty') return h('td', { 'class': 'osechi-lqty' + (r.qty >= 2 ? ' osechi-lqty2' : ''), text: String(r.qty) });
+      if (c[0] === 'receptionist') return h('td', { 'class': 'osechi-lrcp' + (r.receptionist === RECEPTIONIST_NONE ? ' osechi-lrcp-none' : ''), 'data-label': '受付係員', 'data-kind': 'receptionist', text: r.receptionist });
+      var k = c[0].split('.'), v = r[k[0]][k[1]];
+      var cls = k[1] === 'address' ? 'osechi-lpg-addr' : (k[1] === 'name' ? 'osechi-lpg-name' : 'osechi-lnw');
+      var td = h('td', { 'class': cls, text: v });
+      if (k[1] === 'address' && r.pending) td.appendChild(h('span', { 'class': 'osechi-lpend', 'data-kind': 'pending', text: '直しました（反映を待っています）' }));
+      return td;
+    });
+    // 指を置くと出る札: 画面の列に入らない項目（受付番号・受付の日時・受付係員・ご依頼主／お届け先の全部）
+    var tip = '受付 ' + r.receivedAt + '　' + r.orderId +
+      (delivery ? '\nお届け先 ' + partyLine(r.receiver) : '') + '\nご依頼主 ' + partyLine(r.requester) + '\n（押すと、この注文を直せます）';
+    var tr = h('tr', { 'class': 'osechi-lrow' + (r.pending ? ' osechi-lrow-pending' : ''), tabindex: '0', role: 'button', 'data-order': r.orderId, title: tip,
+      'aria-label': '受付番号 ' + r.orderId + ' の注文を直す' }, cells);
+    var go = function () { onRowEdit(r.orderId); };
+    tr.addEventListener('click', go);
+    tr.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(); } });
+    return tr;
+  }
+  /** 注文の無い商品（PC）: 名前・お渡し日・「受注なし」だけを小さく並べる（畳まない＝全部の商品が一目で見える） */
+  function emptyStrip(empty, method) {
+    var h = L.h, delivery = method === 'delivery';
+    return h('section', { 'class': 'osechi-lnone-sec', 'data-step': 'list-empty', 'data-kind': 'pc' }, [
+      h('div', { 'class': 'osechi-lnone-head' }, ['注文のない商品（' + empty.length + ' 品）', h('span', { 'class': 'osechi-lnone', text: NONE_MARK })]),
+      h('div', { 'class': 'osechi-lnone-grid' }, empty.map(function (x) {
+        var b = x.block, dates = (L.host.idx && L.host.idx.byNo[b.no] && L.host.idx.byNo[b.no].dates.join('・')) || '12/31';
+        return h('div', { 'class': 'osechi-lnone-item', 'data-no': String(b.no), title: (b.title || ('商品 ' + b.no)) + '　' + (delivery ? '宅配日 ' : 'お渡し日 ') + dates + '・' + NONE_MARK }, [
+          h('span', { 'class': 'osechi-lnone-title', text: b.title || ('商品 ' + b.no) }), h('span', { 'class': 'osechi-lnone', text: NONE_MARK })
+        ]);
+      }))
+    ]);
   }
   /**
    * 行を押した → 一覧と一緒に受け取った注文の中身から、すぐ「注文を直す」を開く（窓口へ取りに行かない・送るときに版で守る）。
@@ -1231,34 +1502,61 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       : '申込書 ' + all.length + ' 件（取消を除く' + (datedOnly ? '・日付の商品だけの注文 ' + datedOnly + ' 件を含む' : '') + '）・行の「直す」「取り消す」で、その申込書ごと直す・取り消す';
     if (hq) E.content.appendChild(bulkBar(rows));
     if (!rows.length) { E.content.appendChild(h('div', { 'class': 'osechi-info', text: searching ? '当たる申込書がありません。' : 'まだ注文はありません。' })); return; }
-    var heads = (hq ? [h('th', { scope: 'col', text: '選ぶ' })] : []).concat([h('th', { scope: 'col', text: '受付' }), h('th', { scope: 'col', text: 'お客様' }), h('th', { scope: 'col', text: '商品' }),
-      h('th', { scope: 'col', text: '受付係員' }), h('th', { scope: 'col', text: '〆' }), h('th', { scope: 'col', text: '直す・取り消す' })]);
-    var body = rows.map(function (r) {
-      var cells = [];
-      if (hq) {
-        var cb = h('input', { type: 'checkbox', 'class': 'osechi-ocheck', 'data-act': 'order-select', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' を選ぶ' });
-        cb.checked = !!L.sel[r.orderId];
-        cb.addEventListener('change', function () { if (cb.checked) L.sel[r.orderId] = true; else delete L.sel[r.orderId]; updateBulkBar(); });
-        cells.push(h('td', { 'class': 'osechi-ocheck-cell', 'data-label': '選ぶ' }, h('div', { 'class': 'osechi-oval' }, [cb])));
-      }
-      cells.push(h('td', { 'class': 'osechi-lrecv', 'data-label': '受付' }, h('div', { 'class': 'osechi-oval' }, [h('b', { text: r.orderId }), h('span', { 'class': 'osechi-small osechi-odate', text: r.receivedAt })])));
-      cells.push(h('td', { 'data-label': 'お客様', 'data-kind': 'customer' }, h('div', { 'class': 'osechi-oval' }, [h('span', { 'class': 'osechi-oname', text: r.customer.name || '（氏名なし）' }), h('span', { 'class': 'osechi-small', text: '（' + r.customer.label + '）' })])));
-      cells.push(h('td', { 'data-label': '商品', 'data-kind': 'items', text: r.items }));
-      cells.push(h('td', { 'class': 'osechi-lrcp' + (r.receptionist === RECEPTIONIST_NONE ? ' osechi-lrcp-none' : ''), 'data-label': '受付係員', text: r.receptionist }));
-      cells.push(h('td', { 'data-label': '〆', 'data-kind': 'closing' }, h('div', { 'class': 'osechi-oval' }, [r.closing ? mdDow(r.closing) + '〆' : '',
-        r.confirmed ? h('span', { 'class': 'osechi-oconf', 'data-kind': 'confirmed', text: '報告済み・本部で確定' }) : null])));
-      cells.push(h('td', { 'class': 'osechi-oacts', 'data-label': '直す・取り消す' }, h('div', { 'class': 'osechi-oval osechi-obtns' }, [
-        h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary osechi-obtn', 'data-act': 'order-edit', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' を直す', text: '直す',
-          on: { click: function () { onRowEdit(r.orderId); } } }),
-        h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-danger osechi-obtn', 'data-act': 'order-cancel', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' を取り消す', text: '取り消す',
-          on: { click: function () { onRowCancel(r.orderId); } } })
-      ])));
-      return h('tr', { 'class': 'osechi-orow', 'data-order': r.orderId }, cells);
-    });
-    E.content.appendChild(h('div', { 'class': 'osechi-lscroll' }, h('table', { 'class': 'osechi-ltable osechi-otable', 'data-step': 'orders-table' }, [
-      h('thead', null, h('tr', null, heads)), h('tbody', null, body)
+    var heads = (hq ? [h('th', { scope: 'col', 'class': 'osechi-oc-sel', text: '選ぶ' })] : []).concat([h('th', { scope: 'col', 'class': 'osechi-oc-recv', text: '受付' }), h('th', { scope: 'col', 'class': 'osechi-oc-cust', text: 'お客様' }), h('th', { scope: 'col', text: '商品' }),
+      h('th', { scope: 'col', 'class': 'osechi-oc-rcp', text: '受付係員' }), h('th', { scope: 'col', 'class': 'osechi-oc-cls', text: '〆' }), h('th', { scope: 'col', 'class': 'osechi-oc-acts', text: '直す・取り消す' })]);
+    // PC: 大きな店（数百件）でも開いてすぐ使えるように、はじめは ORDERS_FIRST 行だけ描き、表の枠の下に近づいたら続きを ORDERS_STEP 行ずつ足す
+    //   （CPU 4倍遅くで 400 件を一度に描くと約1〜3秒止まっていた。探す・まとめて選ぶ・印刷・CSV は全部の行が相手＝描いた行の数に左右されない）。スマホは前のまま（カードは画面の外を描かない）
+    var limit = L.pc ? Math.min(rows.length, Math.max(ORDERS_FIRST, L.orderLimit || 0)) : rows.length;
+    L.orderLimit = limit;
+    var tbody = h('tbody', null, rows.slice(0, limit).map(function (r) { return orderRow(r, hq); }));
+    E.content.appendChild(h('div', { 'class': 'osechi-lscroll' }, h('table', { 'class': 'osechi-ltable osechi-otable' + (hq ? ' osechi-otable-hq' : ''), 'data-step': 'orders-table' }, [
+      h('thead', null, h('tr', null, heads)), tbody
     ])));
+    if (limit < rows.length) moreOrders(tbody, rows, hq, heads.length);
     updateBulkBar();
+  }
+  var ORDERS_FIRST = 80, ORDERS_STEP = 40;   // 続きは 40 行ずつ（足すたびの止まりを短く＝CPU 4倍遅くで約0.2秒まで）
+  /** PC: 表の枠の下に近づいたら続きの行を足す（見張りの行が見えたら）。足し終わったら見張りを外す */
+  function moreOrders(tbody, rows, hq, ncol) {
+    var h = L.h, seq = L.seq;
+    var sentinel = h('tr', { 'class': 'osechi-omore', 'data-step': 'orders-more' }, h('td', { colspan: String(ncol), text: '' }));
+    var label = function () { sentinel.firstChild.textContent = '続きの ' + (rows.length - L.orderLimit) + ' 件を出しています…（下へ動かすと出ます）'; };
+    label();
+    tbody.appendChild(sentinel);
+    var step = function () {
+      if (!alive(seq) || !sentinel.isConnected) return false;
+      var from = L.orderLimit, to = Math.min(rows.length, from + ORDERS_STEP);
+      rows.slice(from, to).forEach(function (r) { tbody.insertBefore(orderRow(r, hq), sentinel); });
+      L.orderLimit = to;
+      if (to >= rows.length) { sentinel.parentNode.removeChild(sentinel); return false; }
+      label();
+      return true;
+    };
+    watchMore(sentinel, step);
+  }
+  /** 申込書ごとの1行（直す・取り消す・本部は選ぶ） */
+  function orderRow(r, hq) {
+    var h = L.h;
+    var cells = [];
+    if (hq) {
+      var cb = h('input', { type: 'checkbox', 'class': 'osechi-ocheck', 'data-act': 'order-select', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' を選ぶ' });
+      cb.checked = !!L.sel[r.orderId];
+      cb.addEventListener('change', function () { if (cb.checked) L.sel[r.orderId] = true; else delete L.sel[r.orderId]; updateBulkBar(); });
+      cells.push(h('td', { 'class': 'osechi-ocheck-cell osechi-oc-sel', 'data-label': '選ぶ' }, h('div', { 'class': 'osechi-oval' }, [cb])));
+    }
+    cells.push(h('td', { 'class': 'osechi-lrecv osechi-oc-recv', 'data-label': '受付' }, h('div', { 'class': 'osechi-oval' }, [h('b', { text: r.orderId }), h('span', { 'class': 'osechi-small osechi-odate', text: r.receivedAt })])));
+    cells.push(h('td', { 'data-label': 'お客様', 'data-kind': 'customer' }, h('div', { 'class': 'osechi-oval' }, [h('span', { 'class': 'osechi-oname', text: r.customer.name || '（氏名なし）' }), h('span', { 'class': 'osechi-small', text: '（' + r.customer.label + '）' })])));
+    cells.push(h('td', { 'data-label': '商品', 'data-kind': 'items', title: L.pc ? r.items : null, text: r.items }));   // PC は1行（長ければ … ・全文は title）
+    cells.push(h('td', { 'class': 'osechi-lrcp' + (r.receptionist === RECEPTIONIST_NONE ? ' osechi-lrcp-none' : ''), 'data-label': '受付係員', text: r.receptionist }));
+    cells.push(h('td', { 'data-label': '〆', 'data-kind': 'closing' }, h('div', { 'class': 'osechi-oval' }, [r.closing ? mdDow(r.closing) + '〆' : '',
+      r.confirmed ? h('span', { 'class': 'osechi-oconf', 'data-kind': 'confirmed', text: '報告済み・本部で確定' }) : null])));
+    cells.push(h('td', { 'class': 'osechi-oacts', 'data-label': '直す・取り消す' }, h('div', { 'class': 'osechi-oval osechi-obtns' }, [
+      h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary osechi-obtn', 'data-act': 'order-edit', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' を直す', text: '直す',
+        on: { click: function () { onRowEdit(r.orderId); } } }),
+      h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-danger osechi-obtn', 'data-act': 'order-cancel', 'data-order': r.orderId, 'aria-label': '受付番号 ' + r.orderId + ' を取り消す', text: '取り消す',
+        on: { click: function () { onRowCancel(r.orderId); } } })
+    ])));
+    return h('tr', { 'class': 'osechi-orow', 'data-order': r.orderId }, cells);
   }
   /** 本部: まとめて取り消す帯（選んだ数・見えている行をまとめて選ぶ・50件まで） */
   function bulkBar(rows) {
@@ -1297,30 +1595,34 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var s = d.summary.summary || {};
     var late = s.late && toInt(s.late.count) > 0 ? toInt(s.late.count) : 0;
     // 表はひな形と同じく 0 を空欄にする＝空欄の意味を、表のすぐ上に書く（空欄＝受注なし・今日より先の行も空欄）
-    E.count.textContent = '累計（その締め日までの合計）・空欄＝受注なし（今日より先の行も空欄）・「集計中」の行＝次の締め日の分を含む、いま' + (s.asOf ? '（' + str(s.asOf) + '）' : '') + 'までの数（締めまで増えます）';
+    E.count.textContent = L.pc
+      ? '累計（その締め日までの合計）・空欄＝受注なし・「集計中」の行＝次の締め日の分を含む、いま' + (s.asOf ? '（' + str(s.asOf).slice(5, 16) + '）' : '') + 'までの途中の数'
+      : '累計（その締め日までの合計）・空欄＝受注なし（今日より先の行も空欄）・「集計中」の行＝次の締め日の分を含む、いま' + (s.asOf ? '（' + str(s.asOf) + '）' : '') + 'までの数（締めまで増えます）';
     if (late) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '締め後の受付 ' + late + ' 件（最後の締め日の行に含めています）。' }));
-    ['store', 'delivery'].forEach(function (m) {
-      E.content.appendChild(h('h4', { 'class': 'osechi-lsub', text: METHOD_LABEL[m] + '（累計）' }));
-      E.content.appendChild(summaryView(summaryTable(s, L.store, m), m));
-    });
-    var sw = sandwichRows(d.summary.sandwich);
-    E.content.appendChild(h('h4', { 'class': 'osechi-lsub', text: 'パーティーサンドプレート（27番）・日付ごと' }));
-    var rows = sw.rows.map(function (r) { return h('tr', null, [h('th', { scope: 'row', text: r.date }), r.qty === '' ? h('td', { 'class': 'osechi-snone', text: NONE_MARK }) : h('td', { text: String(r.qty) })]); });
-    rows.push(h('tr', { 'class': 'osechi-stotal' }, [h('th', { scope: 'row', text: '期間の合計' }), h('td', { text: String(sw.total) })]));
-    E.content.appendChild(h('div', { 'class': 'osechi-lscroll' }, h('table', { 'class': 'osechi-stable osechi-stable-sand', 'data-step': 'sandwich' }, [
-      h('thead', null, h('tr', null, [h('th', { scope: 'col', text: '受渡日' }), h('th', { scope: 'col', text: sw.label || L.store })])), h('tbody', null, rows)
-    ])));
-    if (sw.notOpenNewYear) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '元日営業でない店の 1/1 の分が ' + sw.notOpenNewYear + ' 件あります（表には入れていません。注文を確かめてください）。' }));
+    if (L.pc) {
+      // PC: 店渡しと宅配を左右に（同じ締め日の行が横にそろう）。入りきらない幅では上下に（列の見出しと合計の行は枠に残る）
+      E.content.appendChild(h('div', { 'class': 'osechi-sumpair', 'data-step': 'summary-pair' }, ['store', 'delivery'].map(function (m) {
+        return h('div', { 'class': 'osechi-sumcol' }, summaryView(summaryTable(s, L.store, m), m, true));
+      })));
+    } else {
+      ['store', 'delivery'].forEach(function (m) {
+        E.content.appendChild(h('h4', { 'class': 'osechi-lsub', text: METHOD_LABEL[m] + '（累計）' }));
+        E.content.appendChild(summaryView(summaryTable(s, L.store, m), m));
+      });
+    }
+    // サンド（27番）は自分の切り替え「サンドイッチ・冷製オードブル」へ（2026-11-01 PO・報告書のシートと同じ）
     var warns = Array.isArray(s.warnings) ? s.warnings.slice(0, 10) : [];
     if (warns.length) E.content.appendChild(h('div', { 'class': 'osechi-warn' }, [h('b', { text: '集計で気づいたこと' })].concat(warns.map(function (w) {
       return h('div', { text: '・' + str(w && w.message).slice(0, 160) + (w && toInt(w.count) > 1 ? '（' + toInt(w.count) + ' 件）' : '') });
     }))));
   }
-  function summaryView(t, method) {
+  function summaryView(t, method, pc) {
     var h = L.h;
     var head = [h('th', { scope: 'col', 'class': 'osechi-sfix', text: '締め日' }), h('th', { scope: 'col', text: '報告日' })]
-      .concat(t.items.map(function (it) { return h('th', { scope: 'col', title: it.label + (it.sub ? '　' + it.sub : ''), text: String(it.no) }); }))
+      .concat(t.items.map(function (it) { return h('th', { scope: 'col', 'class': 'osechi-sitem', title: it.label + (it.sub ? '　' + it.sub : ''), text: String(it.no) }); }))
       .concat([h('th', { scope: 'col', text: '合計' })]);
+    // PC: どちらの表かを列の見出しの上の1段に（枠を下へ動かしても、見出しと一緒に上に残る）
+    var cap = pc ? h('tr', { 'class': 'osechi-scap' }, h('th', { scope: 'colgroup', colspan: String(head.length), 'class': 'osechi-scap-' + method, text: METHOD_MARK[method] + '（累計）' })) : null;
     var when = hhmm(t.asOf), day = str(t.asOf).match(/^\d{4}\/(\d{2})\/(\d{2})/);
     var asOfText = (day ? Number(day[1]) + '/' + Number(day[2]) + ' ' : '') + when;
     var marks = changeMarks();   // 本部だけ: 締め日の行ごとの、確定後の変更の件数（この店）
@@ -1334,15 +1636,59 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       }
       return h('tr', { 'class': (r.inProgress ? 'osechi-snow' : '') + (r.filled ? ' osechi-sfilled' : '') + (r.provisional ? ' osechi-sprov' : '') + (mk ? ' osechi-schgrow' : ''), 'data-kind': r.provisional ? 'in-progress' : null }, [
         h('th', { scope: 'row', 'class': 'osechi-sfix' }, r.provisional
-          ? [mdDow(r.closing), h('span', { 'class': 'osechi-sprov-tag', text: '集計中（' + asOfText + ' 時点・途中の数）' })]
+          ? [mdDow(r.closing), h('span', { 'class': 'osechi-sprov-tag', title: '集計中（' + asOfText + ' 時点・途中の数）', text: pc ? '集計中' : '集計中（' + asOfText + ' 時点・途中の数）' })]   // PC は行を高くしない（時点は表の上の1行に）
           : [mdDow(r.closing)]),
         repCell
       ].concat(r.cells.map(function (v) { return h('td', { 'class': r.provisional ? 'osechi-sprov-v' : null, text: v === '' ? '' : String(v) }); }))
         .concat([h('td', { 'class': 'osechi-stot' + (r.provisional ? ' osechi-sprov-v' : ''), text: r.total === '' ? '' : String(r.total) })]));
     });
-    if (t.totalRow) body.push(h('tr', { 'class': 'osechi-stotal', 'data-kind': 'total' }, [h('th', { scope: 'row', 'class': 'osechi-sfix', text: t.totalRow.provisional ? '合計（いまの累計・' + asOfText + ' 時点）' : '合計（最新の累計）' }), h('td', { text: '' })]
+    var totalText = t.totalRow ? (t.totalRow.provisional ? '合計（いまの累計・' + asOfText + ' 時点）' : '合計（最新の累計）') : '';
+    // PC は列を広げない（締め日の列の幅に収める・全文は title）
+    if (t.totalRow) body.push(h('tr', { 'class': 'osechi-stotal', 'data-kind': 'total' }, [h('th', { scope: 'row', 'class': 'osechi-sfix', title: totalText, text: pc ? (t.totalRow.provisional ? '合計（いま）' : '合計（最新）') : totalText }), h('td', { text: '' })]
       .concat(t.totalRow.cells.map(function (v) { return h('td', { text: v === '' ? '' : String(v) }); })).concat([h('td', { 'class': 'osechi-stot', text: String(t.totalRow.total || '') })])));
-    return h('div', { 'class': 'osechi-lscroll osechi-sscroll' }, h('table', { 'class': 'osechi-stable', 'data-step': 'summary-' + method }, [h('thead', null, h('tr', null, head)), h('tbody', null, body)]));
+    var foot = (pc && t.totalRow) ? body.pop() : null;   // PC: 合計の行は tfoot（枠の下に残す）
+    return h('div', { 'class': 'osechi-lscroll osechi-sscroll' }, h('table', { 'class': 'osechi-stable', 'data-step': 'summary-' + method }, [h('thead', null, cap ? [cap, h('tr', { 'class': 'osechi-shead' }, head)] : h('tr', null, head)), h('tbody', null, body),
+      foot ? h('tfoot', null, foot) : null]));
+  }
+  /** PC の集計: いまの締め日の行（集計中・無ければ最後に数の入った行）が表の枠に見えるように（合計の行は枠の下に残る） */
+  function revealSummaryRow() {
+    var c = L && L.els.content;
+    if (!c || !L.pc) return;
+    var t = c.querySelector('[data-step="summary-store"]');
+    if (!t) return;
+    var rows = t.querySelectorAll('tbody tr'), row = t.querySelector('tr.osechi-snow') || null;
+    if (!row) for (var i = rows.length - 1; i >= 0; i--) if (rows[i].classList.contains('osechi-sfilled')) { row = rows[i]; break; }
+    if (!row) return;
+    var cr = c.getBoundingClientRect(), rr = row.getBoundingClientRect(), foot = t.querySelector('tr.osechi-stotal'), fh = foot ? foot.getBoundingClientRect().height : 0;
+    var over = rr.bottom - (cr.bottom - fh - 8);
+    if (over > 0) c.scrollTop += over + Math.round((cr.height - fh) / 3);
+  }
+  // ---- サンドイッチ・冷製オードブル（2026-11-01 PO・報告書のシートの名前）: 27番の受渡日 × 店の列 ----
+  //   数は v88.10 の集計の下の表と同じ（sandwichRows・窓口の rptSandwichModel_ の店の列）。本部は選んだ店の列（返事は全店の列の形・ほかの店は 0）。
+  //   元日営業でない店の 1/1 は Excel と同じ斜線。表に入れなかった数（元日営業でない店の 1/1・候補にない受渡日）は表の下に
+  function renderSandwich() {
+    var E = L.els, h = L.h, d = L.data;
+    if (!d.summary) {   // 窓口が集計（サンドを含む）を作れなかった（ほかの切り替えは使える）
+      E.content.appendChild(errorBox(d.summaryError || '集計を読み込めませんでした。', function () { refresh(); }));
+      return;
+    }
+    var sw = sandwichRows(d.summary.sandwich), label = sw.label || L.store;
+    E.count.textContent = 'パーティーサンドプレート（' + sw.itemNo + '番）の受渡日ごとの数・代金未払いの分も数えます（報告書の「サンドイッチ・冷製オードブル」の年末年始の欄）';
+    var rows = sw.rows.map(function (r) {
+      var cell = r.slash ? h('td', { 'class': 'osechi-sslash', title: '元日営業でない店（Excel では斜線のセル）', text: '／（元日営業なし）' })
+        : (r.qty === '' ? h('td', { 'class': 'osechi-snone', text: NONE_MARK }) : h('td', { text: String(r.qty) }));
+      return h('tr', { 'data-kind': r.date }, [h('th', { scope: 'row', text: r.date }), cell]);
+    });
+    rows.push(h('tr', { 'class': 'osechi-stotal' }, [h('th', { scope: 'row', text: '期間の合計' }), h('td', { text: String(sw.total) })]));
+    E.content.appendChild(h('section', { 'class': 'osechi-sand', 'data-step': 'sandwich-sec' }, [
+      h('h4', { 'class': 'osechi-lsub', text: '年末年始　パーティーサンドプレート（' + sw.itemNo + '番）' }),
+      h('div', { 'class': 'osechi-lscroll' }, h('table', { 'class': 'osechi-stable osechi-stable-sand', 'data-step': 'sandwich' }, [
+        h('thead', null, h('tr', null, [h('th', { scope: 'col', text: '受渡日' }), h('th', { scope: 'col', text: label + (sw.code ? '（' + sw.code + '）' : '') })])), h('tbody', null, rows)
+      ])),
+      h('p', { 'class': 'osechi-small osechi-sand-note', text: 'クリスマス（12/23〜25）の欄は、今年の申込書に無いため空のままです。' })
+    ]));
+    if (sw.notOpenNewYear) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '元日（1/1）の分が ' + sw.notOpenQty + ' 個あります。この店は元日営業でない設定のため、表には入れていません（受渡日を確かめてください）。' }));
+    if (sw.unknownCount) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '受渡日が候補にない分が ' + sw.unknownCount + ' 件・' + sw.unknownQty + ' 個あります（表には入れていません。注文を確かめてください）。' }));
   }
 
   // ---- 店内受注品一覧（惣菜・鮮魚の担当主任が「何を・いくつ・何時までに」作るかを見る表） ----
@@ -1460,7 +1806,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     if (!L || !L.store || !L.data || L.host.isBusy() || L.dl) return;
     var host = L.host, seq = L.seq;
     var method = L.tab === 'delivery' ? 'delivery' : 'store';
-    if (L.tab === 'summary' || L.tab === 'orders') {
+    if (L.tab === 'summary' || L.tab === 'orders' || L.tab === 'sandwich') {
       var pick = await host.ask({ tone: 'info', title: '印刷', message: 'どちらのお客様リストを印刷しますか？',
         buttons: [{ id: 'store', label: '店渡しのお客様リスト', kind: 'primary' }, { id: 'delivery', label: '宅配のお客様リスト', kind: 'secondary' }, { id: 'cancel', label: 'やめる', kind: 'secondary' }], cancelId: 'cancel' });
       if (pick !== 'store' && pick !== 'delivery') return;
@@ -1736,9 +2082,138 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     '.osechi-lnone{display:inline-block;padding:0 8px;border-radius:999px;background:#eceff3;border:1px solid #c5ccd6;color:#3f4650;font-size:14px;font-weight:800;line-height:1.6}',
     '.osechi-lrcp-none{color:#5f6670}',
     '.osechi-snone{color:#5f6670;font-size:13px;font-weight:700}',
-    // 切り替えは4つ。狭い画面では「店内受注品一覧」を2段目に1つで置く（4つを1段に詰めると名前が折れて読めない）
-    // スマホ: 5つを 3＋2 の2段に（申込書ごと・店渡し・宅配／集計・店内受注品一覧）。文字は折り返さない
-    '@media (max-width:760px){.osechi-ltabs{flex-wrap:wrap}.osechi-ltabs>[data-tab]{flex:1 1 28%;padding-left:2px;padding-right:2px;white-space:nowrap;font-size:17px}.osechi-ltabs>[data-tab="production"]{flex:2 1 56%}}',
+    // 切り替えは6つ（報告書のシートの名前・2026-11-01）。PC より狭い画面: 3＋3 の2段（申込書ごと・おせち集計・店渡／宅配・サンドイッチ・冷製オードブル・店内受注品一覧）。
+    //   言葉の途中で折らない（「サンドイッチ・」の後ろだけで2行に）。押す的は 50px（44px より大きく）
+    '@media (max-width:1023px){.osechi-ltabs{flex-wrap:wrap}.osechi-ltabs>[data-tab]{padding:4px 2px;white-space:nowrap;font-size:17px;line-height:1.25}' +
+      '.osechi-ltabs>[data-tab="orders"],.osechi-ltabs>[data-tab="summary"]{flex:1 1 36%}.osechi-ltabs>[data-tab="store"]{flex:1 1 18%}' +
+      '.osechi-ltabs>[data-tab="delivery"]{flex:1 1 14%}.osechi-ltabs>[data-tab="sandwich"],.osechi-ltabs>[data-tab="production"]{flex:1 1 40%}' +
+      '.osechi-ltabs>.osechi-ltab-2l{white-space:normal;word-break:keep-all;overflow-wrap:normal}}',
+    '@media (max-width:360px){.osechi-ltabs>[data-tab]{font-size:16px}}',
+    '.osechi-ltabs>[data-tab]:focus-visible{outline:3px solid #e2b93b;outline-offset:2px}',
+    // サンドイッチ・冷製オードブル（2026-11-01）: 元日営業でない店の 1/1 は Excel と同じ斜線
+    '.osechi-sand{margin:0 0 8px}',
+    '.osechi-stable td.osechi-sslash{color:#5f6670;font-size:13px;font-weight:700;background:linear-gradient(to top right,#fff calc(50% - 1px),#9aa1ab 50%,#fff calc(50% + 1px))}',
+    '.osechi-sand-note{margin:6px 0 0}',
+    // ---- PC の形（幅 1024px 以上・2026-11-01 PO）: 上の操作は1〜2段・切り替えは1段・表は残りの高さを全部使い、表の枠の中だけで縦と横に動く ----
+    '.osechi-body.osechi-lpc-body{display:flex;flex-direction:column}',
+    '.osechi-wrap.osechi-lwide.osechi-lpc-wrap{max-width:none;width:100%;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:8px 12px 10px}',
+    '.osechi-list.osechi-lpc{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}',
+    // 上下の余白は中身の側に（枠の余白があると、上に残る見出しの上に行がのぞく）
+    '.osechi-lpc>[data-step="list-body"]{flex:1 1 auto;min-height:260px;overflow:auto;scrollbar-gutter:stable;background:#fff;border:1px solid #d8cbb8;border-radius:10px;padding:0 8px;overscroll-behavior:contain}',
+    '.osechi-lpc>[data-step="list-body"]>:first-child{margin-top:6px}.osechi-lpc>[data-step="list-body"]>:last-child{margin-bottom:8px}',
+    '.osechi-lbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:0 0 6px}',
+    '.osechi-lbar2{position:relative}',
+    // 店（本部は選ぶ欄）・申込書の枚数
+    '.osechi-lpc .osechi-lstore{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:3px 10px;margin:0;border-radius:10px;flex:0 1 auto}',
+    '.osechi-lpc .osechi-lstore>.osechi-label{display:none}',   // 欄の名前は選ぶ欄の aria-label（どの店を見るか）
+    '.osechi-lpc .osechi-lstore select.osechi-input{width:auto;min-width:12em;min-height:38px;font-size:16px;padding:4px 10px;border-radius:10px}',
+    '.osechi-lpc .osechi-fixed{padding:4px 10px;font-size:17px;border-radius:10px}',
+    '.osechi-lpc .osechi-fixed small{display:none}',   // 「自店だけ（変更できません）」は title に
+    '.osechi-lpc .osechi-lall{margin:0;padding:0;border:0}',
+    '.osechi-lpc .osechi-lall>.osechi-small{display:none}',   // 説明はボタンの title に
+    '.osechi-lpc .osechi-lall>.osechi-btn{min-height:38px;font-size:14px;padding:4px 12px;border-radius:10px}',
+    // 次の締め日 → 報告（1行）
+    '.osechi-lpc [data-step="deadline"]{flex:0 1 auto;min-width:0}',
+    '.osechi-lpc .osechi-ldead{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 10px;padding:4px 12px;margin:0;border-radius:10px}',
+    '.osechi-lpc .osechi-ldead-main{font-size:16px}.osechi-lpc .osechi-ldead-sub{font-size:14px;margin:0}',
+    // 報告のしかた（畳んだまま。開くと上の段の下に小さな窓＝表を押し下げない）
+    '.osechi-lpc .osechi-lrules{position:relative;margin:0;flex:0 0 auto}',
+    '.osechi-lpc .osechi-lrules>summary{min-height:38px;display:flex;align-items:center;padding:0 10px;font-size:14px;white-space:nowrap;border:1px solid #d8cbb8;border-radius:10px;background:#fff}',
+    '.osechi-lpc .osechi-lrules[open]>summary{background:#fff8e1;border-color:#c9a227}',
+    '.osechi-lpc .osechi-lrules>p{position:absolute;right:0;left:auto;top:calc(100% + 4px);z-index:40;width:520px;max-width:min(80vw,calc(100vw - 32px));margin:0;padding:10px 12px;background:#fffdf7;border:2px solid #c9a227;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,.18);font-size:15px;color:#3d2a20}',
+    // Excel・CSV・印刷（字の幅のボタンを横に）
+    '.osechi-lpc .osechi-lactions,.osechi-lpc .osechi-lactions>.osechi-btn-row{display:flex;gap:6px;margin:0;flex:0 0 auto;align-items:center}',
+    '.osechi-lpc .osechi-lactions .osechi-btn{width:auto;flex:0 0 auto;min-height:38px;font-size:15px;padding:4px 14px;border-radius:10px}',
+    // 探す
+    '.osechi-lpc .osechi-lsearch{margin:0;flex:1 1 200px;max-width:380px;min-width:180px}',
+    '.osechi-lpc .osechi-lsearch .osechi-input{min-height:38px;font-size:16px;padding:4px 10px;border-radius:10px}',
+    // 切り替え（1段）・件数と読み方
+    '.osechi-lpc .osechi-ltabs{flex:0 0 auto;margin:0;gap:4px;flex-wrap:nowrap}',
+    '.osechi-lpc .osechi-ltabs>.osechi-btn{flex:0 0 auto;width:auto;min-height:40px;font-size:16px;padding:4px 14px;border-radius:10px;white-space:nowrap}',
+    '.osechi-lpc [data-step="list-count"]{flex:1 1 220px;min-width:0;font-size:13px;line-height:1.35;color:#3d2a20}',
+    // 読み直しの印: 読み直しの間は表の枠の右上に重ねる（表を押し下げない）。最新にできなかったときは段の中に
+    '.osechi-lpc .osechi-lfresh{margin:0;flex:0 1 auto}',
+    '.osechi-lpc .osechi-lfresh.osechi-lfresh-ov{position:absolute;right:10px;top:calc(100% + 6px);z-index:30;pointer-events:none}',
+    '.osechi-lpc .osechi-lfresh-ov .osechi-lfresh-on{box-shadow:0 4px 12px rgba(0,0,0,.18);font-size:14px;padding:4px 10px}',
+    '.osechi-lpc [data-step="list-note"] .osechi-info{margin:0 0 6px;padding:4px 10px;font-size:14px}',
+    // 確定後の変更の帯（本部）: 1段に（消さずに小さく）
+    '.osechi-lpc .osechi-alertband{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:4px 10px;margin:0 0 6px;border-width:2px}',
+    '.osechi-lpc .osechi-alertband-t{margin:0;font-size:15px;align-items:center}',
+    '.osechi-lpc .osechi-alertband-ico{width:22px;height:22px}',
+    '.osechi-lpc .osechi-alertband>.osechi-btn{width:auto;min-height:34px;font-size:14px;padding:2px 12px;margin:0}',
+    // 表の枠の中では、表を横のスクロールの枠に入れない（列の見出しを枠の上に残す・横は枠ごと動く）
+    '.osechi-lpc .osechi-lscroll,.osechi-lpc .osechi-sscroll{overflow:visible;max-height:none;border:0;border-radius:0}',
+    '.osechi-lpc .osechi-lsub{margin:4px 0 6px;font-size:16px}',
+    // 店渡・宅配（PC）: Excel の1ページ＝1枚。横に2〜4枚（JS が枠の幅で n2〜n4 を選ぶ）。ページの見出し3段は枠の上に残る
+    '.osechi-lpages{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}',
+    '.osechi-lpages-n3{grid-template-columns:repeat(3,minmax(0,1fr))}.osechi-lpages-n4{grid-template-columns:repeat(4,minmax(0,1fr))}',
+    // 画面の外を描かない作り（content-visibility）は、ここでは使わない: CPU 4倍遅くで、動かすたびに出てきたページを描くので、かえってスクロールが重かった（測った）
+    '.osechi-lpage{background:#fff;border:2px solid #d8cbb8;box-shadow:0 1px 3px rgba(0,0,0,.08);min-width:0}',
+    '.osechi-lpg-table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:14px;line-height:1.3}',
+    '.osechi-lpg-table th,.osechi-lpg-table td{border-right:1px solid #e6dccd;border-bottom:1px solid #e6dccd;padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#fff;vertical-align:middle;text-align:left}',
+    '.osechi-lpg-table tr>:last-child{border-right:0}',
+    '.osechi-lpg-table thead{position:sticky;top:0;z-index:2;will-change:transform}',   // 見出しの3段は thead ごと1つで枠の上に残す（th ごとに残すより軽い・動かすときは画面の合成だけで）
+    '.osechi-lpg-table thead th{background:#faf2e6;font-size:13px;font-weight:800;text-align:center;color:#3d2a20;height:24px;padding:2px 4px}',
+    '.osechi-lpg-table .osechi-lpg-trow>th{height:46px;background:#f3e7d6;text-align:left;padding:3px 8px}',
+    '.osechi-lpg-table th.osechi-lpg-hq{white-space:normal;line-height:1.15}',
+    '.osechi-lpg-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:900;color:#5a1019;line-height:1.35}',
+    '.osechi-lpg-t{display:flex;align-items:baseline;justify-content:space-between;gap:4px 10px;min-width:0;line-height:1.3}',
+    '.osechi-lpg-mark{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:800;color:#3d2a20}',
+    '.osechi-lpg-count{flex:0 0 auto;font-size:13px;font-weight:900;color:#6e1521}',
+    'col.osechi-lpg-cn{width:2.6em}col.osechi-lpg-cz{width:5.6em}col.osechi-lpg-ct{width:8.2em}col.osechi-lpg-cm{width:6.6em}col.osechi-lpg-cq{width:3.6em}col.osechi-lpg-cr{width:5em}',
+    '.osechi-lpages-n1{grid-template-columns:minmax(0,1fr)}',
+    '.osechi-lpg-table td.osechi-lqty{text-align:center;font-weight:800}',
+    '.osechi-lpg-table td.osechi-lqty2{font-size:16px}',
+    '.osechi-lpg-name{font-weight:700}',
+    '.osechi-lpg-table tr.osechi-lrow:hover>td,.osechi-lpg-table tr.osechi-lrow:focus>td{background:#fff8e1}',
+    '.osechi-lpg-table tr.osechi-lrow-pending>td{background:#f4faf6}',
+    '.osechi-lpg-table tr.osechi-lrow-pending>td.osechi-lpg-addr{white-space:normal}',
+    '.osechi-lpg-addr .osechi-lpend{display:block;width:max-content;max-width:100%;margin:2px 0 0;white-space:normal}',
+    // 注文の無い商品（PC）: 名前と「受注なし」だけを小さく（空のページを描かない）
+    '.osechi-lnone-sec{margin:14px 0 4px}',
+    '.osechi-lnone-head{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:900;color:#5a1019;margin:0 0 6px}',
+    '.osechi-lnone-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px}',
+    '.osechi-lnone-item>.osechi-lnone{flex:0 0 auto;white-space:nowrap;font-size:13px}',
+    '.osechi-lnone-item{display:flex;align-items:center;gap:8px;min-width:0;padding:4px 10px;border:1px dashed #c5ccd6;border-radius:8px;background:#fafafa}',
+    '.osechi-lnone-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700;color:#3d2a20}',
+    // おせち集計（PC）: 店渡しと宅配を左右に（入りきらなければ上下）。行は詰める・列の見出しは上に・合計の行は下に残る
+    '.osechi-sumpair{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start}',
+    '.osechi-sumcol{flex:0 0 auto;min-width:0}',
+    '.osechi-lpc .osechi-stable{width:auto;min-width:0;font-size:12px;line-height:1.15;font-variant-numeric:tabular-nums}',
+    '.osechi-lpc .osechi-stable th,.osechi-lpc .osechi-stable td{position:static}',   // セルごとに残さない（重い）＝下の thead・tfoot ごとに残す
+    '.osechi-lpc .osechi-stable thead{position:sticky;top:0;z-index:3}',
+    '.osechi-lpc .osechi-stable tfoot{position:sticky;bottom:0;z-index:3}',
+    '.osechi-lpc .osechi-stable th,.osechi-lpc .osechi-stable td{padding:1px 2px;height:17px}',
+    '.osechi-lpc .osechi-stable th.osechi-sfix{min-width:0;max-width:none;white-space:nowrap}',
+    '.osechi-lpc .osechi-stable th.osechi-sitem{width:1.7em}',   // 商品の列の幅をそろえる（数の大小で列がばらつかない）
+    '@media (min-width:1600px){.osechi-lpc .osechi-stable th.osechi-sitem{width:2.2em}}',   // 広い画面は数の列を広く（日付の列だけが広がらない）
+    '.osechi-lpc .osechi-stable .osechi-scap>th{height:21px;text-align:left;font-size:13px;font-weight:900;color:#5a1019;background:#efe0c8;padding:1px 6px}',
+    '.osechi-lpc .osechi-stable-sand{width:auto;font-size:15px}',
+    '.osechi-lpc .osechi-stable-sand th,.osechi-lpc .osechi-stable-sand td{height:26px;padding:2px 10px}',
+    '.osechi-lpc .osechi-sprov-tag{display:inline-block;font-size:11px;padding:0 3px;margin:0 0 0 3px;line-height:1.25}',
+    '.osechi-lpc .osechi-schg{font-size:11px;padding:0 4px;min-height:0;margin-top:1px;border-width:1px;line-height:1.3}',
+    '@media (min-height:900px){.osechi-lpc .osechi-stable{font-size:14px}.osechi-lpc .osechi-stable th,.osechi-lpc .osechi-stable td{height:21px;padding:1px 4px}.osechi-lpc .osechi-stable-sand th,.osechi-lpc .osechi-stable-sand td{height:28px;padding:2px 10px}}',
+    '@media (min-height:1000px) and (min-width:1600px){.osechi-lpc .osechi-stable{font-size:15px}.osechi-lpc .osechi-stable th,.osechi-lpc .osechi-stable td{height:24px;padding:2px 5px}}',
+    // 申込書ごと（PC）: 1件＝1行（折り返さない）・列の見出しは上に・受付番号の列は左に残る（横に動かしても）
+    '.osechi-lpc .osechi-otable{table-layout:fixed;width:100%;min-width:1100px;font-size:14px;border-collapse:separate;border-spacing:0}',
+    '.osechi-lpc .osechi-otable th,.osechi-lpc .osechi-otable td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:3px 8px;vertical-align:middle;border:0;border-right:1px solid #e6dccd;border-bottom:1px solid #e6dccd;background:#fff}',
+    '.osechi-lpc .osechi-otable thead{position:sticky;top:0;z-index:3}',
+    '.osechi-lpc .osechi-otable thead th{position:static;background:#faf2e6}',
+    // 〆の列は「報告済み・本部で確定」の札まで入る幅（札を … で隠さない）
+    '.osechi-lpc .osechi-otable .osechi-oc-sel{width:44px;text-align:center}.osechi-lpc .osechi-otable .osechi-oc-recv{width:18em}.osechi-lpc .osechi-otable .osechi-oc-cust{width:13em}',
+    '.osechi-lpc .osechi-otable .osechi-oc-rcp{width:6.5em}.osechi-lpc .osechi-otable .osechi-oc-cls{width:19em}.osechi-lpc .osechi-otable .osechi-oc-acts{width:11em}',
+    '.osechi-lpc .osechi-oval{display:block;overflow:hidden;text-overflow:ellipsis}',
+    '.osechi-lpc .osechi-oval>*+*{margin-left:6px}',
+    '.osechi-lpc .osechi-odate{display:inline}',
+    '.osechi-lpc .osechi-obtns{display:block}',
+    '.osechi-lpc .osechi-otable tr.osechi-omore>td{text-align:center;color:#5a1019;font-size:14px;font-weight:800;background:#fff8e1;padding:10px}',
+    '.osechi-pmore{margin:12px 0;padding:10px;text-align:center;color:#5a1019;font-size:14px;font-weight:800;background:#fff8e1;border:1px dashed #c9a227;border-radius:10px}',
+    '.osechi-lpc .osechi-obtn{display:inline-block;min-height:36px;line-height:32px;font-size:14px;padding:0 12px;margin:0;width:auto;vertical-align:middle}',   // マウスの的（36px・最低 24px より大きい）
+    '.osechi-lpc .osechi-obulk{display:flex;align-items:center;gap:4px 12px;flex-wrap:wrap;padding:4px 10px;margin:0 0 6px;border-radius:10px}',
+    '.osechi-lpc .osechi-obulk .osechi-btn-row{margin:0}',
+    '.osechi-lpc .osechi-obulk .osechi-btn{width:auto;flex:0 0 auto;min-height:36px;font-size:15px;padding:4px 14px;white-space:nowrap}',
+    // 店内受注品一覧（PC）: 上の説明を1行に
+    '.osechi-lpc .osechi-prod-intro{margin:0 0 4px}',
     // ---- 店内受注品一覧（画面）----
     '.osechi-prod-actions>.osechi-btn-row{margin-top:0}',
     '.osechi-prod-intro{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 6px}',
@@ -1908,7 +2383,8 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
         TABS: TABS, NONE_MARK: NONE_MARK, RECEPTIONIST_NONE: RECEPTIONIST_NONE, PROD_MAX: PROD_MAX, DOWNLOADS: DOWNLOADS,
         cleanProduction: cleanProduction, defaultProdDay: defaultProdDay, prodGroupTitle: prodGroupTitle, prodDaySub: prodDaySub, prodPrintLayout: prodPrintLayout,
         DEPT_CLASS: DEPT_CLASS, groupClass: groupClass,
-        PROD_HEADS: PROD_HEADS, PROD_SLOTS_HEAD: PROD_SLOTS_HEAD, slotHeadParts: slotHeadParts, prodRowTexts: prodRowTexts
+        PROD_HEADS: PROD_HEADS, PROD_SLOTS_HEAD: PROD_SLOTS_HEAD, slotHeadParts: slotHeadParts, prodRowTexts: prodRowTexts,
+        PC_MIN_WIDTH: PC_MIN_WIDTH, isPcWidth: isPcWidth, pagesOf: pagesOf, pageFit: pageFit, tabLabelParts: tabLabelParts, PHONE_ORDER: PHONE_ORDER
       }
     };
   }
