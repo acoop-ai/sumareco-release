@@ -57,7 +57,7 @@
   'use strict';
 
   // ===== 版・定数 =====
-  var OSECHI_UI_BUILD = 'osechi-ui-2026-10-31a';
+  var OSECHI_UI_BUILD = 'osechi-ui-2026-11-01a';
   var SESSION_KEY = 'osechi_session_v1';        // sessionStorage（このタブだけ・閉じれば消える）
   var LAST_DONE_KEY = 'osechi_last_done_v1';    // sessionStorage（直前の受付番号だけ）
   var DRAFT_DB = 'osechi_drafts_v1';            // IndexedDB（作りかけ・12時間）
@@ -122,8 +122,17 @@
     // 店内受注品一覧（2026-10-29・REPORT_NOTES §8）の Excel: 取り出しの上限に数えるので自動では送り直さない（見るのは openList の中）
     exportProduction: { timeoutMs: 90000, retryNetwork: false, retryBusy: false },
     // 全店の注文（本部だけ・PO 2026-10-31）: 取り出しの上限に数える＝自動では送り直さない。全店分で大きいので待ちを長めに
-    exportAllOrders: { timeoutMs: 120000, retryNetwork: false, retryBusy: false }
+    exportAllOrders: { timeoutMs: 120000, retryNetwork: false, retryBusy: false },
+    // 受付・商品を止める（本部だけ・2026-11-01）: 同じ値をもう一度書いても同じ結果（冪等）＝通信の失敗で1回送り直してよい
+    setItemStatus: { timeoutMs: 30000, retryNetwork: true },
+    setAcceptPause: { timeoutMs: 30000, retryNetwork: true },
+    // 確定後の変更（本部だけ・2026-11-01）: 一覧は読むだけ・「確認した」は同じものを2回押しても1行（窓口が見分ける）
+    listChanges: { timeoutMs: 60000, retryNetwork: true },
+    confirmChange: { timeoutMs: 30000, retryNetwork: true },
+    // 申込書ごとの、まとめて取消（本部だけ・2026-11-01）: submissionId で何回送っても1回（注文ごとに窓口が見分ける）。50件で数秒＝待ちを長めに
+    cancelOrders: { timeoutMs: 120000, retryNetwork: true }
   };
+  var BULK_CANCEL_MAX = 50;   // 本部がまとめて取り消せる件数（1回の操作で・窓口の BULK_CANCEL_MAX_ と同じ）
   var DEFAULT_ACTION_OPTS = { timeoutMs: 30000, retryNetwork: false };
   // 待ち時間の記録（2026-10-31 段2.5・公開後の実測）: 窓口を呼ぶたびに 操作・往復の時間・窓口の中の時間（返事の ms）を、最後の50回だけ持つ。
   //   持つのは操作の名前と数だけ（個人情報なし）。ページのメモリだけ（localStorage・sessionStorage・IndexedDB に入れない＝読み込み直すと消える）
@@ -134,14 +143,17 @@
     ping: '窓口の確かめ', startSession: 'ログインの確かめ', getConfig: '設定を読む', ocr: '写真の読み取り', checkOrder: '似た注文の確認',
     submitOrder: '注文を送る', openList: '受注状況を開く', getOrder: '注文を読み直す', updateOrder: '修正を送る', cancelOrder: '取り消す',
     exportReport: '報告用 Excel', exportCsv: 'CSV', exportProduction: '店内受注品一覧 Excel', exportAllOrders: '全店の注文 Excel', logPrint: '印刷の記録',
-    adminStatus: '管理の件数', adminExportNow: '管理の転記'
+    adminStatus: '管理の件数', adminExportNow: '管理の転記',
+    setItemStatus: '商品を止める・戻す', setAcceptPause: '受付を止める・再開', listChanges: '確定後の変更を読む', confirmChange: '変更を確認した',
+    cancelOrders: 'まとめて取り消す'
   };
   // 返事の ms の部分の呼び名（窓口の中の内訳）
-  var MS_PART_LABELS = { auth: 'ログインの確かめ', session: 'スマレコへの問い合わせ', cfg: '設定', read: '注文を読む', build: '表を作る', lock: '順番待ち', write: '書く', metrics: '計測', audit: '記録' };
+  var MS_PART_LABELS = { auth: 'ログインの確かめ', session: 'スマレコへの問い合わせ', cfg: '設定', read: '注文を読む', build: '表を作る', lock: '順番待ち', write: '書く', metrics: '計測', audit: '記録', changes: '確定後の変更を探す' };
   // 設定（getConfig）のページのメモリ（2026-10-31）: 同じタブでモードを開き直したとき、前に受け取った設定を先に使い、裏で読み直す。
   //   個人情報なし（商品の番号・状態・受付期間・店の名前）・端末に保存しない。人（メール）・区分・店が同じときだけ使う。
   //   売り切れ・受付期間は、送るときに窓口が必ず確かめる（古い設定のまま送っても断られる）＝先に出しても危ないことは無い
   var CfgMemo = null;
+  var DeferHooked = null;   // 入力の画面の枠に「欄を離れたら、裏で届いた設定を当てる」を付けたか（2026-11-01）
   // 似た注文の確認を先に済ませる（2026-10-31）: 入力が落ち着いてから始める・1つの注文の画面で先に確かめるのは6回まで
   var PRECHECK_DELAY_MS = 900, PRECHECK_MAX = 6;
   // 注意のうち、確認しても越えられないもの（日ごとの個数が空＝人が入れるまで送れない・追補 v3）
@@ -339,12 +351,16 @@
     var out = {
       season: {
         isOpen: se.open === true ? true : (se.open === false ? false : null),
+        paused: se.paused === true,   // 本部が受付を一時停止にしている（2026-11-01・期間の外と分ける）
         start: cleanText(typeof se.open === 'string' ? se.open : se.start, 40),
         end: cleanText(se.end, 40)
       },
       // 写真の上限は窓口の値と 4MB の小さい方（窓口が小さくしたときに、送ってから断られない）
       imageMaxBytes: (maxBytes >= 200 * 1024 && maxBytes < MAX_IMAGE_BYTES) ? maxBytes : MAX_IMAGE_BYTES,
-      items: [], stores: [], build: cleanText(c.build, 60)
+      items: [], stores: [], build: cleanText(c.build, 60),
+      // 2026-11-01: 店の受け渡しできない日（店の区分＝自店の分・本部＝店ごと）・止める操作ができるか・最後に止めた記録・確定後の変更の件数（本部）
+      blockedDates: cleanDates(c.blockedDates), storeBlockedDates: {},
+      canStop: c.canStop === true, stopLog: cleanStopLog(c.stopLog), changeAlerts: null
     };
     var seen = {};
     (Array.isArray(c.items) ? c.items : []).forEach(function (it) {
@@ -360,14 +376,61 @@
       });
       var status = (it.status === 'soldout' || it.status === 'needcall') ? it.status : 'normal';
       seen[no] = true;
-      out.items.push({ no: no, kind: kind, dates: dates, status: status, name: cleanText(it.name, 30) });
+      // 取扱いのない店（2026-11-01）: 店の区分＝この店で取り扱いがない（notHandledHere）・本部＝店名の一覧（notHandled・選んだ店で判断）
+      var nh = [];
+      (Array.isArray(it.notHandled) ? it.notHandled : []).slice(0, 300).forEach(function (s) { var n = cleanText(s, LIMITS.store); if (n && nh.indexOf(n) < 0) nh.push(n); });
+      out.items.push({ no: no, kind: kind, dates: dates, status: status, name: cleanText(it.name, 30), notHandledHere: it.notHandledHere === true, notHandled: nh });
     });
     out.items.sort(function (a, b) { return a.no - b.no; });
     (Array.isArray(c.stores) ? c.stores : []).forEach(function (s) {
       var n = cleanText(s, LIMITS.store);
       if (n && out.stores.indexOf(n) < 0 && out.stores.length < 300) out.stores.push(n);
     });
+    var sb = (c.storeBlockedDates && typeof c.storeBlockedDates === 'object' && !Array.isArray(c.storeBlockedDates)) ? c.storeBlockedDates : {};
+    Object.keys(sb).slice(0, 300).forEach(function (k) { var n = cleanText(k, LIMITS.store); if (n) out.storeBlockedDates[n] = cleanDates(sb[k]); });
+    var ca = c.changeAlerts;
+    if (ca && typeof ca === 'object' && toInt(ca.unconfirmed) >= 0) out.changeAlerts = { unconfirmed: toInt(ca.unconfirmed), total: toInt(ca.total) >= 0 ? toInt(ca.total) : 0 };
     return out;
+  }
+  function cleanDates(arr) {
+    var out = [];
+    (Array.isArray(arr) ? arr : []).slice(0, 20).forEach(function (d) { var nd = normalizeDate(d); if (nd && out.indexOf(nd) < 0) out.push(nd); });
+    return out;
+  }
+  /** 最後に止めた・戻した記録（本部の画面だけ）: { accept: {at, by, from, to}|null, items: {no: {...}} } */
+  function cleanStopLog(o) {
+    var one = function (e) {
+      if (!e || typeof e !== 'object') return null;
+      return { at: cleanText(e.at, 20), by: cleanText(e.by, 40), from: cleanText(e.from, 12), to: cleanText(e.to, 12) };
+    };
+    var out = { accept: null, items: {} };
+    if (!o || typeof o !== 'object') return out;
+    out.accept = one(o.accept);
+    var items = (o.items && typeof o.items === 'object') ? o.items : {};
+    Object.keys(items).slice(0, 200).forEach(function (k) { var no = toInt(k); var e = one(items[k]); if (no >= 1 && no <= 999 && e) out.items[no] = e; });
+    return out;
+  }
+  /** いまの店（店の区分は自店・本部は注文で選んだ店。決まっていなければ ''） */
+  function currentStoreForItems() {
+    if (!S.me) return '';
+    if (S.me.role === 'hq') return (S.form && S.form.store) ? S.form.store : '';
+    return S.me.store || '';
+  }
+  /** その商品が、いまの店で取り扱いがないか（店が決まっていなければ false＝何も出さない） */
+  function notHandledHere(no) {
+    var it = S.idx && S.idx.byNo[no];
+    if (!it) return false;
+    if (S.me && S.me.role !== 'hq') return it.notHandledHere === true;
+    var store = currentStoreForItems();
+    return !!store && it.notHandled.indexOf(store) >= 0;
+  }
+  /** いまの店で受け渡しができない日（元日など）。店が決まっていなければ null（分からない） */
+  function blockedDatesHere() {
+    if (!S.me || !S.cfg) return null;
+    if (S.me.role !== 'hq') return S.cfg.blockedDates || [];
+    var store = currentStoreForItems();
+    if (!store) return null;
+    return S.cfg.storeBlockedDates[store] || [];
   }
   function buildIndex(cfg) {
     var idx = { byNo: {}, methodNos: [], dateNos: [], soldout: [], needcall: [] };
@@ -924,7 +987,7 @@
     this.code = code || 'SERVER_ERROR';
     this.message = cleanText(message, 300) || DEFAULT_MESSAGES[this.code] || DEFAULT_MESSAGES.SERVER_ERROR;
     this.retry = !!retry;
-    if (extra) { this.field = cleanText(extra.field, 60); this.missing = extra.missing; this.warnings = extra.warnings; }
+    if (extra) { this.field = cleanText(extra.field, 60); this.missing = extra.missing; this.warnings = extra.warnings; this.reason = /^[a-z]{1,20}$/.test(str(extra.reason)) ? str(extra.reason) : ''; }
   }
   OsechiError.prototype = Object.create(Error.prototype);
   OsechiError.prototype.name = 'OsechiError';
@@ -939,7 +1002,8 @@
     });
     var store = cleanText(me.store, LIMITS.store);
     if (role !== 'hq' && !store) return null;   // 店の区分なのに店が無い＝使わない（閉じる側）
-    return { email: cleanText(me.email, 120).toLowerCase(), role: role, isAdmin: me.isAdmin === true, store: store, stores: stores };
+    // canStop（2026-11-01）: 停止のメニューを出すか。出すのは本部だけ（止める操作は、窓口が毎回本部かを確かめる＝画面で隠すだけにしない）
+    return { email: cleanText(me.email, 120).toLowerCase(), role: role, isAdmin: me.isAdmin === true, canStop: me.canStop === true && role === 'hq', store: store, stores: stores };
   }
   /** 空いている必須の欄の一覧（窓口は order.receiver.zip の形・古い形は receiver.zip）。知っている名前だけ */
   function cleanMissing(arr) {
@@ -1044,7 +1108,7 @@
       record(body.action, t0, json, er ? (cleanText(er.code, 40) || 'SERVER_ERROR') : 'OK', opt.attempt);
       if (!er) return json;
       throw new OsechiError(cleanText(er.code, 40) || 'SERVER_ERROR', er.message, er.retry === true,
-        { field: er.field, missing: er.missing || (json.flags && json.flags.missing), warnings: er.warnings || (json.flags && json.flags.warnings) });
+        { field: er.field, missing: er.missing || (json.flags && json.flags.missing), warnings: er.warnings || (json.flags && json.flags.warnings), reason: er.reason });
     }
 
     async function startSession() {
@@ -1359,7 +1423,9 @@
     'title': 1, 'disabled': 1, 'spellcheck': 1, 'autocapitalize': 1, 'alt': 1, 'lang': 1, 'value': 1,
     'aria-current': 1, 'aria-hidden': 1, 'data-layer': 1, 'data-view': 1,
     // 受注状況（osechi_list.js）で使う: 表の結合・見出しの範囲・スマホのカードの見出し・切り替えの印・行の注文番号
-    'colspan': 1, 'rowspan': 1, 'scope': 1, 'data-label': 1, 'aria-selected': 1, 'data-tab': 1, 'data-order': 1, 'data-method': 1
+    'colspan': 1, 'rowspan': 1, 'scope': 1, 'data-label': 1, 'aria-selected': 1, 'data-tab': 1, 'data-order': 1, 'data-method': 1,
+    // 2026-11-01: 停止の画面の切り替えの値・確定後の変更のカードの印・集計の締め日の行
+    'data-status': 1, 'data-key': 1, 'data-closing': 1
   };
   function h(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -1526,6 +1592,17 @@
     '.osechi-item--err{background:#fff4f3;border-color:#d92d20}',
     '.osechi-item-msg{grid-column:1/-1;font-size:15px;font-weight:800;color:#6a4a00;margin:0}',
     '.osechi-item--err .osechi-item-msg{color:#9a1c12}',
+    // 取扱いなし（2026-11-01 PO「赤と黄色で」）: 黄色の地・赤の枠・行の上に赤の ⚠ と文字（色だけにしない）。数を入れたら赤い文字で、することと理由
+    '.osechi-item.osechi-item--nh{background:#fff4c2;border:3px solid #c62828}',
+    '.osechi-nh{grid-column:1/-1;display:flex;align-items:center;gap:6px;color:#b42318;font-size:17px;font-weight:900;line-height:1.3}',
+    '.osechi-nh-ico{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;border-radius:50%;background:#c62828;color:#fff;font-size:16px;font-weight:900;margin-right:4px}',
+    '.osechi-item.osechi-item--nhqty{box-shadow:0 0 0 3px #f5b8b3 inset}',
+    '.osechi-item-msg.osechi-item-msg--nh{color:#9a1c12;background:#fff;border:2px solid #c62828;border-radius:10px;padding:6px 8px;font-size:16px}',
+    '.osechi-item.osechi-item--srvwarn{border-color:#c62828;border-width:3px}',
+    '.osechi-warn-item{background:#fff4c2;border:3px solid #c62828;color:#7a1610}',
+    '.osechi-warn-item b{display:flex;align-items:center;gap:4px;color:#9a1c12}',
+    '.osechi-warnlink{display:block;width:100%;text-align:left;background:none;border:0;border-top:1px dashed #e8a29b;padding:8px 2px;font:inherit;font-size:16px;font-weight:800;color:#9a1c12;cursor:pointer;min-height:44px}',
+    '.osechi-warnlink:hover,.osechi-warnlink:focus{text-decoration:underline}',
     '.osechi-item-d{grid-template-columns:54px minmax(0,1fr)}',
     '.osechi-dcol{min-width:0;display:flex;flex-direction:column;gap:6px}',
     '.osechi-dhead{font-size:15px;font-weight:900;color:#3d2a20}',
@@ -1599,7 +1676,39 @@
     '.osechi-tsum{width:100%;border-collapse:collapse;font-size:15px;margin:4px 0 10px}',
     '.osechi-tsum th,.osechi-tsum td{border-bottom:1px solid #eee3d3;padding:6px 4px;text-align:left}',
     '.osechi-tsum .osechi-tnum{text-align:right;white-space:nowrap}',   // 数の列は見出しも右にそろえる（数と見出しの位置を合わせる）
-    '.osechi-tsum td.osechi-tnum{font-weight:800}'
+    '.osechi-tsum td.osechi-tnum{font-weight:800}',
+    // 赤と黄色の帯（確定後の変更・本部）
+    '.osechi-alertband{background:#fff4c2;border:3px solid #c62828;border-radius:12px;padding:10px 12px;margin:8px 0;color:#7a1610}',
+    '.osechi-alertband-t{display:flex;align-items:flex-start;gap:8px;font-size:17px;font-weight:900;margin:0 0 8px}',
+    '.osechi-alertband-ico{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#c62828;color:#fff;font-weight:900}',
+    // 停止の画面（3つの切り替え・押した所に結果）
+    '.osechi-stoprow{padding:10px 0;border-bottom:1px solid #eee3d3}',
+    '.osechi-stopname{font-size:16px;margin:0 0 6px}',
+    '.osechi-stopname b{font-size:20px;margin-right:4px}',
+    '.osechi-seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}',
+    '.osechi-segbtn{min-height:44px;border-radius:10px;border:2px solid #cdbfae;background:#fff;color:#3d2a20;font:inherit;font-size:15px;font-weight:800;cursor:pointer;padding:4px}',
+    '.osechi-segbtn.osechi-on{color:#fff;border-color:transparent}',
+    '.osechi-segbtn-normal.osechi-on{background:#2f6f3e}',
+    '.osechi-segbtn-soldout.osechi-on{background:#c62828}',
+    '.osechi-segbtn-needcall.osechi-on{background:#ea7a00}',
+    '.osechi-segbtn:disabled{opacity:.6;cursor:wait}',
+    '.osechi-stoplast{margin-top:4px;color:#3f4650}',
+    // 確定後の変更の一覧（カード・前→後の表）
+    '.osechi-chgcard{border:3px solid #c62828;border-radius:12px;background:#fff;padding:10px 12px;margin:0 0 10px}',
+    // まとめて取消の確かめ（2026-11-01）: 受付番号と氏名を全部並べる。長いときは小窓の中で流す
+    '.osechi-blist{max-height:40vh;overflow:auto;margin:8px 0;padding:6px 8px 6px 2.4em;font-size:15px;line-height:1.7;border:1px solid #e0d5c5;border-radius:8px;background:#fffaf2}',
+    '.osechi-chgcard.osechi-chgcard-done{border:2px solid #cdbfae;background:#fafaf7}',
+    '.osechi-chghead{font-size:17px;margin:0 0 4px}',
+    '.osechi-chgbadge{display:inline-flex;align-items:center;gap:6px;background:#fff4c2;border:2px solid #c62828;color:#9a1c12;border-radius:999px;padding:2px 10px;font-weight:900;font-size:14px;margin:2px 0 6px}',
+    '.osechi-chgbadge span{font-weight:900}',
+    '.osechi-chgcard-done .osechi-chgbadge{background:#f1f1ec;border-color:#9aa0a6;color:#3f4650}',
+    '.osechi-chgtable{width:100%;border-collapse:collapse;font-size:15px;margin:6px 0}',
+    '.osechi-chgtable th,.osechi-chgtable td{border-bottom:1px solid #eee3d3;padding:6px 4px;text-align:left;vertical-align:top;word-break:break-word}',
+    '.osechi-chgtable thead th{font-size:13px;color:#3f4650}',
+    '.osechi-chgbefore{color:#5a5f66;text-decoration:line-through;text-decoration-color:#9aa0a6}',
+    '.osechi-chgafter{color:#9a1c12;font-weight:900}',
+    '.osechi-chgok{color:#1d5b33;font-weight:900}',
+    '.osechi-chgfoot{margin-top:6px}'
   ].join('\n');
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -1840,6 +1949,10 @@
       wrap: S.els ? S.els.wrap : null, body: S.els ? S.els.body : null, me: S.me, cfg: S.cfg, idx: S.idx,
       alive: function () { return alive(seq) && S.view === 'customers'; },
       editOrder: editOrder, saveFile: saveFile, stop: showAuthStop,
+      // 申込書ごと（2026-11-01）: 行の「取り消す」（修正の画面を開かない・往復1本）・本部のまとめて取消
+      cancelOrder: cancelOrderDirect, cancelOrders: cancelOrdersBulk,
+      // 確定後の変更（本部だけ・2026-11-01）: 受注状況（openList）で受け取った一覧を置く・帯を作る・一覧を開く（店・〆で絞る）
+      setChanges: setChanges, changes: function () { changeCount(); return CHG.data; }, changeBand: changeBand, openChanges: openChangeList,
       util: { str: str, cleanText: cleanText, toInt: toInt, nfkc: nfkc, isDefinitive: isDefinitive, makeSubmissionId: makeSubmissionId }
     };
   }
@@ -1856,10 +1969,13 @@
       draftForgetAll();
       forgetListMemory();   // 受注状況のページのメモリ（お客様の情報）も捨てる
       CfgMemo = null;
+      CHG.data = null;      // 確定後の変更の一覧（お客様の氏名を含む）も捨てる
     }
     renderMessage({ tone: 'error', title: e && e.code === 'AUTH_DENIED' ? 'このアカウントでは使えません' : 'ログインの確認ができません', text: (e && e.message) || DEFAULT_MESSAGES.AUTH_REQUIRED });
   }
   function isAuthStop(e) { return !!(e && (e.code === 'AUTH_DENIED' || e.code === 'SUMARECO_LOGIN' || e.code === 'AUTH_REQUIRED')); }
+  /** 受け付けていないときの見出し（本部の一時停止と、受付期間の外を分ける・2026-11-01） */
+  function closedTitle(e) { return (e && e.reason === 'paused') ? 'いま本部が受付を止めています' : '受付期間の外です'; }
   // ===== 開く・閉じる =====
   function open(ctx) {
     if (!hasDom) throw new Error('ブラウザの中で使ってください');
@@ -1885,6 +2001,7 @@
     watchContainer();
     listen(document, 'visibilitychange', function () {
       if (document.visibilityState === 'hidden') { saveDraftNow(); return; }
+      backgroundConfigCheck();   // 戻ってきた: 止めた商品・受付を受け取る（1分より前に読んでいれば読まない）
       // 同じ画面のまま戻ってきた＝終了させられていない。写真が届けば onPhotoChosen が段階を進める。
       //   届かないまま（撮らずに戻った・届かない端末）なら、少し待って印を消す（すぐ消すと、このあと写真を整える間に
       //   終了させられたとき、開き直せない）
@@ -1920,7 +2037,8 @@
   /** 後片付け。discard＝サインアウト（作りかけを保存し直さない＝消したあとに書き戻さない） */
   function teardown(discard) {
     if (S.phase === 'review' && !discard) saveDraftNow();
-    if (discard) { S.form = null; S.pending = null; S.discarded = true; forgetListMemory(); CfgMemo = null; }
+    if (discard) { S.form = null; S.pending = null; S.discarded = true; forgetListMemory(); CfgMemo = null; CHG.data = null; }
+    stopConfigWatch();
     dropPrecheck();
     if (S.layer && S.layer.kind === 'busy' && S.layer.cancelable && S.layer.onCancel) { try { S.layer.onCancel(); } catch (e) { /* 何もしない */ } }
     hideLayer();
@@ -1961,6 +2079,9 @@
   function useConfig(raw) {
     S.cfg = sanitizeConfig(raw);
     S.idx = buildIndex(S.cfg);
+    S.cfgAt = Date.now();
+    // 確定後の変更の一覧（ページのメモリ）が、窓口のいまの件数と違えば捨てる（古い一覧で帯を出さない・開くときに読み直す）
+    if (CHG.data && S.cfg.changeAlerts && (S.cfg.changeAlerts.unconfirmed !== CHG.data.unconfirmed || S.cfg.changeAlerts.total !== CHG.data.total)) CHG.data = null;
     CfgMemo = { key: cfgMemoKey(S.me), raw: raw };
   }
   function cfgMemoKey(me) { return me ? [me.email, me.role, me.store].join('|') : ''; }
@@ -1986,6 +2107,7 @@
       S.cfgStale = false;
       if (memo) recheckConfig(seq);
       S.ready = true;
+      startConfigWatch();   // 開いている間、止めた商品・受付を裏で受け取る（2026-11-01）
       S.readyError = null;
       var d = await draftGet(S.me.email);
       if (!alive(seq)) return false;
@@ -2183,7 +2305,7 @@
     var w = S.els.wrap;
     clear(w);
     setFooter(null);
-    var I = S.introEls = { err: h('div'), note: h('div'), last: h('div'), draft: h('div'), status: h('div'), admin: h('div'), foot: h('div') };
+    var I = S.introEls = { err: h('div'), pause: h('div'), changes: h('div'), note: h('div'), last: h('div'), draft: h('div'), status: h('div'), stop: h('div'), admin: h('div'), foot: h('div') };
 
     var camInput = pickerInput({ type: 'file', accept: 'image/*', capture: 'environment', 'class': 'osechi-file', 'data-act': 'camera-input', 'aria-label': 'カメラで撮影', tabindex: '-1' });
     var albInput = pickerInput({ type: 'file', accept: 'image/*', 'class': 'osechi-file', 'data-act': 'album-input', 'aria-label': 'アルバムから選ぶ', tabindex: '-1' });
@@ -2201,7 +2323,7 @@
       h('p', { 'class': 'osechi-note', text: '明るい所で、注文書の全体が入るように真上から撮ってください。写真はこの端末にも窓口にも残しません。' }),
       manBtn
     ]);
-    add(w, [I.err, I.note, I.last, I.draft, cap, I.status, I.admin, I.foot]);
+    add(w, [I.err, I.pause, I.changes, I.note, I.last, I.draft, cap, I.status, I.stop, I.admin, I.foot]);
     refreshIntro();
     scrollTop();
   }
@@ -2250,9 +2372,18 @@
       if (S.cfgChecking) st.appendChild(h('div', { 'class': 'osechi-small osechi-cfgcheck', 'data-step': 'cfg-checking', role: 'status' }, [h('span', { 'class': 'osechi-spin-s', 'aria-hidden': 'true' }), '前に読んだ設定を出しています（いまの設定を確かめています…）']));
       else if (S.cfgStale) st.appendChild(h('div', { 'class': 'osechi-small', 'data-step': 'cfg-stale', role: 'status', text: '設定を最新にできませんでした（前に読んだ設定です。送るときに窓口が確かめます）。' }));
       // 受付期間の外（窓口が open:false を返した）。入力はできるが、送ると断られる＝先に知らせる
-      if (S.cfg.season.isOpen === false) st.appendChild(h('div', { 'class': 'osechi-error', 'data-kind': 'closed', text: 'いまは受付期間の外です。注文を送ることはできません。' }));
+      if (S.cfg.season.isOpen === false && !S.cfg.season.paused) st.appendChild(h('div', { 'class': 'osechi-error', 'data-kind': 'closed', text: 'いまは受付期間の外です。注文を送ることはできません。' }));
     }
     I.status.appendChild(st);
+    // 本部が受付を止めている（2026-11-01）: いちばん上に（撮影の前に分かるように）。期間の外とは文を分ける
+    clear(I.pause);
+    if (S.ready && S.cfg.season.paused) I.pause.appendChild(h('div', { 'class': 'osechi-error', role: 'alert', 'data-kind': 'paused' }, [h('b', { text: 'いま本部が受付を止めています（全店）' }), h('br'),
+      '再開されるまで、注文の送信と写真の読み取りはできません。手で入れた内容は、この端末に残ります。']));
+    // 確定後の変更（本部だけ・2026-11-01）: 未確認があれば、いちばん上に赤と黄色の帯
+    clear(I.changes);
+    if (S.ready && S.me && S.me.role === 'hq') { var band = changeBand({}); if (band) I.changes.appendChild(band); }
+    clear(I.stop);
+    if (S.ready && S.me && S.me.canStop) I.stop.appendChild(stopEntryCard());
     clear(I.admin);
     if (S.me && S.me.isAdmin) I.admin.appendChild(adminCard());
     clear(I.foot);
@@ -2297,6 +2428,7 @@
     if (e.ms) {
       Object.keys(MS_PART_LABELS).forEach(function (k) { if (e.ms[k] >= 50) parts.push(MS_PART_LABELS[k] + ' ' + secText(e.ms[k])); });
       if (e.ms.rows) parts.push('注文 ' + e.ms.rows.toLocaleString('ja-JP') + ' 行');
+      if (e.ms.chrows) parts.push('変更前 ' + e.ms.chrows.toLocaleString('ja-JP') + ' 行');
     }
     var bad = e.code && e.code !== 'OK' ? (e.code === 'NETWORK' || e.code === 'TIMEOUT' ? '通信できなかった' : '断られた（' + e.code + '）') : '';
     return { main: main, sub: parts.join('・'), bad: bad, retry: e.attempt > 0 };
@@ -2465,6 +2597,7 @@
     S.form = r.form;
     S.ocrStoreName = r.storeName;
     S.dropped = r.dropped;
+    S.rowWarns = {};
     S.flags = {
       storeMatched: fl.storeMatched === true ? true : (fl.storeMatched === false ? false : null),
       storeMessage: cleanText(fl.storeMessage, 200),
@@ -2504,7 +2637,7 @@
     revokePhoto();
     S.form = emptyForm(S.idx);
     S.form.receptionist = RECEPTIONIST_NONE;   // 空のまま送らない（直せる）
-    S.ocrStoreName = ''; S.dropped = []; S.flags = null; S.edited = {}; S.pending = null; S.restored = false; S.hasOcr = false;
+    S.ocrStoreName = ''; S.dropped = []; S.flags = null; S.rowWarns = {}; S.edited = {}; S.pending = null; S.restored = false; S.hasOcr = false;
     applyStoreForRole();
     S.draftCreatedAt = Date.now();
     S.draftOffer = null;
@@ -2679,6 +2812,11 @@
     refreshWarningsBand();
     updateSummary();
     updateSubmitState();
+    // 入力の途中に裏で届いた設定（止めた商品など）は、欄を離れたときに当てる（2026-11-01）
+    if (typeof WeakSet === 'function') {
+      DeferHooked = DeferHooked || new WeakSet();
+      if (!DeferHooked.has(w)) { DeferHooked.add(w); w.addEventListener('focusout', function () { setTimeout(function () { applyDeferredConfig(); }, 400); }); }
+    }
     scrollTop();
     if (S.preForm !== S.form) { dropPrecheck(); S.preCount = 0; S.preForm = S.form; }   // 新しい注文の入力（読み取り・手入力・作りかけ）は数え直す
     schedulePrecheck();
@@ -2706,13 +2844,27 @@
           '注文書の店名「' + paper + '」と、この店（' + S.me.store + '）が違います。この店の注文として登録されます。' }));
       }
     }
+    // 本部が受付を止めている（2026-11-01）: 入力の画面の上にも（送る前に分かるように）
+    if (S.cfg && S.cfg.season.paused) band.appendChild(h('div', { 'class': 'osechi-error', 'data-kind': 'paused', role: 'alert', text: 'いま本部が受付を止めています（全店）。再開されるまで送れません（入力はこの端末に残ります）。' }));
     var warns = (S.flags && S.flags.warnings) ? S.flags.warnings.filter(function (x) {
       // 日ごとの個数の注意は、まだ空の日があるあいだだけ出す（入れ終われば消える）
       return x.code !== 'DATE_QTY_NEEDED' || dateQtyMissing(x.no);
     }) : [];
-    if (warns.length) {
+    // 商品の注意（取扱いなし・受け渡しのできない日・宅配の地域など＝番号のあるもの）は、赤と黄色で・押すとその商品の行へ（2026-11-01 PO）
+    var itemWarns = warns.filter(function (x) { return x.no && S.idx && S.idx.byNo[x.no] && !BLOCKING_WARNINGS[x.code]; });
+    var otherWarns = warns.filter(function (x) { return itemWarns.indexOf(x) < 0; });
+    if (itemWarns.length) {
+      band.appendChild(h('div', { 'class': 'osechi-warn osechi-warn-item', 'data-kind': 'item-warnings', role: 'alert' }, [
+        h('b', null, [h('span', { 'class': 'osechi-nh-ico', 'aria-hidden': 'true', text: '⚠' }), '商品の注意（お客様に確かめてから送ってください）']),
+        h('div', null, itemWarns.map(function (x) {
+          return h('button', { type: 'button', 'class': 'osechi-warnlink', 'data-act': 'warn-goto', 'data-no': String(x.no), text: '⚠ ' + x.message + '（押すとその商品へ）',
+            on: { click: function () { focusField(qtyKey(S.idx, x.no, S.form)); } } });
+        }))
+      ]));
+    }
+    if (otherWarns.length) {
       band.appendChild(h('div', { 'class': 'osechi-warn', 'data-kind': 'warnings' }, [h('b', { text: '注意（確かめてから送ってください）' })].concat(
-        warns.map(function (x) { return h('div', { text: '・' + x.message + (BLOCKING_WARNINGS[x.code] ? '（入れるまで送れません）' : '') }); }))));
+        otherWarns.map(function (x) { return h('div', { text: '・' + x.message + (BLOCKING_WARNINGS[x.code] ? '（入れるまで送れません）' : '') }); }))));
     }
   }
   /** 選んだお渡し日のうち、個数が空の日がある商品か（no を省くと、どれか1つでも） */
@@ -2766,7 +2918,11 @@
         noteBox.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'store-unread', text: '注文書の店名が読み取れませんでした。注文書を確かめて選んでください。' }));
       }
     }
-    sel.addEventListener('change', function () { S.form.store = sel.value; clearFieldError('store'); refresh(); updateSubmitState(); scheduleSave(); });
+    sel.addEventListener('change', function () {
+      S.form.store = sel.value; clearFieldError('store'); refresh(); updateSubmitState(); scheduleSave();
+      S.rowWarns = {};   // 前の店で受け取った注意は、選び直した店には当たらない
+      Object.keys(S.rows || {}).forEach(function (no) { updateRow(Number(no)); });   // 取扱いなし・受け渡しのできない日を、選んだ店で出し直す
+    });
     S.inputs.store = sel;
     box.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-f-store', text: S.edit ? 'この注文の店（直すときだけ選び直します）' : 'どの店の注文ですか' }));
     box.appendChild(sel);
@@ -2813,6 +2969,11 @@
     ]);
   }
 
+  // 取扱いなしの印と文（2026-11-01）。色だけにしない（⚠ と文字）
+  var NH_QTY_TEXT = 'この店では取り扱っていない商品です。数量を消すか、お客様に別の商品をご案内してください（受け付けると店で用意できません）。';
+  function nhTag() {
+    return h('div', { 'class': 'osechi-nh osechi-hidden', 'data-step': 'item-nh' }, [h('span', { 'class': 'osechi-nh-ico', 'aria-hidden': 'true', text: '⚠' }), 'この店では取り扱いなし']);
+  }
   function itemBadge(no) {
     var st = statusOf(S.idx, no);
     if (st === 'soldout') return h('span', { 'class': 'osechi-badge osechi-badge-soldout', text: '売切' });
@@ -2845,10 +3006,11 @@
     var cs = h('label', { 'class': 'osechi-qcell osechi-qcell-store' }, [h('span', { 'class': 'osechi-qlabel', text: '店渡し' }), qs]);
     var cd = h('label', { 'class': 'osechi-qcell osechi-qcell-delivery' }, [h('span', { 'class': 'osechi-qlabel', text: '宅配' }), qd]);
     var msg = h('p', { 'class': 'osechi-item-msg osechi-hidden' });
+    var nh = nhTag();
     var row = h('div', { 'class': 'osechi-item osechi-item-m' + (st === 'needcall' ? ' osechi-item--needcall' : '') + (st === 'soldout' ? ' osechi-item--soldout' : ''), 'data-no': String(no), 'data-kind': 'method' }, [
-      itemNoCell(no, meta), cs, cd, msg
+      nh, itemNoCell(no, meta), cs, cd, msg
     ]);
-    S.rows[no] = { row: row, kind: 'method', qtys: [qs, qd], cells: [cs, cd], msg: msg };
+    S.rows[no] = { row: row, kind: 'method', qtys: [qs, qd], cells: [cs, cd], msg: msg, nh: nh };
     updateRow(no);
     return row;
   }
@@ -2902,11 +3064,12 @@
     var msg = h('p', { 'class': 'osechi-item-msg osechi-hidden' });
     var top = h('div', { 'class': 'osechi-dtop' }, [tcell, h('div', { 'class': 'osechi-dright' }, [none, pending, datesBox])]);
     var col = h('div', { 'class': 'osechi-dcol' }, [top, qbox, sum]);
+    var nh = nhTag();
     var row = h('div', { 'class': 'osechi-item osechi-item-d' + (st === 'needcall' ? ' osechi-item--needcall' : '') + (st === 'soldout' ? ' osechi-item--soldout' : ''), 'data-no': String(no), 'data-kind': 'date' }, [
-      itemNoCell(no, meta), col, msg
+      nh, itemNoCell(no, meta), col, msg
     ]);
     S.rows[no] = { row: row, kind: 'date', chips: chips, total: total, tcell: tcell, none: none, pending: pending, pendText: pendText, datesBox: datesBox,
-      qbox: qbox, sum: sum, msg: msg, qtys: [], cells: [] };
+      qbox: qbox, sum: sum, msg: msg, qtys: [], cells: [], nh: nh };
     renderDateQtys(no, '');
     updateRow(no);
     return row;
@@ -2962,12 +3125,13 @@
   function updateRow(no) {
     var R = S.rows[no];
     if (!R) return;
-    var st = S.idx.byNo[no].status, text = '', cls = '';
+    var st = S.idx.byNo[no].status, text = '', cls = '', filled = false;
     if (R.kind === 'method') {
       var it = S.form.items[no], fields = ['storeQty', 'deliveryQty'];
       var parsed = fields.map(function (f) { return parseQty(it[f]); });
       var err = parsed.filter(function (q) { return q.error; })[0];
       var hasQty = parsed.some(function (q) { return q.value; });
+      filled = hasQty || parsed.some(function (q) { return q.error; });
       // 売り切れ: 空の欄は入れさせない。読み取りで数量が入っていたら消せるように残し、赤で知らせる（黙って消さない）
       R.qtys.forEach(function (input, i) {
         var empty = !str(it[fields[i]]).trim();
@@ -2983,6 +3147,7 @@
       var di = S.form.dateItems[no], dates = S.idx.byNo[no].dates, sel = selectedDates(di, dates);
       var tq = dateOrderQty(di), locked = !tq.value, total = dateTotal(di, dates), empties = [], derr = '';
       var tEmpty = !str(di.hint).trim();
+      filled = !tEmpty || sel.length > 0;
       R.total.disabled = (st === 'soldout' && tEmpty);
       R.total.setAttribute('placeholder', R.total.disabled ? '売切' : '－');
       R.total.classList.toggle('osechi-err', !!tq.error || (st === 'soldout' && !tEmpty));
@@ -3014,8 +3179,29 @@
       else if (sel.length > 1 && empties.length) { cls = 'osechi-item--warn'; text = empties.join('・') + ' の個数を入れてください（日ごとの個数が空のままは送れません）。'; }
       else if (sel.length > 1 && total !== tq.value) { cls = 'osechi-item--warn'; text = '注文数（' + tq.value + '）と、日ごとの合計（' + total + '）が違います。'; }
       else if (!locked) { cls = 'osechi-item--ok'; if (st === 'needcall') text = '要電話確認の商品です。送る前にお客様へ電話で確かめてください。'; }
-      if (!locked && hasOwn(di.sel, NEW_YEAR_DATE) && st !== 'soldout') text = (text ? text + '\n' : '') + NEW_YEAR_DATE + '（元日）は、元日営業の店だけです（そうでない店は、送る前に注意が出ます）。';
+      // 受け渡しのできない日（元日営業でない店の 1/1 など・2026-11-01）: 店が分かれば、その店の決まりで出す（分からなければ一般の注意）
+      var bd = blockedDatesHere(), bad = bd ? sel.filter(function (d) { return bd.indexOf(d) >= 0; }) : [];
+      if (!locked && st !== 'soldout' && bad.length) {
+        text = (text ? text + '\n' : '') + 'この店は ' + bad.join('・') + (bad.indexOf(NEW_YEAR_DATE) >= 0 ? '（元日）' : '') + ' のお渡しができません。お渡し日を変えるか、お客様にご案内してください（そのままでは店でお渡しできません）。';
+        if (cls !== 'osechi-item--err') cls = 'osechi-item--warn';
+      } else if (!locked && !bd && hasOwn(di.sel, NEW_YEAR_DATE) && st !== 'soldout') {
+        text = (text ? text + '\n' : '') + NEW_YEAR_DATE + '（元日）は、元日営業の店だけです（そうでない店は、送る前に注意が出ます）。';
+      }
     }
+    // 取扱いなし（2026-11-01 PO「TOP だけでなく、当該商品欄に目立つように。赤と黄色で」）: 店が決まれば、窓口へ聞く前から行に出す。
+    //   数が空のあいだは印だけ（黄色の地・赤の枠・赤の ⚠ と文字）。数を入れたら、することと理由を赤い文字で（止めはしない＝送る前の確認で選ぶ）
+    var nh = notHandledHere(no);
+    R.nh.classList.toggle('osechi-hidden', !nh);
+    R.row.classList.toggle('osechi-item--nh', nh);
+    var nhq = nh && filled && cls !== 'osechi-item--err';
+    if (nhq) { text = NH_QTY_TEXT + (text ? '\n' + text : ''); cls = ''; }
+    R.row.classList.toggle('osechi-item--nhqty', nhq);
+    R.msg.classList.toggle('osechi-item-msg--nh', nhq);
+    // 窓口の注意のうち、この商品のもの（似た注文の確認のとき・住所で決まる宅配の地域など）。取扱いなしは上の印と同じなので重ねない
+    var sw = (S.rowWarns && S.rowWarns[no]) || [];
+    var swShow = sw.filter(function (w) { return !(nh && w.code === 'ITEM_NOT_HANDLED'); });
+    R.row.classList.toggle('osechi-item--srvwarn', sw.length > 0);
+    if (swShow.length) text = (text ? text + '\n' : '') + swShow.map(function (w) { return '⚠ ' + w.message; }).join('\n');
     R.row.classList.remove('osechi-item--warn', 'osechi-item--ok', 'osechi-item--err');
     if (cls) R.row.classList.add(cls);
     clear(R.msg);
@@ -3204,6 +3390,7 @@
     finally { if (alive(seq) && S.els.submitBtn === btn) btn.disabled = false; }
   }
   async function submitFlow(seq) {
+    applyDeferredConfig();   // 入力の途中に届いた設定（止めた商品など）を、送る前に当てる
     if (S.edit) return editFlow(seq);
     if (!isStoreRole() && !S.form.store) {
       markFieldError('store', '店を選んでください');
@@ -3308,7 +3495,7 @@
     if (warns.length) {
       if (hasBlockingWarning(warns)) { await alertBlocking(warns); return; }
       var toAsk = unconfirmedWarnings(warns, chk.confirmedCodes);
-      if (toAsk.length && !await askWarnings(toAsk)) { if (alive(seq)) note('注意があったため、送信をやめました（確かめてから、もう一度送ってください）。'); return; }
+      if (toAsk.length && !await askWarnings(toAsk)) { if (alive(seq)) { note('注意があったため、送信をやめました（確かめてから、もう一度送ってください）。'); focusFirstWarnedRow(toAsk); } return; }
       if (!alive(seq)) return;
       allowWarnings = true;
     }
@@ -3344,8 +3531,18 @@
   function setWarnings(warns) {
     if (!S.flags) S.flags = { storeMatched: null, storeMessage: '', suspicious: false, missing: [], warnings: [] };
     S.flags.warnings = warns;
+    S.rowWarns = {};
+    warns.forEach(function (w) { if (w.no && !BLOCKING_WARNINGS[w.code]) (S.rowWarns[w.no] = S.rowWarns[w.no] || []).push(w); });
     refreshWarningsBand();
+    Object.keys(S.rows || {}).forEach(function (no) { updateRow(Number(no)); });
     saveDraftNow();
+  }
+  /** 窓口の注意のうち、いちばん上の商品の行へ動かす（「戻って直す」のとき） */
+  function focusFirstWarnedRow(warns) {
+    var nos = (warns || []).filter(function (w) { return w.no && S.idx && S.idx.byNo[w.no]; }).map(function (w) { return w.no; });
+    var order = S.idx ? S.idx.methodNos.concat(S.idx.dateNos) : [];
+    var first = order.filter(function (no) { return nos.indexOf(no) >= 0; })[0];
+    if (first) focusField(qtyKey(S.idx, first, S.form));
   }
   /** 確認では越えられない注意（日ごとの個数が空）。直す所へ動かす */
   async function alertBlocking(warns) {
@@ -3517,7 +3714,9 @@
       if (S.phase === 'review') { var keep = S.els.body.scrollTop; renderReview(); S.els.body.scrollTop = keep; }
       return;
     }
-    await uiAlert(e.message, '', e.code === 'CLOSED' ? '受付期間の外です' : '送れませんでした');
+    if (e.code === 'CLOSED') await refreshConfigQuietly();   // 止めている・期間の外を、画面の帯にも出す（入力は残す）
+    if (!alive(seq)) return;
+    await uiAlert(e.message, '', e.code === 'CLOSED' ? closedTitle(e) : '送れませんでした');
   }
   async function refreshConfigQuietly() {
     if (!S.form) return null;
@@ -3604,6 +3803,34 @@
       return null;
     }
   }
+  /** 締め日の行（受注状況の一覧が渡す）→ { closing, report, confirmAt }。形が違えば null（知らせない） */
+  function cleanConfirmRow(c) {
+    if (!c || typeof c !== 'object') return null;
+    var at = cleanText(c.confirmAt, 20);
+    if (!/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/.test(at)) return null;
+    var skew = Number(c.skewMs);
+    return { closing: cleanText(c.closing, 12), report: cleanText(c.report, 12), confirmAt: at, skewMs: (isFinite(skew) && Math.abs(skew) < 366 * 86400000) ? skew : 0 };
+  }
+  /** 'yyyy/MM/dd HH:mm(:ss)'（日本時間）→ ミリ秒 */
+  function jstMs(t) {
+    var m = str(t).match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?/);
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5], +(m[6] || 0)) : NaN;
+  }
+  /**
+   * 確定後の変更（2026-11-01 PO）: 店・店長が、本部が確定した注文（報告日の 8:00 を過ぎた締め日の行）を直す・取り消す前に、1回だけ知らせる。
+   * 止めない（お客様からの電話など、本当の直しは通す）。「変える」で続ける・「やめる」で戻る。本部は知らせない（本部の一覧に出る）
+   */
+  async function confirmAfterClose(E, verb) {
+    if (!isStoreRole() || !E || !E.confirm || E.closeOk) return true;
+    var c = E.confirm, at = jstMs(c.confirmAt);
+    if (!(Date.now() + (c.skewMs || 0) >= at)) return true;   // 窓口の時計で比べる（受注状況の返事の時刻との差）
+    var ans = await ask({ tone: 'needcall', title: 'この注文は、本部が確定した数に入っています',
+      message: 'この注文は ' + mdOf(c.closing) + '〆（報告日 ' + mdOf(c.report) + '）で本部が確定した数に入っています。\n' + verb + 'と、' + (verb === '取り消す' ? '取り消したこと' : '変えた所') + 'が本部に知らされます。\nお客様からの連絡などで' + verb + 'ときは「' + verb + '」を押してください。',
+      buttons: [{ id: 'go', label: verb, kind: 'gold' }, { id: 'back', label: 'やめる', kind: 'secondary' }], cancelId: 'back' });
+    if (ans !== 'go') return false;
+    E.closeOk = true;   // この画面では二度聞かない
+    return true;
+  }
   function openEditor(order, opts) {
     var st = {
       form: S.form, flags: S.flags, edited: S.edited, pending: S.pending, hasOcr: S.hasOcr, restored: S.restored,
@@ -3612,7 +3839,8 @@
     };
     S.edit = {
       orderId: cleanText(order.orderId, 40), version: toInt(order.version), store: cleanText(order.store, LIMITS.store),
-      registeredAt: cleanText(order.registeredAt, 20), baseline: baselineOf(order), onDone: opts.onDone || null, stash: st, pending: null
+      registeredAt: cleanText(order.registeredAt, 20), baseline: baselineOf(order), onDone: opts.onDone || null, stash: st, pending: null,
+      confirm: cleanConfirmRow(opts.confirm)   // その注文の締め日の行（確定の時刻・2026-11-01）。受注状況の一覧が渡す
     };
     openSub('注文を直す（受付番号 ' + S.edit.orderId + '）', [], { footer: true, onClose: function () { leaveEdit(false); } });
     S.els = Object.assign({}, st.els, { wrap: S.subEls.wrap, body: S.subEls.body, footer: S.subEls.footer, footerIn: S.subEls.footerIn });
@@ -3621,7 +3849,7 @@
   function fillEditor(order) {
     S.form = formFromOrder(order, S.idx);
     if (isStoreRole()) S.form.store = S.me.store;
-    S.flags = null; S.edited = {}; S.pending = null; S.hasOcr = false; S.restored = false;
+    S.flags = null; S.rowWarns = {}; S.edited = {}; S.pending = null; S.hasOcr = false; S.restored = false;
     S.ocrStoreName = ''; S.dropped = []; S.photo = null;
     S.edit.version = toInt(order.version);
     S.edit.baseline = baselineOf(order);
@@ -3639,7 +3867,7 @@
     if (!E) return;
     S.edit = null;
     var st = E.stash;
-    S.form = st.form; S.flags = st.flags; S.edited = st.edited; S.pending = st.pending; S.hasOcr = st.hasOcr; S.restored = st.restored;
+    S.form = st.form; S.flags = st.flags; S.rowWarns = {}; S.edited = st.edited; S.pending = st.pending; S.hasOcr = st.hasOcr; S.restored = st.restored;
     S.ocrStoreName = st.ocrStoreName; S.dropped = st.dropped; S.draftCreatedAt = st.draftCreatedAt; S.inputs = st.inputs; S.rows = st.rows;
     S.photo = st.photo; S.phase = st.phase; S.els = st.els;
     if (S.sub) { S.sub.onClose = null; closeSub(); }
@@ -3659,6 +3887,8 @@
       await uiAlert('この注文の店を選んでください（「店舗名」）。', 'store', '店を選んでください');
       return;
     }
+    if (!await confirmAfterClose(E, '変える')) { if (alive(seq)) note('送るのをやめました（本部が確定した注文は、直していません）。'); return; }
+    if (!alive(seq) || S.edit !== E) return;
     var chk = await runPreSubmitChecks(S.form, { idx: S.idx, role: S.me.role, baseline: E.baseline }, ui);
     if (!alive(seq) || S.edit !== E) return;
     syncInputs();
@@ -3739,7 +3969,7 @@
       if (isDefinitive(e.code)) {
         E.pending = null;
         if (e.code === 'SOLD_OUT' || e.code === 'NEED_CALL_UNCONFIRMED') await refreshConfigQuietly();
-        await uiAlert(e.message, '', e.code === 'CLOSED' ? '受付期間の外です' : '修正を送れませんでした');
+        await uiAlert(e.message, '', e.code === 'CLOSED' ? closedTitle(e) : '修正を送れませんでした');
         return;
       }
       // 結果が分からない（通信・混雑）: 同じ番号で送り直せる
@@ -3775,19 +4005,10 @@
   async function onCancelOrder() {
     var E = S.edit;
     if (!E || isBusy()) return;
-    var seq = S.seq, reason = '';
-    for (;;) {
-      var ta = h('textarea', { 'class': 'osechi-input', rows: '3', maxlength: '100', 'data-field': 'cancel-reason', 'aria-label': '取り消す理由', placeholder: '例: お客様から取り消しの連絡（電話）' });
-      ta.value = reason;
-      ta.setAttribute('data-autofocus', '');   // 最初のフォーカスは理由の欄（「次へ」に置かない＝Enter で進まない）
-      var r = await ask({ tone: 'error', title: '注文を取り消す',
-        message: '受付番号 ' + E.orderId + ' の注文を取り消します。取り消す理由を入れてください（100字まで・必須）。\n理由は取り消しの記録にだけ残り、お客様リストには出ません。',
-        body: h('div', { 'class': 'osechi-field' }, [ta]),
-        buttons: [{ id: 'go', label: '理由を入れて次へ', kind: 'danger' }, { id: 'back', label: 'やめる', kind: 'secondary' }], cancelId: 'back' });
-      if (r !== 'go' || !alive(seq) || S.edit !== E) return;
-      reason = cleanText(ta.value, 100);
-      if (reason) break;
-    }
+    var seq = S.seq;
+    if (!await confirmAfterClose(E, '取り消す') || !alive(seq) || S.edit !== E) return;
+    var reason = await askCancelReason('受付番号 ' + E.orderId + ' の注文を取り消します。', function () { return alive(seq) && S.edit === E; });
+    if (!reason) return;
     if (!await uiConfirm('受付番号 ' + E.orderId + ' の注文を取り消します。\n取り消した注文は、お客様リストと集計から消えます（元に戻せません）。\nよろしいですか？',
       { yes: '取り消す', no: 'やめる', tone: 'error', title: '取消の確認' })) return;
     if (!alive(seq) || S.edit !== E) return;
@@ -3806,12 +4027,153 @@
         if (isAuthStop(e)) { showAuthStop(e); return; }
         if (e.code === 'CONFLICT') return reloadAfterConflict(seq, E);
         if (e.code === 'NOT_FOUND') { await uiAlert(e.message, '', '注文が見つかりません'); if (S.edit === E) leaveEdit(true, ''); return; }
-        if (isDefinitive(e.code)) { await uiAlert(e.message, '', e.code === 'CLOSED' ? '受付期間の外です' : '取り消せませんでした'); return; }
+        if (isDefinitive(e.code)) { await uiAlert(e.message, '', e.code === 'CLOSED' ? closedTitle(e) : '取り消せませんでした'); return; }
         var again = await ask({ tone: 'error', title: '返事がありません', message: e.message + '\n\n取り消しが届いたかどうか分かりません。「もう一度送る」を押すと、同じ取り消しとして送り直します（二重にはなりません）。',
           buttons: [{ id: 'resend', label: 'もう一度送る', kind: 'primary' }, { id: 'later', label: 'あとで', kind: 'secondary' }], cancelId: 'later' });
         if (again !== 'resend' || !alive(seq) || S.edit !== E) return;
       }
     }
+  }
+
+  /**
+   * 取り消す理由を聞く（必須・100字まで・空のまま「次へ」は先へ進めない）。やめたら ''。
+   * lead: 小窓の始めの文（どの注文を取り消すか）。stillOk(): 待っている間に画面が変わっていないか
+   */
+  async function askCancelReason(lead, stillOk) {
+    var reason = '';
+    for (;;) {
+      var ta = h('textarea', { 'class': 'osechi-input', rows: '3', maxlength: '100', 'data-field': 'cancel-reason', 'aria-label': '取り消す理由', placeholder: '例: お客様から取り消しの連絡（電話）' });
+      ta.value = reason;
+      ta.setAttribute('data-autofocus', '');   // 最初のフォーカスは理由の欄（「次へ」に置かない＝Enter で進まない）
+      var r = await ask({ tone: 'error', title: '注文を取り消す',
+        message: lead + '取り消す理由を入れてください（100字まで・必須）。\n理由は取り消しの記録にだけ残り、お客様リストには出ません。',
+        body: h('div', { 'class': 'osechi-field' }, [ta]),
+        buttons: [{ id: 'go', label: '理由を入れて次へ', kind: 'danger' }, { id: 'back', label: 'やめる', kind: 'secondary' }], cancelId: 'back' });
+      if (r !== 'go' || !stillOk()) return '';
+      reason = cleanText(ta.value, 100);
+      if (reason) return reason;
+    }
+  }
+  /** 一覧へ結果を返す（一覧の手元の行を直し、裏で読み直す）。onDone の失敗で止めない */
+  function callDone(fn, changed, text, info) {
+    if (typeof fn !== 'function') return;
+    try { fn(!!changed, text || '', info || null); } catch (e) { /* 何もしない */ }
+  }
+  /** 「返事がありません」の小窓（同じ番号で送り直せる）。送り直すなら true */
+  async function askResendCancel(e) {
+    var again = await ask({ tone: 'error', title: '返事がありません', message: e.message + '\n\n取り消しが届いたかどうか分かりません。「もう一度送る」を押すと、同じ取り消しとして送り直します（二重にはなりません）。',
+      buttons: [{ id: 'resend', label: 'もう一度送る', kind: 'primary' }, { id: 'later', label: 'あとで', kind: 'secondary' }], cancelId: 'later' });
+    return again === 'resend';
+  }
+  /**
+   * 申込書ごとの行の「取り消す」（2026-11-01 PO）: 修正の画面を開かずに取り消す（窓口の往復は cancelOrder の1本だけ）。
+   * 確定した注文なら、店・店長には先に知らせる（修正の画面と同じ）→ 理由（必須）→ 確かめ → 送る。
+   * 版は受注状況で受け取った中身のもの（そのあとにほかの人が直していたら CONFLICT＝取り消さずに知らせ、一覧を読み直す）。
+   * opts: { order（openList の注文の中身）, confirm（その注文の締め日の行）, name（お客様の氏名・確かめの文に出す）, onDone(changed, 知らせの文, info) }
+   */
+  async function cancelOrderDirect(orderId, opts) {
+    opts = opts || {};
+    if (isBusy() || S.edit || !S.open) return false;
+    var seq = S.seq;
+    try { await S.readyPromise; } catch (e) { return false; }
+    if (!alive(seq) || !S.ready) return false;
+    var order = usableOrder(opts.order, orderId);
+    if (!order) { await uiAlert('この注文の中身を読めませんでした。受注状況を読み込み直してから、もう一度押してください。', '', '取り消せませんでした'); return false; }
+    var C = { orderId: str(order.orderId), version: toInt(order.version), confirm: cleanConfirmRow(opts.confirm) };
+    var name = cleanText(opts.name, 40);
+    var label = '受付番号 ' + C.orderId + (name ? '（' + name + ' 様）' : '');
+    var stillOk = function () { return alive(seq) && !S.edit; };
+    if (!await confirmAfterClose(C, '取り消す') || !stillOk()) return false;
+    var reason = await askCancelReason(label + ' の注文を取り消します。', stillOk);
+    if (!reason) return false;
+    if (!await uiConfirm(label + ' の注文を取り消します。\n取り消した注文は、お客様リストと集計から消えます（元に戻せません）。\nよろしいですか？',
+      { yes: '取り消す', no: 'やめる', tone: 'error', title: '取消の確認' }) || !stillOk()) return false;
+    var sid = makeSubmissionId();
+    for (;;) {
+      var layer = startBusy('取り消しています…');
+      try {
+        var res = await api('cancelOrder', { orderId: C.orderId, version: C.version, reason: reason, submissionId: sid });
+        endBusy(layer);
+        callDone(opts.onDone, true, '受付番号 ' + C.orderId + ' を取り消しました' + (res && res.already ? '（すでに取り消されていました）' : '') + '。', { mode: 'cancel', orderId: C.orderId });
+        return true;
+      } catch (e) {
+        endBusy(layer);
+        if (!alive(seq)) return false;
+        if (isAuthStop(e)) { showAuthStop(e); return false; }
+        if (e.code === 'CONFLICT') {
+          await uiAlert('ほかの人が先にこの注文を直しました。取り消していません。\n受注状況を読み込み直します。中身を確かめてから、もう一度「取り消す」を押してください。', '', 'ほかの人が先に直しました');
+          callDone(opts.onDone, true, '', null);   // 行はそのまま・裏で読み直す
+          return false;
+        }
+        if (e.code === 'NOT_FOUND') { await uiAlert(e.message, '', '注文が見つかりません'); callDone(opts.onDone, true, '', { mode: 'gone', orderId: C.orderId }); return false; }
+        if (isDefinitive(e.code)) { await uiAlert(e.message, '', e.code === 'CLOSED' ? closedTitle(e) : '取り消せませんでした'); return false; }
+        if (!await askResendCancel(e) || !alive(seq)) { if (alive(seq)) callDone(opts.onDone, true, '', null); return false; }
+      }
+    }
+  }
+  /**
+   * 本部: 申込書ごとで選んだ注文を、まとめて取り消す（2026-11-01 PO・テストで入れた注文の片付けなど）。1回に BULK_CANCEL_MAX 件まで・理由は1つ。
+   * 理由 → 確かめの小窓（受付番号と氏名と件数を並べる）→ cancelOrders の1本（注文ごとに版を確かめる・同じ番号の送り直しは1回）→ 結果を件数で知らせる。
+   * list: [{ orderId, version, name }]。opts.onDone(changed, 知らせの文, info[]) … info＝取り消した（済みの）注文ごと { mode:'cancel'|'gone', orderId }
+   */
+  async function cancelOrdersBulk(list, opts) {
+    opts = opts || {};
+    if (isBusy() || S.edit || !S.open || !S.me || S.me.role !== 'hq') return false;
+    var seq = S.seq;
+    var items = [], seen = {};
+    (Array.isArray(list) ? list : []).forEach(function (o) {
+      var id = str(o && o.orderId), v = toInt(o && o.version);
+      if (!/^\d{8}-\d{6}$/.test(id) || !(v >= 1) || seen[id]) return;
+      seen[id] = true;
+      items.push({ orderId: id, version: v, name: cleanText(o.name, 40) });
+    });
+    if (!items.length) return false;
+    var n = items.length;
+    if (n > BULK_CANCEL_MAX) { await uiAlert('一度に取り消せるのは ' + BULK_CANCEL_MAX + ' 件までです（いま ' + n + ' 件）。選ぶ数を減らしてください。', '', '選んだ数が多すぎます'); return false; }
+    var stillOk = function () { return alive(seq) && !S.edit; };
+    var reason = await askCancelReason('選んだ ' + n + ' 件の注文を、まとめて取り消します（理由は ' + n + ' 件とも同じものが残ります）。\n', stillOk);
+    if (!reason) return false;
+    var listEl = h('ol', { 'class': 'osechi-blist', 'data-step': 'bulk-cancel-list' }, items.map(function (o) { return h('li', { text: o.orderId + '　' + (o.name || '（氏名なし）') }); }));
+    var go = await ask({ tone: 'error', title: 'まとめて取り消す（' + n + ' 件）',
+      message: '次の ' + n + ' 件の注文を取り消します。\n取り消した注文は、お客様リストと集計から消えます（元に戻せません）。よろしいですか？',
+      body: listEl, buttons: [{ id: 'go', label: n + ' 件を取り消す', kind: 'danger' }, { id: 'back', label: 'やめる', kind: 'secondary' }], cancelId: 'back' });
+    if (go !== 'go' || !stillOk()) return false;
+    var sid = makeSubmissionId();
+    for (;;) {
+      var layer = startBusy(n + ' 件を取り消しています…', { sub: '返事が来るまで、この画面のままお待ちください' });
+      try {
+        var res = await api('cancelOrders', { orders: items.map(function (o) { return { orderId: o.orderId, version: o.version }; }), reason: reason, submissionId: sid });
+        endBusy(layer);
+        await reportBulkCancel(items, res, opts.onDone);
+        return true;
+      } catch (e) {
+        endBusy(layer);
+        if (!alive(seq)) return false;
+        if (isAuthStop(e)) { showAuthStop(e); return false; }
+        if (isDefinitive(e.code)) { await uiAlert(e.message, '', e.code === 'CLOSED' ? closedTitle(e) : '取り消せませんでした'); return false; }
+        if (!await askResendCancel(e) || !alive(seq)) { if (alive(seq)) callDone(opts.onDone, true, '', null); return false; }
+      }
+    }
+  }
+  /** まとめて取消の結果を件数で知らせる（取り消せなかった注文は受付番号と、なぜか）→ 一覧は取り消した行を手元で消し、裏で読み直す */
+  async function reportBulkCancel(items, res, onDone) {
+    var byId = {};
+    items.forEach(function (o) { byId[o.orderId] = o; });
+    var rs = (res && Array.isArray(res.results) ? res.results : []).filter(function (r) { return r && byId[str(r.orderId)]; });
+    var pick = function (k) { return rs.filter(function (r) { return r.result === k; }); };
+    var ids = function (a) { return a.map(function (r) { return str(r.orderId); }).join('、'); };
+    var dn = pick('done'), al = pick('already'), cf = pick('conflict'), nf = pick('notFound');
+    var infos = dn.concat(al).map(function (r) { return { mode: 'cancel', orderId: str(r.orderId) }; })
+      .concat(nf.map(function (r) { return { mode: 'gone', orderId: str(r.orderId) }; }));
+    if (cf.length || nf.length || al.length || dn.length !== items.length) {
+      var lines = ['取り消しました: ' + dn.length + ' 件'];
+      if (al.length) lines.push('すでに取り消されていた: ' + al.length + ' 件');
+      if (cf.length) lines.push('取り消していない: ' + cf.length + ' 件（ほかの人が先に直した: ' + ids(cf) + '）\n→ 中身を確かめてから、もう一度選んでください。');
+      if (nf.length) lines.push('見つからない: ' + nf.length + ' 件（' + ids(nf) + '）');
+      await uiAlert(lines.join('\n'), '', cf.length ? '一部は取り消していません' : 'まとめて取り消しました');
+    }
+    callDone(onDone, true, '選んだ ' + items.length + ' 件のうち ' + dn.length + ' 件を取り消しました' + (al.length ? '（' + al.length + ' 件は取り消し済み）' : '') +
+      (cf.length ? '・' + cf.length + ' 件は、ほかの人が先に直したので取り消していません' : '') + '。', infos);
   }
 
   // ===== ⑥ 完了 =====
@@ -3878,19 +4240,24 @@
       step('✏️', '見比べて直す', 'AI が読んだ内容が出ます。注文書と見比べて違う所を直します。おせちは申込書と同じく「店渡し」と「宅配」の個数を分けて入れます。', mini(['店渡し 2', '宅配 1'])),
       step('📅', 'お渡し日を選ぶ商品', '先に「注文数」（用紙の個数）を入れます。数が空のあいだは「受注なし」と出て、日付は押せません。数を入れると日付が出るので押して選びます（いくつでも）。2日以上なら、日ごとの個数も入れます。', mini(['注文数 3', '12/30 ✓', '12/31 ✓', '12/30 の個数 2'])),
       step('🏬', '店・受付係員', '店のアカウント・店長は自分の店に決まっています。注文書の店名が違うときは、送る前に確かめます。本部の方は、注文書の店名から店が選ばれています（違えば選び直します）。受付係員は、書いていなければ「記載なし」のまま送ります。'),
-      step('📨', '送る', '「この内容で送信」を押します。黄色の注意が出たら、お客様に確かめて「確認したうえでこのまま送る」。似た注文があれば「上書き／別の注文として受注する／やめる」を選びます。'),
+      step('⚠', 'この店で取り扱いのない商品', '店が決まると、その店で取り扱いのない商品の欄に、赤い ⚠ と「この店では取り扱いなし」が出ます（黄色の地・赤の枠）。数を入れると、することが赤い字で出ます。数量を消すか、お客様に別の商品をご案内してください。'),
+      step('📨', '送る', '「この内容で送信」を押します。黄色の注意が出たら、お客様に確かめて「確認したうえでこのまま送る」。商品の注意は赤い枠で出て、押すとその商品の欄へ動きます。似た注文があれば「上書き／別の注文として受注する／やめる」を選びます。'),
       step('✅', '受付番号', '受付番号が出たら完了です。続けて「次の注文を撮影する」を押せます。')
     ]);
-    var extra = h('div', { 'class': 'osechi-small' }, lines('・1枚の申込書が1件の注文です（同じ内容でも、別の申込書なら「別の注文として受注する」）。\n・売り切れの商品は数量を入れられません。\n・要電話確認の商品は、お客様に電話で確かめてから送ります。\n・入力の途中は、この端末に12時間だけ残ります（写真は残しません）。サインアウトすると消えます。\n・送信を何回押しても、通信が切れて送り直しても、同じ注文は1件だけ登録されます。'));
+    var extra = h('div', { 'class': 'osechi-small' }, lines('・1枚の申込書が1件の注文です（同じ内容でも、別の申込書なら「別の注文として受注する」）。\n・本部が受付を止めているときは、上に赤い帯が出ます。再開されるまで送れません（入力は端末に残ります）。\n・売り切れの商品は数量を入れられません。\n・要電話確認の商品は、お客様に電話で確かめてから送ります。\n・入力の途中は、この端末に12時間だけ残ります（写真は残しません）。サインアウトすると消えます。\n・送信を何回押しても、通信が切れて送り直しても、同じ注文は1件だけ登録されます。'));
     // 受注状況（上の切り替え）の使い方
     var listHead = h('div', { 'class': 'osechi-h2', text: '受注状況' });
     var listBody = h('ol', { 'class': 'osechi-guide-steps', 'data-step': 'guide-list' }, [
-      step('📋', '開く', '上の「受注状況」を押します。店渡し・宅配・集計・店内受注品一覧を切り替えて見ます。本部の方は、毎回、見る店を選びます。'),
+      step('📋', '開く', '上の「受注状況」を押します。はじめは「申込書ごと」（1行＝1枚の申込書）。店渡し・宅配・集計・店内受注品一覧に切り替えて見ます。本部の方は、毎回、見る店を選びます。'),
+      step('🧾', '申込書ごと', '1枚の申込書が1行です（日付の商品だけの注文も）。受付番号・受付の日時・お客様・商品（例「3番 店渡し1・28番 12/31×1」）・受付係員・〆が並び、本部が確定した数に入っている注文には「報告済み・本部で確定」と出ます。行の「直す」で注文を直す画面、「取り消す」で理由を入れて取り消せます（直す画面を開かずに）。本部の方は、行を選んで「選んだ N 件を取り消す」で、まとめて取り消せます（一度に50件まで・理由は1つ・取り消す前に受付番号と氏名の一覧で確かめます）。', mini(['直す', '取り消す', '選んだ 3 件を取り消す'])),
       step('🔍', '探す', '氏名・電話・受付番号で探せます。ひらがな・カタカナ・ローマ字、全角・半角のどれで打っても当たります。空白で区切ると、どの言葉も含む行だけ。漢字の氏名を読み（やまだ）で探すことはできません。', mini(['すずき', 'suzuki', '090-1234'])),
-      step('✏️', '直す・取り消す', '行を押すと、すぐに注文を直す画面が出ます（「修正を送る」）。取り消すときは、理由を入れます。送ったあとも一覧はそのまま使えます（直した行は「直しました」の印・一覧の上に「読み込み直しています…」）。ほかの人が先に直していたら、最新の内容を読み込み直します。'),
+      step('✏️', '直す・取り消す', '店渡し・宅配の行を押すと、すぐに注文を直す画面が出ます（「修正を送る」）。取り消すときは、理由を入れます。送ったあとも一覧はそのまま使えます（直した行は「直しました」の印・一覧の上に「読み込み直しています…」）。ほかの人が先に直していたら、最新の内容を読み込み直します。報告日の 8:00 を過ぎた締め日の注文（本部が確定した数に入っている注文）を直す・取り消すときは、送る前に「本部に知らされます」と出ます（止まりません）。'),
+      step('📊', '集計', '締め日ごとの累計です。いちばん新しい「集計中」の行には、次の締め日の分を含む、いまの時点の数が入ります（締めまで増えます・点線の枠と「集計中（〇時点・途中の数）」の札）。合計の行は、いまの累計です。報告用の Excel は、今までどおり締めた行までです。'),
       step('📥', '報告する', '締め日と報告日は上の帯に出ます。報告日は「報告用ファイル（Excel）をダウンロード」か「印刷」。回数に上限があるので、1回押したら終わるまで待ちます。'),
-      step('🍣', '店内受注品一覧', '受注状況の4つめ「店内受注品一覧」で、店で作る商品（惣菜・鮮魚・サービスカウンターの担当）を、受け渡しの日ごと・担当ごとに、作る数と、いちばん早い受取の時刻で見られます（お客様の名前は出しません）。印刷は A4 横・1日1ページ、Excel にもできます。'),
-      step('🗂️', '全店の注文（本部の方）', '店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」で、全店の注文（取消を除く）を1つの Excel にできます。店を選ばなくても押せます。1行が1件の注文（1枚の申込書）で、左に店の名前、そのあとに注文の項目と商品ごとの数（日付の商品 20〜32番も）が並びます。')
+      step('🍣', '店内受注品一覧', '受注状況のいちばん右「店内受注品一覧」で、店で作る商品（惣菜・鮮魚・サービスカウンターの担当）を、受け渡しの日ごと・担当ごとに、作る数と、いちばん早い受取の時刻で見られます（お客様の名前は出しません）。印刷は A4 横・1日1ページ、Excel にもできます。'),
+      step('🗂️', '全店の注文（本部の方）', '店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」で、全店の注文（取消を除く）を1つの Excel にできます。店を選ばなくても押せます。1行が1件の注文（1枚の申込書）で、左に店の名前、そのあとに注文の項目と商品ごとの数（日付の商品 20〜32番も）が並びます。'),
+      step('！', '確定後の変更（本部の方）', '報告日の 8:00（本部が数を確定する朝）より後に、店が直した・取り消した注文があると、上に赤と黄色の帯が出ます。押すと、店・受付番号・お客様・いつ・だれ・どの〆か・変えた所（前→後）が出ます。確かめたら「確認した」（本部のだれが押しても、全員に「確認済み」と出ます）。集計の表では、その締め日の行に「！締め後の変更 N 件」が出ます。'),
+      step('⏸', '受付と商品の停止（本部の方）', 'はじめの画面の「受付と商品の停止」から、商品ごとに 通常／売り切れ／要電話確認 を切り替え、全店の受付を一時停止・再開できます。押すとすぐ全店に効きます（押した人と時刻を記録します）。全店の受付を止めるときは、先に確かめます。')
     ]);
     var listExtra = h('div', { 'class': 'osechi-small' }, lines('・お客様の氏名・住所・電話は、この端末に残しません（同じ画面で開き直したときにすぐ出せるよう、画面のメモリにだけ置きます。サインアウトで消えます）。\n・待ち時間の記録は、画面のいちばん下の版の行を長押し（または5回続けて押す）すると出ます。'));
     var close = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'guide-close', text: '閉じる', on: { click: function () { closeSub(); } } });
@@ -3909,6 +4276,314 @@
       zb.textContent = zoom ? '画面に合わせる' : '拡大する（指で動かして見ます）';
     });
     openSub('撮った写真', [box, zb]);
+  }
+
+  // ===== 受付と商品の停止（本部だけ・2026-11-01） =====
+  //   PO 10/29「本部アカウントの BY などは、メニューから停止 ON/OFF もできる」・11/01「本部づきの人は設定できるように」。
+  //   押すと窓口へ1本（setItemStatus／setAcceptPause）。返事の状態でその場を直す（読み直さない）。止められるかは窓口が毎回確かめる。
+  //   全店の受付を止めるときだけ、先に確かめる（全店が同時に止まるため）。
+  var ITEM_STATUS_TEXT = { normal: '通常', soldout: '売り切れ', needcall: '要電話確認' };
+  function stopEntryCard() {
+    var paused = !!(S.cfg && S.cfg.season.paused);
+    var sold = S.idx ? S.idx.soldout.length : 0, call = S.idx ? S.idx.needcall.length : 0;
+    return h('div', { 'class': 'osechi-card', 'data-step': 'stop-card' }, [
+      h('div', { 'class': 'osechi-h2', text: '受付と商品の停止（本部）' }),
+      h('div', { 'class': paused ? 'osechi-error' : 'osechi-info', 'data-kind': paused ? 'stop-paused' : 'stop-open', text: paused ? 'いま全店の受付を止めています。' : 'いま全店で受け付けています。' }),
+      h('p', { 'class': 'osechi-small', text: '売り切れ ' + sold + '・要電話確認 ' + call + '。押すとすぐ全店に効きます（押した人と時刻を記録します）。' }),
+      h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'stop-open', text: '止める・戻す（受付・商品ごと）', on: { click: openStopScreen } })
+    ]);
+  }
+  function stopLastText(e) {
+    if (!e || !e.at) return '';
+    var what = (e.from === 'paused' || e.from === 'open') ? ((e.from === 'paused' ? '一時停止' : '受付中') + '→' + (e.to === 'paused' ? '一時停止' : '受付中'))
+      : ((ITEM_STATUS_TEXT[e.from] || '?') + '→' + (ITEM_STATUS_TEXT[e.to] || '?'));
+    return '最後の変更: ' + fmtDateTime(e.at) + '・' + (e.by || '?') + '（' + what + '）';
+  }
+  /** 返事の状態を、いまの設定（ページのメモリ）に当てる＝この端末の画面もすぐ変わる（読み直さない） */
+  function patchConfigMemo(fn) {
+    if (!CfgMemo || !CfgMemo.raw) return;
+    var raw;
+    try { raw = JSON.parse(JSON.stringify(CfgMemo.raw)); } catch (e) { return; }
+    fn(raw);
+    applyNewConfig(raw);
+  }
+  function openStopScreen() {
+    if (isBusy() || !S.cfg || !S.me || !S.me.canStop) return;
+    var log = S.cfg.stopLog || { accept: null, items: {} };
+    var acc = h('div', { 'class': 'osechi-card', 'data-step': 'stop-accept' });
+    function drawAccept(msg) {
+      clear(acc);
+      var paused = !!S.cfg.season.paused;
+      acc.appendChild(h('div', { 'class': 'osechi-h2', text: '受付（全店）' }));
+      acc.appendChild(h('div', { 'class': paused ? 'osechi-error' : 'osechi-info', 'data-kind': paused ? 'stop-paused' : 'stop-open', role: 'status',
+        text: paused ? 'いま止めています（全店で、注文の送信と写真の読み取りができません）' : 'いま受け付けています' }));
+      var b = h('button', { type: 'button', 'class': 'osechi-btn ' + (paused ? 'osechi-btn-primary' : 'osechi-btn-danger'), 'data-act': paused ? 'stop-resume' : 'stop-pause',
+        text: paused ? '受付を再開する' : '受付を一時停止する（全店）' });
+      b.addEventListener('click', function () { toggleAccept(!paused, b); });
+      acc.appendChild(b);
+      var last = stopLastText(log.accept);
+      if (msg) acc.appendChild(h('div', { 'class': 'osechi-error', role: 'alert', text: msg }));
+      if (last) acc.appendChild(h('p', { 'class': 'osechi-small', 'data-step': 'stop-accept-last', text: last }));
+    }
+    async function toggleAccept(pause, b) {
+      var ans = await ask(pause
+        ? { tone: 'error', title: '全店で注文を送れなくなります。止めますか？', message: '全店の画面で、注文の送信と写真の読み取りが同時に止まります（入力は端末に残ります）。\n再開するまで、どの店も受け付けられません。お客様をお待たせしないよう、止める理由と再開の見込みを店へ伝えてください。',
+          buttons: [{ id: 'go', label: '止める（全店）', kind: 'danger' }, { id: 'back', label: 'やめる', kind: 'secondary' }], cancelId: 'back' }
+        : { tone: 'info', title: '全店で受付を再開しますか？', message: '全店の画面で、注文を送れるようになります。',
+          buttons: [{ id: 'go', label: '再開する', kind: 'primary' }, { id: 'back', label: 'やめる', kind: 'secondary' }], cancelId: 'back' });
+      if (ans !== 'go') return;
+      b.disabled = true;
+      b.textContent = pause ? '止めています…' : '再開しています…';
+      try {
+        var r = await api('setAcceptPause', { paused: pause });
+        var se = (r && r.season) || {};
+        log.accept = (r && r.last) ? { at: cleanText(r.last.at, 20), by: cleanText(r.last.by, 40), from: cleanText(r.last.from, 12), to: cleanText(r.last.to, 12) } : log.accept;
+        patchConfigMemo(function (raw) { raw.season = raw.season || {}; raw.season.paused = se.paused === true; raw.season.open = se.open === true; if (raw.stopLog) raw.stopLog.accept = log.accept; });
+        drawAccept('');
+        if (S.phase === 'intro') refreshIntro();
+      } catch (e) {
+        if (isAuthStop(e)) { closeSub(); showAuthStop(e); return; }
+        drawAccept(e.message || '変えられませんでした。');
+      }
+    }
+    var list = h('div', { 'data-step': 'stop-items' });
+    S.cfg.items.forEach(function (it) {
+      var row = h('div', { 'class': 'osechi-stoprow', 'data-no': String(it.no) });
+      var seg = h('div', { 'class': 'osechi-seg', role: 'group', 'aria-label': '商品' + it.no + 'の状態' });
+      var info = h('div', { 'class': 'osechi-small osechi-stoplast' });
+      var err = h('div', { 'class': 'osechi-fieldmsg', role: 'alert' });
+      function draw(st) {
+        clear(seg);
+        ['normal', 'soldout', 'needcall'].forEach(function (k) {
+          var on = st === k;
+          var b = h('button', { type: 'button', 'class': 'osechi-segbtn osechi-segbtn-' + k + (on ? ' osechi-on' : ''), 'aria-pressed': on ? 'true' : 'false', 'data-act': 'item-status', 'data-status': k,
+            text: (on ? '● ' : '') + ITEM_STATUS_TEXT[k] });
+          b.addEventListener('click', function () { if (!on) setStatus(k); });
+          seg.appendChild(b);
+        });
+        info.textContent = stopLastText(log.items[it.no]);
+      }
+      async function setStatus(k) {
+        Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b) { b.disabled = true; });
+        err.textContent = '';
+        info.textContent = '変えています…';
+        try {
+          var r = await api('setItemStatus', { no: it.no, status: k });
+          var ns = (r && r.item && (r.item.status === 'soldout' || r.item.status === 'needcall')) ? r.item.status : 'normal';
+          if (r && r.last) log.items[it.no] = { at: cleanText(r.last.at, 20), by: cleanText(r.last.by, 40), from: cleanText(r.last.from, 12), to: cleanText(r.last.to, 12) };
+          patchConfigMemo(function (raw) {
+            (raw.items || []).forEach(function (x) { if (toInt(x.no) === it.no) x.status = ns; });
+            if (raw.stopLog) { raw.stopLog.items = raw.stopLog.items || {}; raw.stopLog.items[it.no] = log.items[it.no]; }
+          });
+          it.status = ns;
+          draw(ns);
+        } catch (e) {
+          if (isAuthStop(e)) { closeSub(); showAuthStop(e); return; }
+          draw(it.status);
+          err.textContent = e.message || '変えられませんでした。';
+        }
+      }
+      add(row, [h('div', { 'class': 'osechi-stopname' }, [h('b', { text: String(it.no) }), ' ' + (it.name || '')]), seg, info, err]);
+      draw(it.status);
+      list.appendChild(row);
+    });
+    drawAccept('');
+    openSub('受付と商品の停止（本部）', [
+      h('p', { 'class': 'osechi-small', text: '押すとすぐ全店に効きます。店の画面は裏で読み直し、送るときは窓口が必ず確かめます（古い画面のままでも、止めた商品・止めた受付は通りません）。押した人と時刻を記録します。' }),
+      acc,
+      h('div', { 'class': 'osechi-card', 'data-step': 'stop-items-card' }, [h('div', { 'class': 'osechi-h2', text: '商品ごと（全店）' }), list])
+    ], { onClose: function () { if (S.phase === 'intro') refreshIntro(); } });
+  }
+
+  // ===== 確定後の変更（本部だけ・2026-11-01） =====
+  //   PO 11/01「一度確定した過去週や過去日のデータを変更した店舗があった場合には、BY の方にアラートで知らせる。どこをどう変えたかまで」。
+  //   窓口が、報告日の 8:00（本部が数を確定する朝）以後の修正・取消・差し替えを、前の版と次の版の比べで返す（本部だけ）。
+  //   一覧はページのメモリだけ（CHG・端末に残さない）。受注状況（openList）か、はじめの画面の帯（listChanges）で受け取る。
+  var CHG = { data: null };
+  function cleanChanges(c) {
+    if (!c || typeof c !== 'object') return null;
+    var items = [];
+    (Array.isArray(c.items) ? c.items : []).slice(0, 300).forEach(function (x) {
+      if (!x || typeof x !== 'object' || !/^\d{8}-\d{6}$/.test(str(x.orderId)) || !(toInt(x.version) >= 2)) return;
+      var ck = (x.checked && typeof x.checked === 'object') ? { by: cleanText(x.checked.by, 120), at: cleanText(x.checked.at, 20) } : null;
+      items.push({
+        key: str(x.orderId) + '#' + toInt(x.version), orderId: str(x.orderId), version: toInt(x.version), store: cleanText(x.store, LIMITS.store), customer: cleanText(x.customer, 40),
+        at: cleanText(x.at, 20), by: cleanText(x.by, 120), op: cleanText(x.op, 10), registeredBy: cleanText(x.registeredBy, 120), route: cleanText(x.route, 10),
+        closing: cleanText(x.closing, 12), report: cleanText(x.report, 12), confirmAt: cleanText(x.confirmAt, 20),
+        diffs: Array.isArray(x.diffs) ? x.diffs.slice(0, 80).map(function (d) { return { label: cleanText(d && d.label, 40), before: cleanText(d && d.before, 160), after: cleanText(d && d.after, 160) }; }) : null,
+        checked: ck
+      });
+    });
+    var unconfirmed = toInt(c.unconfirmed) >= 0 ? toInt(c.unconfirmed) : items.filter(function (x) { return !x.checked; }).length;
+    return { unconfirmed: unconfirmed, total: toInt(c.total) >= 0 ? toInt(c.total) : items.length, rule: cleanText(c.rule && c.rule.text, 120), items: items };
+  }
+  /** 受注状況（openList）で受け取った一覧を置く（受注状況の部品が呼ぶ） */
+  function setChanges(c) {
+    var d = cleanChanges(c);
+    if (!d) return;
+    CHG.data = d;
+    CHG.owner = S.me ? S.me.email : '';
+    syncChangeCount();
+  }
+  /** 一覧の件数を、設定（とそのページのメモリ）の件数にそろえる（設定を当て直しても、古い件数に戻らない） */
+  function syncChangeCount() {
+    if (!CHG.data) return;
+    var c = { unconfirmed: CHG.data.unconfirmed, total: CHG.data.total };
+    if (S.cfg) S.cfg.changeAlerts = c;
+    if (CfgMemo && CfgMemo.raw && typeof CfgMemo.raw === 'object') CfgMemo.raw.changeAlerts = { unconfirmed: c.unconfirmed, total: c.total };
+  }
+  function changeCount() {
+    if (CHG.data && CHG.owner !== (S.me ? S.me.email : '')) CHG.data = null;   // 別のアカウントの一覧は使わない
+    if (CHG.data) return CHG.data.unconfirmed;
+    return (S.cfg && S.cfg.changeAlerts) ? S.cfg.changeAlerts.unconfirmed : 0;
+  }
+  /** 赤と黄色の帯（本部のはじめの画面・受注状況の上）。押すと一覧 */
+  function changeBand(opts) {
+    var n = changeCount();
+    if (!(n > 0)) return null;
+    return h('div', { 'class': 'osechi-alertband', 'data-step': 'change-band', role: 'alert' }, [
+      h('div', { 'class': 'osechi-alertband-t' }, [h('span', { 'class': 'osechi-alertband-ico', 'aria-hidden': 'true', text: '！' }), '報告済み・本部で確定した期間の注文が、あとから変えられています（未確認 ' + n + ' 件）']),
+      h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-danger', 'data-act': 'change-open', text: 'どこをどう変えたかを見る', on: { click: function () { openChangeList(opts || {}); } } })
+    ]);
+  }
+  function changeClosingLabel(x) { return mdOf(x.closing) + '〆（報告日 ' + mdOf(x.report) + '・報告済み・本部で確定）'; }
+  function mdOf(ymd) { var m = str(ymd).match(/^\d{4}\/(\d{2})\/(\d{2})/); return m ? Number(m[1]) + '/' + Number(m[2]) : str(ymd); }
+  /** 一覧（階層2）。opts: { store?, closing? }＝集計の行から開いたとき、その店・その〆だけ */
+  async function openChangeList(opts) {
+    opts = opts || {};
+    if (isBusy() || !S.me || S.me.role !== 'hq') return;
+    changeCount();   // 別のアカウントの一覧なら捨てる
+    if (!CHG.data) {
+      var layer = startBusy('確定後の変更を読み込んでいます…');
+      try {
+        var r = await api('listChanges', {});
+        endBusy(layer);
+        setChanges(r && r.changes);
+      } catch (e) {
+        endBusy(layer);
+        if (isAuthStop(e)) { showAuthStop(e); return; }
+        await uiAlert(e.message, '', '確定後の変更を読み込めませんでした');
+        return;
+      }
+    }
+    var filter = opts.filter === 'all' ? 'all' : 'open', scope = { store: opts.store || '', closing: opts.closing || '' };
+    var top = h('div'), listBox = h('div', { 'data-step': 'change-list' });
+    function shown() {
+      return (CHG.data ? CHG.data.items : []).filter(function (x) {
+        if (filter === 'open' && x.checked) return false;
+        if (scope.store && x.store !== scope.store) return false;
+        if (scope.closing && x.closing !== scope.closing) return false;
+        return true;
+      });
+    }
+    function draw() {
+      clear(top); clear(listBox);
+      var d = CHG.data;
+      top.appendChild(h('p', { 'class': 'osechi-small', text: (d.rule || '報告日の 8:00') + '（本部が数を確定する時刻）より後に、修正・取消・差し替えをした注文です。新しい順。確かめたら「確認した」を押します（本部のだれが押しても、全員に「確認済み」と出ます）。' }));
+      var tabs = h('div', { 'class': 'osechi-btn-row', role: 'group', 'aria-label': '見る範囲' }, [
+        h('button', { type: 'button', 'class': 'osechi-btn ' + (filter === 'open' ? 'osechi-btn-primary' : 'osechi-btn-secondary'), 'aria-pressed': filter === 'open' ? 'true' : 'false', 'data-act': 'change-filter-open', text: '未確認（' + d.unconfirmed + '）', on: { click: function () { filter = 'open'; draw(); } } }),
+        h('button', { type: 'button', 'class': 'osechi-btn ' + (filter === 'all' ? 'osechi-btn-primary' : 'osechi-btn-secondary'), 'aria-pressed': filter === 'all' ? 'true' : 'false', 'data-act': 'change-filter-all', text: 'すべて（' + d.total + '）', on: { click: function () { filter = 'all'; draw(); } } })
+      ]);
+      top.appendChild(tabs);
+      if (scope.store || scope.closing) {
+        top.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'change-scope' }, [
+          '絞り込み: ' + [scope.store, scope.closing ? mdOf(scope.closing) + '〆' : ''].filter(Boolean).join('・') + ' ',
+          h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-link', 'data-act': 'change-scope-clear', text: '全店・全部の〆を見る', on: { click: function () { scope = { store: '', closing: '' }; draw(); } } })
+        ]));
+      }
+      var xs = shown();
+      if (!xs.length) listBox.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'change-none', text: filter === 'open' ? '未確認の変更はありません。' : '確定後の変更はありません。' }));
+      xs.forEach(function (x) { listBox.appendChild(changeCard(x)); });
+      if (d.total > d.items.length) listBox.appendChild(h('p', { 'class': 'osechi-small', text: '新しい ' + d.items.length + ' 件を出しています（全部で ' + d.total + ' 件）。' }));
+    }
+    function changeCard(x) {
+      var card = h('div', { 'class': 'osechi-chgcard' + (x.checked ? ' osechi-chgcard-done' : ''), 'data-key': x.key, 'data-step': 'change-card' });
+      var head = h('div', { 'class': 'osechi-chghead' }, [h('b', { text: x.store + '・受付番号 ' + x.orderId }), x.customer ? '・' + x.customer + ' 様' : '']);
+      var meta = h('div', { 'class': 'osechi-small' }, lines(
+        fmtDateTime(x.at) + ' に「' + (x.op || '変更') + '」（' + (x.by || '?') + '）\n' +
+        '受付: ' + (x.registeredBy || '?') + (x.route ? '（' + x.route + 'から）' : '')));
+      var badge = h('div', { 'class': 'osechi-chgbadge' }, [h('span', { 'aria-hidden': 'true', text: '！' }), changeClosingLabel(x)]);
+      var diffs;
+      if (!x.diffs) diffs = h('div', { 'class': 'osechi-small', text: 'いまの中身が見つかりません（変えた所を出せません）。' });
+      else if (!x.diffs.length) diffs = h('div', { 'class': 'osechi-small', text: '中身の違いはありません（同じ内容で送り直し）。' });
+      else {
+        diffs = h('table', { 'class': 'osechi-chgtable' }, [
+          h('thead', null, h('tr', null, [h('th', { scope: 'col', text: '変えた所' }), h('th', { scope: 'col', text: '前' }), h('th', { scope: 'col', text: '後' })])),
+          h('tbody', null, x.diffs.map(function (df) {
+            return h('tr', null, [h('th', { scope: 'row', text: df.label }), h('td', { 'class': 'osechi-chgbefore', text: df.before === '' ? '（空）' : df.before }), h('td', { 'class': 'osechi-chgafter', text: df.after === '' ? '（空）' : df.after })]);
+          }))
+        ]);
+      }
+      var foot = h('div', { 'class': 'osechi-chgfoot' });
+      function drawFoot(msg) {
+        clear(foot);
+        if (x.checked) { foot.appendChild(h('div', { 'class': 'osechi-chgok', 'data-step': 'change-checked', text: '✓ 確認済み（' + (x.checked.by || '?') + '・' + fmtDateTime(x.checked.at) + '）' })); return; }
+        var b = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'change-confirm', text: '確認した' });
+        b.addEventListener('click', async function () {
+          if (b.disabled) return;
+          b.disabled = true; b.textContent = '記録しています…';
+          try {
+            var r = await api('confirmChange', { orderId: x.orderId, version: x.version });
+            x.checked = { by: cleanText(r && r.checked && r.checked.by, 120), at: cleanText(r && r.checked && r.checked.at, 20) };
+            if (toInt(r && r.unconfirmed) >= 0) CHG.data.unconfirmed = toInt(r.unconfirmed);
+            syncChangeCount();
+            card.classList.add('osechi-chgcard-done');
+            drawFoot('');
+            clear(top); draw();   // 件数と並びを直す（未確認だけを見ていれば、この1件は一覧から外れる）
+            if (S.phase === 'intro') refreshIntro();
+            var lm = root.OsechiListModule;
+            if (lm && typeof lm.changesUpdated === 'function') { try { lm.changesUpdated(); } catch (e2) { /* 何もしない */ } }
+          } catch (e) {
+            if (isAuthStop(e)) { closeSub(); showAuthStop(e); return; }
+            drawFoot(e.message || '記録できませんでした。');
+          }
+        });
+        foot.appendChild(b);
+        if (msg) foot.appendChild(h('div', { 'class': 'osechi-fieldmsg', role: 'alert', text: msg }));
+      }
+      drawFoot('');
+      add(card, [head, badge, meta, diffs, foot]);
+      return card;
+    }
+    draw();
+    openSub('確定後の変更（本部）', [top, listBox]);
+  }
+
+  // ===== 設定を裏で読み直す（止めた商品・受付を、開いている画面にも届ける・2026-11-01） =====
+  //   開いている間は5分ごと・画面に戻ってきたとき（1分より前に読んでいれば読まない）。入力の途中は描き直さない（欄を離れたら当てる）。
+  //   送るときは窓口が必ず確かめる＝読み直す前の画面からも、止めた商品・止めた受付は通らない。
+  var CFG_WATCH_MS = 5 * 60 * 1000, CFG_FRESH_MS = 60 * 1000;
+  function startConfigWatch() {
+    stopConfigWatch();
+    S.cfgWatch = setInterval(function () { if (hasDom && document.visibilityState === 'visible') backgroundConfigCheck(); }, CFG_WATCH_MS);
+  }
+  function stopConfigWatch() { if (S.cfgWatch) { clearInterval(S.cfgWatch); S.cfgWatch = 0; } }
+  function backgroundConfigCheck(force) {
+    if (!S.open || !S.ready || S.cfgChecking || S.cfgBg || isBusy()) return;
+    if (!force && S.cfgAt && Date.now() - S.cfgAt < CFG_FRESH_MS) return;
+    var seq = S.seq;
+    S.cfgBg = true;
+    api('getConfig').then(function (cfg) {
+      S.cfgBg = false;
+      if (!alive(seq)) return;
+      if (S.phase === 'review' && typingInForm()) { S.cfgDeferred = cfg; return; }   // 入力の途中は描き直さない
+      applyNewConfig(cfg);
+      if (S.phase === 'intro') refreshIntro();
+    }, function (e) {
+      S.cfgBg = false;
+      if (alive(seq) && isAuthStop(e)) showAuthStop(e);
+    });
+  }
+  function typingInForm() {
+    var a = hasDom ? document.activeElement : null;
+    return !!(a && S.els && S.els.wrap && S.els.wrap.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT'));
+  }
+  /** 入力の途中で届いた設定を、欄を離れたときに当てる */
+  function applyDeferredConfig() {
+    if (!S.cfgDeferred || typingInForm()) return;
+    var cfg = S.cfgDeferred;
+    S.cfgDeferred = null;
+    applyNewConfig(cfg);
   }
 
   // ===== 管理者（PO）だけ: 件数の確認・帳票の転記 =====
@@ -4017,8 +4692,10 @@
         dateOrderQty: dateOrderQty, dateOrderKey: dateOrderKey, effectiveDateQtys: effectiveDateQtys, syncSingleDate: syncSingleDate,
         fillOrderQtyFromDates: fillOrderQtyFromDates, RECEPTIONIST_NONE: RECEPTIONIST_NONE,
         // 待ち時間の記録（2026-10-31・メモリだけ）・設定のページのメモリ・先に済ませる確かめの決まり
-        CALL_LOG_MAX: CALL_LOG_MAX, CallLog: CallLog, logCall: logCall, cleanMs: cleanMs, timingLine: timingLine, secText: secText, ACTION_LABELS: ACTION_LABELS,
-        PRECHECK_DELAY_MS: PRECHECK_DELAY_MS, PRECHECK_MAX: PRECHECK_MAX
+        CALL_LOG_MAX: CALL_LOG_MAX, CallLog: CallLog, logCall: logCall, cleanMs: cleanMs, timingLine: timingLine, secText: secText, ACTION_LABELS: ACTION_LABELS, BULK_CANCEL_MAX: BULK_CANCEL_MAX,
+        PRECHECK_DELAY_MS: PRECHECK_DELAY_MS, PRECHECK_MAX: PRECHECK_MAX,
+        // 2026-11-01: 止める・取扱いなし・確定後の変更
+        cleanStopLog: cleanStopLog, cleanChanges: cleanChanges, cleanConfirmRow: cleanConfirmRow, jstMs: jstMs, closedTitle: closedTitle, NH_QTY_TEXT: NH_QTY_TEXT
       }
     };
   }
