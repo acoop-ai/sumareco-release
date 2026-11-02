@@ -1,0 +1,32 @@
+/*
+ * Material Icons（スマレコ v88.12 の自前の写し）
+ * 出どころ:
+ *   CSS  : https://fonts.googleapis.com/icon?family=Material+Icons （2026-11-02 に Chrome の UA で取得したもの）
+ *   font : https://fonts.gstatic.com/s/materialicons/v145/flUhRq6tzZclQEJ-Vdg-IuiaDsNc.woff2
+ *          → MaterialIcons-Regular.woff2（中身はそのまま・版 v145 に固定）
+ * 変えたのは @font-face の src を同じフォルダの woff2 に向けたことだけ（.material-icons の決まりは Google の返したまま）
+ * License: Apache License 2.0（LICENSE・https://github.com/google/material-design-icons ）
+ */
+/* fallback */
+@font-face {
+  font-family: 'Material Icons';
+  font-style: normal;
+  font-weight: 400;
+  src: url(MaterialIcons-Regular.woff2) format('woff2');
+}
+
+.material-icons {
+  font-family: 'Material Icons';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}

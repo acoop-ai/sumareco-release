@@ -23,6 +23,10 @@
  *   （日・列・担当の組は返事のまま＝画面で決め打ちしない）。個人情報は無い。印刷は A4 横・1日＝1ページ・logPrint {method:'production'}。
  *   Excel は exportProduction（取り出しの上限に数える＝自動で送り直さない）。
  * 本部だけ: 店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」（2026-10-31）＝窓口 exportAllOrders（店を送らない・店の区分にはボタンを作らない）。
+ * 本部だけ: 店の選び方のいちばん上の「全店」（2026-11-02 PO「全店一覧や、全店合計も」）＝窓口 openListAll の1本（窓口が本部かを確かめる）。
+ *   6つの切り替えとも、店ごとの数と全店の合計の表（申込書ごとは全店の注文を1行ずつ・店の列つき・直す／取り消すはその注文の店のまま）。
+ *   店渡・宅配のお客様の名前・住所は出さない（店を1つ選ぶと出る）。報告用ファイル・CSV・印刷は店を1つ選ぶと使える（全店の Excel は「全店の注文（Excel）」）。
+ * PC の上の段（2026-11-02 PO「横長のボタンは避け、置き方でヘッダをコンパクトに」）: 左＝選ぶ・見る物／右＝する操作。2段めは切り替え（左）と探す（右）。
  * 切り替えの名前（2026-11-01 PO・スマレコ v88.11）: 報告書の Excel のシートの名前と同じ（Report_Xlsx.gs の rptNewSheet_）＝PC でもスマホでも
  *   申込書ごと｜おせち集計｜店渡｜宅配｜サンドイッチ・冷製オードブル｜店内受注品一覧。サンド（27番）は集計の下から、自分の切り替えへ。
  * PC の形（2026-11-01 PO「PC で開いたときはスマホの形ではなく、横長の PC 画面に合わせて」・幅 1024px 以上で自動・切り替えの釦は作らない）:
@@ -34,7 +38,7 @@
 (function (root) {
   'use strict';
 
-  var BUILD = 'osechi-ui-2026-11-01b';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
+  var BUILD = 'osechi-ui-2026-11-02a';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
   var STYLE_ID = 'osechi-list-style';
   var PRINT_ID = 'osechi-print';
   var PRINT_ROWS = 15;                   // ひな形の1ページの行数（15行を超えたら「（続き）」）
@@ -527,6 +531,85 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     return { main: main, sub: sub, today: today };
   }
 
+  // ---- 全店（本部だけ・2026-11-02 PO「全店一覧や、全店合計も」）: 窓口 openListAll の返事 → 表の形（DOM を使わない＝Node で試験できる） ----
+  //   どの表も「店ごとの数」と、その足し算の「合計」。合計は画面で足す（窓口の店ごとの数＝店を1つ選んだときの画面の数）。0 は空欄（集計と同じ）
+  var ALL_STORES = '全店';
+  var ALL_ROWS_MAX = 20000;   // 全店の申込書の上限（全店で5千件前後の見込みの4倍。超えた返事は壊れている＝描かずに案内する）
+  function n0(v) { var n = toInt(v); return n > 0 ? n : 0; }
+  function sumArr(a) { return a.reduce(function (s, v) { return s + v; }, 0); }
+  /** 全店の店渡・宅配: 商品（行）× 店（列）の個数と、行・列の合計。lines＝申込書の行の数（札に出す） */
+  function allMethodGrid(d, method) {
+    var stores = (d && d.stores) || [], by = (d && d.byStore) || {};
+    var rows = ((d && d.items && d.items[method]) || []).map(function (it) {
+      var cells = stores.map(function (s) { return n0(by[s] && by[s].qty[method][it.no]); });
+      var lines = stores.map(function (s) { return n0(by[s] && by[s].lines[method][it.no]); });
+      return { no: it.no, title: it.title, cells: cells, lines: lines, total: sumArr(cells), lineTotal: sumArr(lines) };
+    });
+    var totals = stores.map(function (_, j) { return sumArr(rows.map(function (r) { return r.cells[j]; })); });
+    return { stores: stores, rows: rows, totals: totals, total: sumArr(totals) };
+  }
+  /** 集計（全店）: 店（行）× 商品（列）の「いまの累計」（集計中の行があれば、その途中の数＝店を1つ選んだときの合計の行と同じ）と、列の合計 */
+  function allSummaryGrid(summary, stores, method) {
+    var s = objOf(summary), by = objOf(s.byStore);
+    var items = (Array.isArray(s.items) ? s.items : []).map(function (it) { return { no: toInt(it.no), label: str(it.headName1 || it.name).slice(0, 20), sub: str(it.headName2).slice(0, 20) }; });
+    var latest = function (t) { t = objOf(t); var a = Array.isArray(t.pending) ? t.pending : (Array.isArray(t.total) ? t.total : []); return items.map(function (_, k) { return n0(a[k]); }); };
+    var rows = (stores || []).map(function (n) { var cells = latest(by[n] && by[n][method]); return { store: n, cells: cells, total: sumArr(cells) }; });
+    var totals = items.map(function (_, k) { return sumArr(rows.map(function (r) { return r.cells[k]; })); });
+    return { items: items, rows: rows, totals: totals, total: sumArr(totals), provisional: !!(s.all && s.all[method] && Array.isArray(s.all[method].pending)) };
+  }
+  /** サンド（全店）: 受渡日（行）× 店（列）。元日営業でない店の 1/1 は Excel と同じ斜線。列の合計＝期間の合計 */
+  function allSandwichGrid(sw) {
+    sw = objOf(sw);
+    var stores = (Array.isArray(sw.stores) ? sw.stores : []).map(function (st) { st = objOf(st); return { name: cleanText(st.name, 40), label: cleanText(st.label || st.name, 40), code: cleanText(st.code, 12), newYearOpen: st.newYearOpen !== false }; });
+    var dates = Array.isArray(sw.dates) ? sw.dates.map(function (x) { return str(x); }) : [];
+    var rows = dates.map(function (dt, i) {
+      var g = Array.isArray(sw.grid) && Array.isArray(sw.grid[i]) ? sw.grid[i] : [];
+      var cells = stores.map(function (_, j) { return n0(g[j]); });
+      return { date: dt, cells: cells, slash: stores.map(function (st) { return !st.newYearOpen && dt === '1/1'; }), total: sumArr(cells) };
+    });
+    var totals = stores.map(function (_, j) { return sumArr(rows.map(function (r) { return r.cells[j]; })); });
+    var notOpen = Array.isArray(sw.notOpenNewYear) ? sw.notOpenNewYear : [], unknown = Array.isArray(sw.unknownDates) ? sw.unknownDates : [];
+    return { itemNo: toInt(sw.itemNo) >= 1 ? toInt(sw.itemNo) : 27, stores: stores, rows: rows, totals: totals, total: sumArr(totals),
+      notOpenQty: notOpen.reduce(function (a, e) { return a + n0(e && e.qty); }, 0), notOpenStores: notOpen.length,
+      unknownCount: unknown.length, unknownQty: unknown.reduce(function (a, u) { return a + n0(u && u.qty); }, 0) };
+  }
+  /** 店内受注品一覧（全店）の掃除: 日・担当の組・商品の並びは返事のまま。店ごとの日ごとの個数 */
+  function cleanAllProduction(p, stores) {
+    p = objOf(p);
+    var days = listOf(p.days, PROD_MAX.days).map(function (d) {
+      d = objOf(d);
+      return { date: cleanText(d.date, 10), ymd: /^\d{4}\/\d{2}\/\d{2}$/.test(str(d.ymd)) ? str(d.ymd) : '', label: cleanText(d.label, 20) || cleanText(d.date, 10),
+        groups: listOf(d.groups, PROD_MAX.groups).map(function (g) {
+          g = objOf(g);
+          return { dept: cleanText(g.dept, 20), label: cleanText(g.label, 20) || (g.unassigned === true ? '担当未設定' : '担当'), unassigned: g.unassigned === true,
+            items: listOf(g.items, PROD_MAX.items).map(function (it) { it = objOf(it); return { no: toInt(it.no) >= 1 ? toInt(it.no) : 0, name: cleanText(it.name, 80) }; }) };
+        }) };
+    }).filter(function (d) { return !!d.date; });
+    var src = objOf(p.byStore), by = {};
+    (stores || []).forEach(function (n) {
+      var s = objOf(src[n]), ds = objOf(s.days), out = {};
+      days.forEach(function (d) { var x = objOf(ds[d.date]), q = objOf(x.qty), qq = {}; Object.keys(q).forEach(function (k) { if (n0(q[k])) qq[k] = n0(q[k]); }); out[d.date] = { orderCount: count0(x.orderCount), qty: qq, closedNewYear: x.closedNewYear === true }; });
+      by[n] = { orderCount: count0(s.orderCount), outQty: count0(s.outQty), days: out };
+    });
+    return { asOf: cleanText(p.asOf, 20), noItems: p.noItems === true || !days.length, days: days, byStore: by };
+  }
+  /** 店内受注品一覧（全店）: 選んだ日の 商品（行・担当の組ごと）× 店（列）の個数と合計 */
+  function allProductionGrid(m, stores, date) {
+    var day = (m && m.days || []).filter(function (x) { return x.date === date; })[0] || (m && m.days && m.days[0]) || null;
+    if (!day) return null;
+    var cnt = function (n) { var s = m.byStore[n]; return s && s.days[day.date] ? s.days[day.date] : { orderCount: 0, qty: {}, closedNewYear: false }; };
+    var groups = day.groups.map(function (g) {
+      return { dept: g.dept, label: g.label, unassigned: g.unassigned, rows: g.items.map(function (it) {
+        var cells = stores.map(function (n) { return n0(cnt(n).qty[it.no]); });
+        return { no: it.no, name: it.name, cells: cells, total: sumArr(cells) };
+      }) };
+    });
+    var all = [].concat.apply([], groups.map(function (g) { return g.rows; }));
+    var totals = stores.map(function (_, j) { return sumArr(all.map(function (r) { return r.cells[j]; })); });
+    return { date: day.date, label: day.label, groups: groups, totals: totals, total: sumArr(totals),
+      orders: stores.map(function (n) { return cnt(n).orderCount; }), closedNewYear: stores.map(function (n) { return cnt(n).closedNewYear; }) };
+  }
+
   // ---- 店内受注品一覧（getProductionList の production）: 部品（DOM を使わない） ----
   //   壊れた応答で画面を重くしない上限。今年は 6日・3組・1日に最大13商品・列は時台＋3つ
   var PROD_MAX = { slots: 40, days: 40, groups: 12, items: 80, out: 30, warns: 10 };
@@ -693,6 +776,45 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     });
     return d;
   }
+  /**
+   * openListAll（全店・本部だけ）の返事 → 画面のデータ。店渡・宅配は数だけ（お客様の行は無い＝lists は空）。申込書ごとは全店の注文の中身から。
+   *   { all:true, at, asOf, store:'全店', stores, orderCount, items, byStore, summary, production（全店の形）, orders, others, confirmRows, changes, … }
+   */
+  function buildAllData(r, now) {
+    r = objOf(r);
+    var pe = objOf(r.partErrors);
+    var stores = [], seen = {};
+    listOf(r.stores, 200).forEach(function (s) { var n = cleanText(s, 40); if (n && !seen[n]) { seen[n] = 1; stores.push(n); } });
+    var items = {}, src = objOf(r.items), bySrc = objOf(r.byStore), by = {};
+    ['store', 'delivery'].forEach(function (m) {
+      items[m] = listOf(src[m], 100).map(function (it) { it = objOf(it); return { no: toInt(it.no), title: cleanText(it.title, 120) }; }).filter(function (it) { return it.no >= 1; });
+    });
+    stores.forEach(function (n) {
+      var s = objOf(bySrc[n]), one = { orderCount: count0(s.orderCount), applications: count0(s.applications), qty: {}, lines: {} };
+      ['store', 'delivery'].forEach(function (m) {
+        var q = objOf(objOf(s.qty)[m]), l = objOf(objOf(s.lines)[m]);
+        one.qty[m] = {}; one.lines[m] = {};
+        items[m].forEach(function (it) { if (n0(q[it.no])) one.qty[m][it.no] = n0(q[it.no]); if (n0(l[it.no])) one.lines[m][it.no] = n0(l[it.no]); });
+      });
+      by[n] = one;
+    });
+    var d = { all: true, at: now || Date.now(), asOf: cleanText(r.asOf, 20), store: ALL_STORES, stores: stores, orderCount: count0(r.orderCount), items: items, byStore: by,
+      lists: { store: { blocks: [], total: 0, truncated: false }, delivery: { blocks: [], total: 0, truncated: false } }, orders: {}, others: count0(r.others),
+      summary: null, summaryError: '', production: null, productionError: '', truncated: false,
+      confirmRows: cleanConfirmRows(r.confirmRows), changes: (r.changes && typeof r.changes === 'object') ? r.changes : null, changesError: cleanText(pe.changes, 200) };
+    if (r.summary && typeof r.summary === 'object') d.summary = { summary: r.summary, sandwich: objOf(r.sandwich), deadline: r.deadline || null };
+    else d.summaryError = cleanText(pe.summary, 200) || '集計を読み込めませんでした。';
+    if (r.production && typeof r.production === 'object') d.production = cleanAllProduction(r.production, stores);
+    else d.productionError = cleanText(pe.production, 200) || '店内受注品一覧を読み込めませんでした。';
+    var orders = objOf(r.orders), n = 0;
+    Object.keys(orders).forEach(function (id) {
+      if (n >= ALL_ROWS_MAX) { d.truncated = true; return; }
+      if (!/^\d{8}-\d{6}$/.test(id) || !orders[id] || typeof orders[id] !== 'object') return;
+      d.orders[id] = orders[id];
+      n++;
+    });
+    return d;
+  }
   /** 締め日の行の確定の時刻（2026-11-01）: [{closing, report, confirmAt}]（形の違うものは捨てる） */
   function cleanConfirmRows(arr) {
     var out = [];
@@ -724,7 +846,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     if (!L || !L.host || !L.host.me || L.host.me.role !== 'hq' || typeof L.host.changes !== 'function') return out;
     var d = L.host.changes();
     (d && d.items ? d.items : []).forEach(function (x) {
-      if (x.store !== L.store) return;
+      if (L.store !== ALL_STORES && x.store !== L.store) return;   // 全店は全部の店の分
       var m = out[x.closing] = out[x.closing] || { total: 0, open: 0 };
       m.total++;
       if (!x.checked) m.open++;
@@ -758,6 +880,16 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var id = str(info && info.orderId);
     if (!d || !id) return;
     d.orderRows = null;   // 申込書ごとの行は、次に描くときに作り直す
+    d.keysWarm = false;
+    if (d.all) {
+      // 全店: お客様の行（店渡し・宅配）は持たない＝注文の中身だけを直す（店ごとの数は、裏の読み直しで直る）。本部が店を移しても、全店の中には残る
+      if (info.mode !== 'update') { delete d.orders[id]; return; }
+      var o0 = objOf(info.order), p0 = objOf(d.orders[id]);
+      var v0 = toInt(info.version) >= 1 ? toInt(info.version) : (toInt(p0.version) >= 1 ? toInt(p0.version) + 1 : 1);
+      d.orders[id] = Object.assign({}, p0, { store: cleanText(info.store, 40) || str(p0.store), pickupTime: o0.pickupTime, receptionist: o0.receptionist, receiver: o0.receiver, requester: o0.requester,
+        items: Array.isArray(o0.items) ? o0.items : [], datedItems: Array.isArray(o0.datedItems) ? o0.datedItems : [], version: v0 });
+      return;
+    }
     var drop = function (m, b) {
       var before = b.rows.length;
       b.rows = b.rows.filter(function (r) { return r.orderId !== id; });
@@ -859,6 +991,8 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   }
   function alive(seq) { return !!(L && L.host.alive() && (seq === undefined || seq === L.seq)); }
   function isHq() { return !!(L && L.host.me && L.host.me.role === 'hq'); }
+  /** 全店を選んでいる（本部だけ。店の区分は選べない＝窓口も断る） */
+  function isAll() { return !!(L && isHq() && L.store === ALL_STORES); }
   function storeArg() { return isHq() ? { store: L.store } : {}; }
 
   function buildFrame() {
@@ -868,21 +1002,25 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var E = L.els;
     E.storeRow = h('div', { 'class': 'osechi-card osechi-lstore', 'data-step': 'list-store' });
     if (isHq()) {
-      var sel = h('select', { 'class': 'osechi-input', id: 'osechi-l-store', 'data-field': 'list-store', 'aria-label': 'どの店を見るか' });
+      var sel = h('select', { 'class': 'osechi-input', id: 'osechi-l-store', 'data-field': 'list-store', 'aria-label': 'どの店を見るか（全店も選べます）' });
       sel.appendChild(h('option', { value: '', text: '— 店を選んでください —' }));
+      // 全店（2026-11-02 PO「全店一覧や、全店合計も…このフィルタで選択できるように」）: いちばん上に1つ。選ぶと openListAll の1本（本部だけ・窓口も断る）
+      sel.appendChild(h('option', { value: ALL_STORES, 'data-kind': 'all', text: '全店（一覧と合計）' }));
       ((host.cfg && host.cfg.stores) || []).forEach(function (s) { sel.appendChild(h('option', { value: s, text: s })); });
       sel.addEventListener('change', function () { onStoreChange(sel.value); });
       E.storeSel = sel;
       E.storeCount = h('span', { 'class': 'osechi-small', 'data-step': 'list-store-count', 'aria-live': 'polite' });
-      E.storeRow.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-l-store', text: 'どの店を見ますか（申込書ごと・おせち集計・店渡・宅配・サンドイッチ・冷製オードブル・店内受注品一覧。毎回選びます）' }));
+      E.storeRow.appendChild(h('label', { 'class': 'osechi-label', 'for': 'osechi-l-store', text: 'どの店を見ますか（「全店」を選ぶと、店ごとの一覧と全店の合計。毎回選びます）' }));
       E.storeRow.appendChild(sel);
       E.storeRow.appendChild(E.storeCount);
-      // 全店の注文（本部だけ・PO 2026-10-31）: 店を選ぶ前でも押せる。店の区分にはボタンを作らない（窓口も断る）
+      // 全店の注文（本部だけ・PO 2026-10-31）: 店を選ぶ前でも押せる。店の区分にはボタンを作らない（窓口も断る）。
+      //   スマホは店を選ぶ欄の下・PC は上の段の右（する操作のまとまり）に置く（applyMode が動かす）
       E.btnAll = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-secondary', 'data-act': 'list-all-xlsx',
         title: '店を選ばなくても、全店の注文（取消を除く・1行が1件の注文）を1つの Excel にできます。', text: '全店の注文（Excel）をダウンロード' });
       E.btnAll.addEventListener('click', function () { download('all'); });
-      E.storeRow.appendChild(h('div', { 'class': 'osechi-lall', 'data-step': 'list-all' }, [E.btnAll,
-        h('div', { 'class': 'osechi-small', text: '店を選ばなくても、全店の注文（取消を除く・1行が1件の注文）を1つの Excel にできます。' })]));
+      E.allBox = h('div', { 'class': 'osechi-lall', 'data-step': 'list-all' }, [E.btnAll,
+        h('div', { 'class': 'osechi-small', text: '店を選ばなくても、全店の注文（取消を除く・1行が1件の注文）を1つの Excel にできます。' })]);
+      E.storeRow.appendChild(E.allBox);
     } else {
       E.storeRow.appendChild(h('div', { 'class': 'osechi-fixed', 'data-field': 'list-store', title: '自店だけ（変更できません）' }, [h('span', { text: '店: ' + L.store }), h('small', { text: '自店だけ（変更できません）' })]));
       E.storeCount = h('span', { 'class': 'osechi-small', 'data-step': 'list-store-count', 'aria-live': 'polite' });
@@ -923,7 +1061,12 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     E.btnProdPrint.addEventListener('click', onProdPrint);
     E.prodActions = h('div', { 'class': 'osechi-lactions osechi-prod-actions osechi-hidden', 'data-step': 'prod-actions' }, h('div', { 'class': 'osechi-btn-row' }, [E.btnProdXlsx, E.btnProdPrint]));
     E.search = h('input', { type: 'search', 'class': 'osechi-input', 'data-field': 'list-search', maxlength: String(SEARCH_MAX), placeholder: '氏名・電話・受付番号で探す', 'aria-label': 'お客様を探す（氏名・電話・受付番号）', autocomplete: 'off', spellcheck: 'false', enterkeyhint: 'search' });
-    E.search.addEventListener('input', function () { L.query = searchLimit(E.search.value); L.orderLimit = 0; L.pageLimit = 0; renderContent(); });   // 貼り付けなどで長くても100字で切る
+    E.search.addEventListener('input', function () {   // 貼り付けなどで長くても100字で切る
+      L.query = searchLimit(E.search.value); L.orderLimit = 0; L.pageLimit = 0;
+      // 全店（数千件）は、打つのを少し待ってから探す（1字ごとに全部をなめない）
+      if (L.data && L.data.all) { if (L.searchTimer) clearTimeout(L.searchTimer); L.searchTimer = setTimeout(function () { if (L) { L.searchTimer = 0; renderContent(); } }, 150); return; }
+      renderContent();
+    });
     E.searchBox = h('div', { 'class': 'osechi-lsearch' }, [E.search]);
     // 読み直しの印（2026-10-31）: 一覧のすぐ上。読み直している間も一覧はそのまま使える（押せる・探せる・切り替えられる）
     E.fresh = h('div', { 'class': 'osechi-lfresh', 'data-step': 'list-fresh', role: 'status', 'aria-live': 'polite' });
@@ -932,6 +1075,9 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     E.changes = h('div', { 'data-step': 'list-changes', 'aria-live': 'polite' });   // 本部だけ: 確定後の変更の帯（2026-11-01）
     // PC の上の2段（applyMode が中身を入れる。スマホの形では使わない＝今までの並びのまま）
     E.bar1 = h('div', { 'class': 'osechi-lbar osechi-lbar1', 'data-step': 'list-bar1' });
+    // 上の段は2つのまとまり（2026-11-02 PO「横長に引き伸ばさない・置き方でまとめる」）: 左＝選ぶ・見る物（店・枚数・締め日・報告のしかた）／右＝する操作（Excel・CSV・印刷・全店の注文）
+    E.bar1L = h('div', { 'class': 'osechi-lgrp osechi-lgrp-l', 'data-step': 'list-bar1-pick' });
+    E.bar1R = h('div', { 'class': 'osechi-lgrp osechi-lgrp-r', 'data-step': 'list-bar1-acts' });
     E.bar2 = h('div', { 'class': 'osechi-lbar osechi-lbar2', 'data-step': 'list-bar2' });
     E.root = h('div', { 'class': 'osechi-list', 'data-step': 'list' });
     applyMode();
@@ -952,16 +1098,21 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     if (L.wrapEl) L.wrapEl.classList.toggle('osechi-lpc-wrap', pc);
     if (L.host.body) L.host.body.classList.toggle('osechi-lpc-body', pc);
     if (pc) {
-      [E.storeRow, E.deadline, E.rules, E.actions, E.prodActions, E.searchBox].forEach(function (el) { E.bar1.appendChild(el); });
-      [E.tabs, E.count, E.fresh].forEach(function (el) { E.bar2.appendChild(el); });
+      // 上の段: 左＝選ぶ・見る物／右＝する操作。2段め: 切り替え（左）・件数と読み方・読み直しの印・探す（右）
+      [E.storeRow, E.deadline, E.rules].forEach(function (el) { E.bar1L.appendChild(el); });
+      [E.actions, E.prodActions].concat(E.allBox ? [E.allBox] : []).forEach(function (el) { E.bar1R.appendChild(el); });
+      [E.bar1L, E.bar1R].forEach(function (el) { E.bar1.appendChild(el); });
+      [E.tabs, E.count, E.fresh, E.searchBox].forEach(function (el) { E.bar2.appendChild(el); });
       [E.changes, E.bar1, E.note, E.bar2, E.content].forEach(function (el) { E.root.appendChild(el); });
     } else {
+      if (E.allBox) E.storeRow.appendChild(E.allBox);   // スマホは店を選ぶ欄の下（今までの並び）
       PHONE_ORDER.forEach(function (k) { E.root.appendChild(E[k]); });
       [E.bar1, E.bar2].forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
     }
     // PC では上の段を1段に収めるため、ボタンの字を短く（何をするかは title に。押したときの動きは同じ）
-    E.btnXlsx.textContent = pc ? '報告用ファイル（Excel）' : '報告用ファイル（Excel）をダウンロード';
+    E.btnXlsx.textContent = pc ? '報告用 Excel' : '報告用ファイル（Excel）をダウンロード';
     E.btnCsv.textContent = pc ? 'CSV' : 'CSV をダウンロード';
+    if (E.btnAll) E.btnAll.textContent = pc ? '全店の注文 Excel' : '全店の注文（Excel）をダウンロード';
     E.rulesSummary.textContent = pc ? '報告のしかた' : '報告のしかた（送り先・宅配・最終確認）';
     L.fitKey = '';
   }
@@ -988,20 +1139,26 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       b.disabled = !has;
     });
     E.content.setAttribute('aria-labelledby', 'osechi-l-tab-' + L.tab);
-    var prod = L.tab === 'production', pm = ready ? L.data.production : null;
-    [E.btnXlsx, E.btnCsv, E.btnPrint].forEach(function (b) { b.disabled = !has || L.dl || !ready; });
+    var prod = L.tab === 'production', pm = ready ? L.data.production : null, all = isAll();
+    // 全店: 店ごとの報告用ファイル・CSV・印刷・店内受注品一覧の Excel と印刷は、店を1つ選ぶと使える（消さずに薄く・理由は title）。全店の Excel は「全店の注文（Excel）」
+    [E.btnXlsx, E.btnCsv, E.btnPrint].forEach(function (b) { b.disabled = !has || L.dl || !ready || all; });
     if (E.btnAll) E.btnAll.disabled = L.dl;   // 全店の注文は店を選ばなくても押せる
-    E.btnProdXlsx.disabled = !has || L.dl || !ready;
-    E.btnProdPrint.disabled = !has || L.dl || !pm || !pm.days.length;   // 印刷は画面の数をそのまま使う＝読めてから
+    E.btnProdXlsx.disabled = !has || L.dl || !ready || all;
+    E.btnProdPrint.disabled = !has || L.dl || !pm || !pm.days.length || all;   // 印刷は画面の数をそのまま使う＝読めてから
+    var why = all ? '店を1つ選ぶと使えます（全店の Excel は「全店の注文（Excel）」）' : null;
+    [[E.btnXlsx, '報告用ファイル（Excel）をダウンロード'], [E.btnCsv, 'お客様リストの CSV をダウンロード'], [E.btnPrint, null], [E.btnProdXlsx, null], [E.btnProdPrint, null]].forEach(function (x) {
+      if (why) x[0].setAttribute('title', why); else if (x[1]) x[0].setAttribute('title', x[1]); else x[0].removeAttribute('title');
+    });
     E.actions.classList.toggle('osechi-hidden', prod);
     E.prodActions.classList.toggle('osechi-hidden', !prod);
     // 締め日の帯・報告のしかた・申込書の枚数は、報告（お客様リスト）のためのもの＝店内受注品一覧では畳んで、表を最初の画面に入れる
     [E.deadline, E.rules, E.storeCount].forEach(function (el) { el.classList.toggle('osechi-hidden', prod); });
-    // 集計・サンド・店内受注品一覧は数の表（お客様の名前なし）＝探す場面が無い
-    E.searchBox.classList.toggle('osechi-hidden', !has || L.tab === 'summary' || L.tab === 'sandwich' || prod);
+    // 集計・サンド・店内受注品一覧は数の表（お客様の名前なし）＝探す場面が無い。全店の店渡・宅配も数だけ（お客様は店を1つ選んで見る）
+    E.searchBox.classList.toggle('osechi-hidden', !has || L.tab === 'summary' || L.tab === 'sandwich' || prod || (all && L.tab !== 'orders'));
     // おせち（1〜19）の申込書の枚数（報告の数）。申込書ごとのタブの件数は、日付の商品だけの注文も数える（2026-11-01: 同じ画面で数が食い違って見えないよう、言葉を分ける）
-    E.storeCount.textContent = ready ? 'おせちの申込書 ' + L.data.orderCount + ' 枚' + (L.pc ? '' : '（取消を除く）') : '';   // PC は上の段を1段に（「取消を除く」は title）
-    E.storeCount.setAttribute('title', 'おせち（1〜19）の申込書の枚数・取消を除く（報告の数）');
+    // PC は上の段を1段に（「おせち N 枚」・申込書・取消を除くは title）
+    E.storeCount.textContent = ready ? (L.pc ? (all ? '全店 ' : '') + 'おせち ' + L.data.orderCount + ' 枚' : (all ? '全店 ' : '') + 'おせちの申込書 ' + L.data.orderCount + ' 枚（取消を除く）') : '';
+    E.storeCount.setAttribute('title', (all ? '全店の' : '') + 'おせち（1〜19）の申込書の枚数・取消を除く（報告の数）');
     renderFresh();
   }
   /** 読み直しの印: 読み直している間は動く印と「読み込み直しています…」（いつの内容かも）。失敗したら、いつの内容かと「もう一度」 */
@@ -1084,9 +1241,11 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     if (!L.data) renderContent();
     var ok = false;
     try {
-      var r = await L.host.api('openList', storeArg());
+      // 全店（本部だけ）は openListAll の1本（店ごとの数と注文の中身）。店を1つ選んだときは今までどおり openList
+      var all = isAll();
+      var r = await L.host.api(all ? 'openListAll' : 'openList', all ? {} : storeArg());
       if (!alive(seq)) return;
-      var d = buildData(r);
+      var d = all ? buildAllData(r) : buildData(r);
       if (d.changes && typeof L.host.setChanges === 'function') L.host.setChanges(d.changes);   // 本部だけ（窓口は店の区分に返さない）
       L.patches = L.patches.filter(function (p) { return p.at > t0; });   // 読み直しを始める前に直した分は、届く中身に入っている
       L.patches.forEach(function (p) { patchData(d, p.info); });
@@ -1135,12 +1294,18 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   function renderDeadline() {
     var E = L.els, h = L.h;
     L.host.clear(E.deadline);
-    var v = (L.data && L.data.summary) ? deadlineView(L.data.summary.deadline) : null;
+    var dl = (L.data && L.data.summary) ? L.data.summary.deadline : null;
+    var v = dl ? deadlineView(dl) : null;
     if (!v) return;
-    // PC は上の段を短く（することは、すぐ右の「報告用ファイル（Excel）」・全文は title）
-    var sub = L.pc ? v.sub.replace(/。報告書をダウンロードして送ってください。$/, '') : v.sub;
-    E.deadline.appendChild(h('div', { 'class': 'osechi-ldead' + (v.today ? ' osechi-ldead-today' : ''), 'data-kind': v.today ? 'report-day' : 'deadline', title: v.sub ? v.main + '。' + v.sub : null }, [
-      h('div', { 'class': 'osechi-ldead-main', text: v.main }),
+    // PC は上の段を1段に収めるため短く（「次の〆 12/5（土）→ 報告 12/6（日）」「本日は報告日」・全文は title）。することは、すぐ右の「報告用 Excel」
+    var main = v.main, sub = v.sub;
+    if (L.pc) {
+      var nx = dl && dl.next && typeof dl.next === 'object' ? dl.next : null;
+      if (nx) main = '次の〆 ' + mdDow(nx.closing) + ' → 報告 ' + mdDow(nx.report);
+      sub = v.today ? '本日は報告日' : (dl && dl.afterLast ? '最終確認 12/24 午前' : '');
+    }
+    E.deadline.appendChild(h('div', { 'class': 'osechi-ldead' + (v.today ? ' osechi-ldead-today' : ''), 'data-kind': v.today ? 'report-day' : 'deadline', title: v.sub ? v.main + '。' + v.sub : v.main }, [
+      h('div', { 'class': 'osechi-ldead-main', text: main }),
       sub ? h('div', { 'class': 'osechi-ldead-sub', text: sub }) : null
     ]));
   }
@@ -1153,13 +1318,22 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     host.clear(E.content);
     E.count.textContent = '';
     if (!L.store) {
-      E.content.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'list-choose-store', text: '店を選ぶと、その店の申込書ごと・おせち集計・店渡・宅配・サンドイッチ・冷製オードブル・店内受注品一覧が出ます。' }));
+      E.content.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'list-choose-store', text: '店を選ぶと、その店の申込書ごと・おせち集計・店渡・宅配・サンドイッチ・冷製オードブル・店内受注品一覧が出ます。' +
+        (isHq() ? '「全店」を選ぶと、店ごとの一覧と全店の合計が出ます。' : '') }));
       return;
     }
     if (!L.data) {
       if (L.refreshError && !L.refreshing) E.content.appendChild(errorBox(L.refreshError, function () { refresh(); }));
-      else E.content.appendChild(h('div', { 'class': 'osechi-card osechi-lskeleton', 'data-step': 'list-loading', role: 'status' }, [h('span', { 'class': 'osechi-spin-s', 'aria-hidden': 'true' }), '受注状況を読み込んでいます…']));
+      else E.content.appendChild(h('div', { 'class': 'osechi-card osechi-lskeleton', 'data-step': 'list-loading', role: 'status' }, [h('span', { 'class': 'osechi-spin-s', 'aria-hidden': 'true' }),
+        isAll() ? '全店の受注状況を読み込んでいます…（店の数だけ集めるので、少し時間がかかります）' : '受注状況を読み込んでいます…']));
       return;
+    }
+    if (L.data.all) {   // 全店（本部だけ）: 店ごとの数と合計の表（申込書ごとは全店の注文を1行ずつ）
+      if (L.tab === 'orders') return renderOrders();
+      if (L.tab === 'summary') return renderAllSummary();
+      if (L.tab === 'sandwich') return renderAllSandwich();
+      if (L.tab === 'production') return renderAllProduction();
+      return renderAllMethod(L.tab);
     }
     if (L.tab === 'orders') return renderOrders();
     if (L.tab === 'summary') return renderSummary();
@@ -1320,7 +1494,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       // 足したあとも見張りがまだ範囲の中なら、次の描画でもう1回（見張り直すと、いまの具合が1回届く＝範囲の中にいる間は1回に1段ずつ足し続ける）
       io.unobserve(sentinel);
       io.observe(sentinel);
-    }, { root: L.els.content, rootMargin: '0px 0px 800px 0px' });
+    }, { root: L.pc ? L.els.content : (L.host.body || null), rootMargin: '0px 0px 800px 0px' });   // スマホ（全店の申込書ごと）は画面ぜんたいが動く
     io.observe(sentinel);
     L.moreIo = io;
   }
@@ -1480,40 +1654,67 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   function orderRowsOf(d) {
     if (d.orderRows) return d.orderRows;
     var now = Date.now();
-    d.orderRows = Object.keys(d.orders).sort().map(function (id) {
+    // 全店: 店舗表の順 → 受付番号の順（店舗表に無い店は最後）。探す鍵は、はじめて探すときに作る（数千件を開くたびに作らない）
+    var rank = {};
+    if (d.all) (d.stores || []).forEach(function (n, k) { rank[n] = k; });
+    var ids = Object.keys(d.orders).sort();
+    if (d.all) {
+      var rk = function (id) { var s = str(d.orders[id] && d.orders[id].store); return own(rank, s) ? rank[s] : 1e6; };
+      ids.sort(function (a, b) { return (rk(a) - rk(b)) || (a < b ? -1 : (a > b ? 1 : 0)); });
+    }
+    d.orderRows = ids.map(function (id) {
       var o = d.orders[id], c = confirmFor(o), at = c ? Date.parse(c.confirmAt.replace(/\//g, '-').replace(' ', 'T') + '+09:00') : NaN;
       var r = { orderId: id, version: toInt(o.version), receivedAt: cleanText(o.registeredAt, 16), receiver: cleanParty(o.receiver), requester: cleanParty(o.requester),
         receptionist: cleanText(o.receptionist, 20) || RECEPTIONIST_NONE, items: orderItemsText(o), customer: orderCustomer(o),
         closing: c ? c.closing : cleanText(o.closingDate, 10), confirmed: !!c && isFinite(at) && now + (c.skewMs || 0) >= at };
       r.datedOnly = !(Array.isArray(o.items) ? o.items : []).some(function (it) { return toInt(it && it.storeQty) > 0 || toInt(it && it.deliveryQty) > 0; });
-      r.keys = rowKeys(r);
+      if (d.all) r.store = cleanText(o.store, 40);
+      else r.keys = rowKeys(r);   // 全店は rowMatchesQ が、はじめて探すときに作る
       return r;
     });
     return d.orderRows;
   }
   function renderOrders() {
-    var E = L.els, h = L.h, hq = !!(L.host.me && L.host.me.role === 'hq');
+    var E = L.els, h = L.h, hq = !!(L.host.me && L.host.me.role === 'hq'), allStores = !!L.data.all;
     var all = orderRowsOf(L.data), searching = !!searchText(L.query);
     var datedOnly = all.filter(function (r) { return r.datedOnly; }).length;
     var pq = searching ? parseQuery(L.query) : null;
     var rows = searching ? all.filter(function (r) { return rowMatchesQ(r, pq); }) : all;
     Object.keys(L.sel).forEach(function (id) { if (!L.data.orders[id]) delete L.sel[id]; });
-    E.count.textContent = searching ? '見つかった ' + rows.length + ' 件（申込書 ' + all.length + ' 件の中から）'
-      : '申込書 ' + all.length + ' 件（取消を除く' + (datedOnly ? '・日付の商品だけの注文 ' + datedOnly + ' 件を含む' : '') + '）・行の「直す」「取り消す」で、その申込書ごと直す・取り消す';
+    E.count.textContent = searching ? '見つかった ' + rows.length + ' 件（' + (allStores ? '全店の' : '') + '申込書 ' + all.length + ' 件の中から）'
+      : (allStores ? '全店 ' + L.data.stores.length + ' 店の' : '') + '申込書 ' + all.length + ' 件（取消を除く' + (datedOnly ? '・日付の商品だけの注文 ' + datedOnly + ' 件を含む' : '') + '）' +
+        (allStores ? (L.pc ? '' : '・行の「直す」「取り消す」は、その注文の店のまま') : '・行の「直す」「取り消す」で、その申込書ごと直す・取り消す');
+    E.count.setAttribute('title', allStores ? '行の「直す」「取り消す」は、その注文の店のまま直す・取り消す（店は変わりません）' : '');
+    if (allStores && L.data.truncated) E.content.appendChild(h('div', { 'class': 'osechi-warn', 'data-step': 'list-limit', text: '表示の上限（' + ALL_ROWS_MAX + ' 件）に達しました。すべての注文は「全店の注文（Excel）」で見てください。' }));
     if (hq) E.content.appendChild(bulkBar(rows));
     if (!rows.length) { E.content.appendChild(h('div', { 'class': 'osechi-info', text: searching ? '当たる申込書がありません。' : 'まだ注文はありません。' })); return; }
-    var heads = (hq ? [h('th', { scope: 'col', 'class': 'osechi-oc-sel', text: '選ぶ' })] : []).concat([h('th', { scope: 'col', 'class': 'osechi-oc-recv', text: '受付' }), h('th', { scope: 'col', 'class': 'osechi-oc-cust', text: 'お客様' }), h('th', { scope: 'col', text: '商品' }),
+    var heads = (hq ? [h('th', { scope: 'col', 'class': 'osechi-oc-sel', text: '選ぶ' })] : []).concat(allStores ? [h('th', { scope: 'col', 'class': 'osechi-oc-store', text: '店' })] : [])
+      .concat([h('th', { scope: 'col', 'class': 'osechi-oc-recv', text: '受付' }), h('th', { scope: 'col', 'class': 'osechi-oc-cust', text: 'お客様' }), h('th', { scope: 'col', text: '商品' }),
       h('th', { scope: 'col', 'class': 'osechi-oc-rcp', text: '受付係員' }), h('th', { scope: 'col', 'class': 'osechi-oc-cls', text: '〆' }), h('th', { scope: 'col', 'class': 'osechi-oc-acts', text: '直す・取り消す' })]);
     // PC: 大きな店（数百件）でも開いてすぐ使えるように、はじめは ORDERS_FIRST 行だけ描き、表の枠の下に近づいたら続きを ORDERS_STEP 行ずつ足す
-    //   （CPU 4倍遅くで 400 件を一度に描くと約1〜3秒止まっていた。探す・まとめて選ぶ・印刷・CSV は全部の行が相手＝描いた行の数に左右されない）。スマホは前のまま（カードは画面の外を描かない）
-    var limit = L.pc ? Math.min(rows.length, Math.max(ORDERS_FIRST, L.orderLimit || 0)) : rows.length;
+    //   （CPU 4倍遅くで 400 件を一度に描くと約1〜3秒止まっていた。探す・まとめて選ぶ・印刷・CSV は全部の行が相手＝描いた行の数に左右されない）。スマホは前のまま（カードは画面の外を描かない）。
+    //   全店（数千件）はスマホも同じく、はじめの分だけ描いて、下へ動かすと続きを足す
+    var limit = (L.pc || allStores) ? Math.min(rows.length, Math.max(ORDERS_FIRST, L.orderLimit || 0)) : rows.length;
     L.orderLimit = limit;
     var tbody = h('tbody', null, rows.slice(0, limit).map(function (r) { return orderRow(r, hq); }));
-    E.content.appendChild(h('div', { 'class': 'osechi-lscroll' }, h('table', { 'class': 'osechi-ltable osechi-otable' + (hq ? ' osechi-otable-hq' : ''), 'data-step': 'orders-table' }, [
+    E.content.appendChild(h('div', { 'class': 'osechi-lscroll' }, h('table', { 'class': 'osechi-ltable osechi-otable' + (hq ? ' osechi-otable-hq' : '') + (allStores ? ' osechi-otable-all' : ''), 'data-step': 'orders-table' }, [
       h('thead', null, h('tr', null, heads)), tbody
     ])));
     if (limit < rows.length) moreOrders(tbody, rows, hq, heads.length);
     updateBulkBar();
+    if (allStores && !L.data.keysWarm) warmKeys(L.data);
+  }
+  /** 全店: 探す鍵を、画面が空いている間に少しずつ作っておく（はじめて探したときに数千件ぶんを待たせない） */
+  function warmKeys(d) {
+    d.keysWarm = true;
+    var rows = orderRowsOf(d), i = 0, seq = L.seq;
+    var step = function () {
+      if (!L || L.seq !== seq || L.data !== d || d.orderRows !== rows) return;
+      var end = Math.min(rows.length, i + 300);
+      for (; i < end; i++) if (!rows[i].keys) rows[i].keys = rowKeys(rows[i]);
+      if (i < rows.length) setTimeout(function () { step(); }, 16);
+    };
+    setTimeout(function () { step(); }, 200);
   }
   var ORDERS_FIRST = 80, ORDERS_STEP = 40;   // 続きは 40 行ずつ（足すたびの止まりを短く＝CPU 4倍遅くで約0.2秒まで）
   /** PC: 表の枠の下に近づいたら続きの行を足す（見張りの行が見えたら）。足し終わったら見張りを外す */
@@ -1544,6 +1745,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       cb.addEventListener('change', function () { if (cb.checked) L.sel[r.orderId] = true; else delete L.sel[r.orderId]; updateBulkBar(); });
       cells.push(h('td', { 'class': 'osechi-ocheck-cell osechi-oc-sel', 'data-label': '選ぶ' }, h('div', { 'class': 'osechi-oval' }, [cb])));
     }
+    if (r.store !== undefined) cells.push(h('td', { 'class': 'osechi-oc-store', 'data-label': '店', 'data-kind': 'store', text: r.store }));   // 全店のときだけ
     cells.push(h('td', { 'class': 'osechi-lrecv osechi-oc-recv', 'data-label': '受付' }, h('div', { 'class': 'osechi-oval' }, [h('b', { text: r.orderId }), h('span', { 'class': 'osechi-small osechi-odate', text: r.receivedAt })])));
     cells.push(h('td', { 'data-label': 'お客様', 'data-kind': 'customer' }, h('div', { 'class': 'osechi-oval' }, [h('span', { 'class': 'osechi-oname', text: r.customer.name || '（氏名なし）' }), h('span', { 'class': 'osechi-small', text: '（' + r.customer.label + '）' })])));
     cells.push(h('td', { 'data-label': '商品', 'data-kind': 'items', title: L.pc ? r.items : null, text: r.items }));   // PC は1行（長ければ … ・全文は title）
@@ -1632,7 +1834,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       if (mk) {
         repCell.appendChild(h('button', { type: 'button', 'class': 'osechi-schg', 'data-act': 'sum-changes', 'data-closing': r.closing,
           'aria-label': mdDow(r.closing) + '〆の、締め後の変更 ' + mk.total + ' 件を見る', text: '！締め後の変更 ' + mk.total + ' 件' + (mk.open ? '（未確認 ' + mk.open + '）' : ''),
-          on: { click: function () { L.host.openChanges({ store: L.store, closing: r.closing, filter: 'all' }); } } }));
+          on: { click: function () { L.host.openChanges({ store: isAll() ? '' : L.store, closing: r.closing, filter: 'all' }); } } }));
       }
       return h('tr', { 'class': (r.inProgress ? 'osechi-snow' : '') + (r.filled ? ' osechi-sfilled' : '') + (r.provisional ? ' osechi-sprov' : '') + (mk ? ' osechi-schgrow' : ''), 'data-kind': r.provisional ? 'in-progress' : null }, [
         h('th', { scope: 'row', 'class': 'osechi-sfix' }, r.provisional
@@ -1653,7 +1855,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   /** PC の集計: いまの締め日の行（集計中・無ければ最後に数の入った行）が表の枠に見えるように（合計の行は枠の下に残る） */
   function revealSummaryRow() {
     var c = L && L.els.content;
-    if (!c || !L.pc) return;
+    if (!c || !L.pc || (L.data && L.data.all)) return;   // 全店は、上の「店ごとのいまの累計」から見せる（下の締め日の表まで動かさない）
     var t = c.querySelector('[data-step="summary-store"]');
     if (!t) return;
     var rows = t.querySelectorAll('tbody tr'), row = t.querySelector('tr.osechi-snow') || null;
@@ -1766,6 +1968,120 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     if (!narrow && box.firstChild && box.firstChild.scrollWidth > box.clientWidth + 1) box.classList.add('osechi-prod-cards');
   }
 
+  // ---- 全店（本部だけ・2026-11-02）: 店ごとの数と合計の表。お客様の名前は出さない（店を1つ選ぶと出る）----
+  //   どの表も、行の見出しは左に・列の見出しは上に・合計の行は下に残る（PC は表の枠の中・スマホは表の横の動き）。0 は空欄（集計・Excel と同じ）
+  /**
+   * 数の表を描く。o: { step, corner, cols:[{label, title?}], rows:[{label, title?, cells:[数], total, slash?:[真偽], kind?} | {group:true, label, cls?}],
+   *   foot:{label, cells, total}|null, titleOf?(行, 列の番号) → 札の文 }
+   */
+  function gridView(o) {
+    var h = L.h, n = o.cols.length + 2;
+    var head = [h('th', { scope: 'col', 'class': 'osechi-sfix osechi-gcorner', text: o.corner || '' })]
+      .concat(o.cols.map(function (c) { return h('th', { scope: 'col', 'class': 'osechi-gcol', title: c.title || c.label, text: c.label }); }))
+      .concat([h('th', { scope: 'col', 'class': 'osechi-gtot', text: '合計' })]);
+    var body = o.rows.map(function (r) {
+      if (r.group) return h('tr', { 'class': 'osechi-ggrp ' + (r.cls || '') }, h('th', { scope: 'colgroup', colspan: String(n), text: r.label }));
+      return h('tr', { 'class': r.total ? null : 'osechi-gzero', 'data-kind': r.kind || null }, [h('th', { scope: 'row', 'class': 'osechi-sfix', title: r.title || r.label, text: r.label })]
+        .concat(r.cells.map(function (v, j) {
+          if (r.slash && r.slash[j]) return h('td', { 'class': 'osechi-sslash', title: '元日営業でない店（Excel では斜線のセル）', text: '／' });
+          return h('td', { title: o.titleOf ? o.titleOf(r, j) : null, text: v ? String(v) : '' });
+        }))
+        .concat([r.total ? h('td', { 'class': 'osechi-stot', text: String(r.total) }) : h('td', { 'class': 'osechi-stot' }, h('span', { 'class': 'osechi-snone', text: NONE_MARK }))]));
+    });
+    var foot = o.foot ? h('tfoot', null, h('tr', { 'class': 'osechi-stotal', 'data-kind': 'total' }, [h('th', { scope: 'row', 'class': 'osechi-sfix', text: o.foot.label })]
+      .concat(o.foot.cells.map(function (v) { return h('td', { text: v ? String(v) : '' }); })).concat([h('td', { 'class': 'osechi-stot', text: String(o.foot.total || 0) })]))) : null;
+    return h('div', { 'class': 'osechi-lscroll osechi-gscroll' }, h('table', { 'class': 'osechi-stable osechi-gtable' + (o.compact ? ' osechi-gtable-c' : ''), 'data-step': o.step }, [h('thead', null, h('tr', { 'class': 'osechi-shead' }, head)), h('tbody', null, body), foot]));
+  }
+  function storeCols(stores) { return stores.map(function (s) { return { label: s, title: s }; }); }
+  /** 全店の見出しの1行（表の上）: 何の表か・合計の読み方 */
+  function allHead(text, sub) {
+    var h = L.h;
+    return h('div', { 'class': 'osechi-ghead' }, [h('h4', { 'class': 'osechi-lsub', text: text }), sub ? h('span', { 'class': 'osechi-small', text: sub }) : null]);
+  }
+  /** 全店のおせち集計: 先に「店ごとのいまの累計」（全店の状況が一目で・下の行が全店の合計）→ その下に「全店の締め日ごとの累計」（店を1つ選んだときと同じ形） */
+  function renderAllSummary() {
+    var E = L.els, h = L.h, d = L.data;
+    if (!d.summary) { E.content.appendChild(errorBox(d.summaryError || '集計を読み込めませんでした。', function () { refresh(); })); return; }
+    var s = d.summary.summary || {};
+    var late = s.late && toInt(s.late.count) > 0 ? toInt(s.late.count) : 0;
+    E.count.textContent = '全店 ' + d.stores.length + ' 店・いまの累計（集計中の締め日までの途中の数を含む・空欄＝受注なし）' + (s.asOf ? '（' + str(s.asOf).slice(5, 16) + ' 時点）' : '');
+    if (late) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '締め後の受付 ' + late + ' 件（最後の締め日の行に含めています）。' }));
+    var grids = ['store', 'delivery'].map(function (m) {
+      var g = allSummaryGrid(s, d.stores, m);
+      return h('div', { 'class': 'osechi-sumcol' }, [allHead(METHOD_MARK[m] + '（店ごとのいまの累計）'),
+        gridView({ step: 'all-summary-' + m, compact: true, corner: '店', cols: g.items.map(function (it) { return { label: String(it.no), title: it.no + '. ' + it.label + (it.sub ? '　' + it.sub : '') }; }),
+          rows: g.rows.map(function (r) { return { label: r.store, cells: r.cells, total: r.total }; }), foot: { label: '全店の合計', cells: g.totals, total: g.total },
+          titleOf: function (r, j) { return r.label + '・' + g.items[j].no + '番: ' + r.cells[j] + ' 個'; } })]);
+    });
+    E.content.appendChild(L.pc ? h('div', { 'class': 'osechi-sumpair', 'data-step': 'all-summary-pair' }, grids) : h('div', { 'data-step': 'all-summary-pair' }, grids));
+    // 全店の締め日ごとの累計（rptSummary_ の all・店を1つ選んだときの表と同じ形）
+    E.content.appendChild(allHead('全店の締め日ごとの累計', '（その締め日までの全店の合計・「集計中」の行＝次の締め日の分を含む、いまの数）'));
+    var pair = ['store', 'delivery'].map(function (m) { return h('div', { 'class': 'osechi-sumcol' }, summaryView(summaryTable(s, ALL_STORES, m), m, L.pc)); });
+    E.content.appendChild(L.pc ? h('div', { 'class': 'osechi-sumpair', 'data-step': 'summary-pair' }, pair) : h('div', { 'data-step': 'summary-pair' }, pair));
+    if (d.others) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '店舗表に無い店の注文が ' + d.others + ' 件あります（申込書ごとにだけ出しています。店を確かめてください）。' }));
+    var warns = Array.isArray(s.warnings) ? s.warnings.slice(0, 10) : [];
+    if (warns.length) E.content.appendChild(h('div', { 'class': 'osechi-warn' }, [h('b', { text: '集計で気づいたこと' })].concat(warns.map(function (w) {
+      return h('div', { text: '・' + (w && w.store ? str(w.store) + ': ' : '') + str(w && w.message).slice(0, 160) + (w && toInt(w.count) > 1 ? '（' + toInt(w.count) + ' 件）' : '') });
+    }))));
+  }
+  /** 全店の店渡・宅配: 商品（行）× 店（列）の個数・合計（お客様の名前は、店を1つ選ぶと出る） */
+  function renderAllMethod(method) {
+    var E = L.els, h = L.h, g = allMethodGrid(L.data, method);
+    var lines = sumArr(g.rows.map(function (r) { return r.lineTotal; }));
+    E.count.textContent = METHOD_LABEL[method] + ': 全店 ' + g.total + ' 個（申込書の行 ' + lines + ' 件）・お客様の名前は、上で店を1つ選ぶと出ます';
+    E.content.appendChild(allHead(METHOD_MARK[method] + '　商品ごと・店ごとの個数（個）', '（行＝商品・列＝店・いちばん下が全店の合計）'));
+    E.content.appendChild(gridView({ step: 'all-' + method, corner: '商品', cols: storeCols(g.stores),
+      rows: g.rows.map(function (r) { return { label: r.title || ('商品 ' + r.no), title: r.title, cells: r.cells, total: r.total, lines: r.lines }; }),
+      foot: { label: '全店の合計', cells: g.totals, total: g.total },
+      titleOf: function (r, j) { return g.stores[j] + '・' + r.label + ': ' + r.cells[j] + ' 個（申込書の行 ' + r.lines[j] + ' 件）'; } }));
+  }
+  /** 全店のサンドイッチ・冷製オードブル: 受渡日（行）× 店（列）＋合計（報告書のシートと同じ向き） */
+  function renderAllSandwich() {
+    var E = L.els, h = L.h, d = L.data;
+    if (!d.summary) { E.content.appendChild(errorBox(d.summaryError || '集計を読み込めませんでした。', function () { refresh(); })); return; }
+    var g = allSandwichGrid(d.summary.sandwich);
+    E.count.textContent = 'パーティーサンドプレート（' + g.itemNo + '番）の受渡日ごと・店ごとの数（全店 ' + g.total + ' 個）・代金未払いの分も数えます';
+    E.content.appendChild(allHead('年末年始　パーティーサンドプレート（' + g.itemNo + '番）', '（行＝受渡日・列＝店・いちばん下が期間の合計）'));
+    E.content.appendChild(gridView({ step: 'all-sandwich', corner: '受渡日', cols: g.stores.map(function (st) { return { label: st.name, title: st.label + (st.code ? '（' + st.code + '）' : '') + (st.newYearOpen ? '' : '・元日営業なし') }; }),
+      rows: g.rows.map(function (r) { return { label: r.date, kind: r.date, cells: r.cells, total: r.total, slash: r.slash }; }), foot: { label: '期間の合計', cells: g.totals, total: g.total },
+      titleOf: function (r, j) { return g.stores[j].name + '・' + r.label + ': ' + r.cells[j] + ' 個'; } }));
+    E.content.appendChild(h('p', { 'class': 'osechi-small osechi-sand-note', text: 'クリスマス（12/23〜25）の欄は、今年の申込書に無いため空のままです。斜線＝元日営業でない店の 1/1。' }));
+    if (g.notOpenQty) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '元日営業でない店の元日（1/1）の分が ' + g.notOpenStores + ' 店で ' + g.notOpenQty + ' 個あります（表には入れていません。受渡日を確かめてください）。' }));
+    if (g.unknownCount) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '受渡日が候補にない分が ' + g.unknownCount + ' 件・' + g.unknownQty + ' 個あります（表には入れていません。注文を確かめてください）。' }));
+  }
+  /** 全店の店内受注品一覧: 受け渡しの日を選ぶ → 商品（行・担当の組ごと）× 店（列）の個数＋合計 */
+  function renderAllProduction() {
+    var E = L.els, h = L.h, m = L.data.production, stores = L.data.stores;
+    if (!m) { E.content.appendChild(errorBox(L.data.productionError || '店内受注品一覧を読み込めませんでした。', function () { refresh(); })); return; }
+    if (!m.days.length) { E.content.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'prod-noitems', text: '商品設定に、お渡し日の商品がありません。' })); return; }
+    if (!m.days.some(function (x) { return x.date === L.prodDay; })) L.prodDay = defaultProdDay(m);
+    var g = allProductionGrid(m, stores, L.prodDay);
+    var dayTotal = function (day) { var x = allProductionGrid(m, stores, day.date); return x ? x.total : 0; };
+    E.count.textContent = (m.asOf ? m.asOf + ' 現在の受注（取消を除く）' : 'いまの受注（取消を除く）') + '・全店の店ごとの個数（作る時刻の内訳は、店を1つ選ぶと出ます）';
+    E.content.appendChild(h('div', { 'class': 'osechi-prod-dhead', text: '受け渡しの日（押すと、その日の表に切り替わります）' }));
+    E.content.appendChild(h('div', { 'class': 'osechi-prod-days', role: 'tablist', 'aria-label': '受け渡しの日', 'data-step': 'prod-days' }, m.days.map(function (day) {
+      var on = day.date === g.date, q = dayTotal(day);
+      var b = h('button', { type: 'button', role: 'tab', 'class': 'osechi-prod-day' + (on ? ' osechi-on' : '') + (q ? '' : ' osechi-prod-daynil'), 'aria-selected': on ? 'true' : 'false', 'data-act': 'prod-day', 'data-kind': day.date }, [
+        h('span', { 'class': 'osechi-prod-dlab', text: day.label }), h('span', { 'class': 'osechi-prod-dsub', text: q ? '全店 ' + q + ' 個' : NONE_MARK })
+      ]);
+      b.addEventListener('click', function () { onProdDay(day.date); });
+      return b;
+    })));
+    var rows = [];
+    g.groups.forEach(function (grp) {
+      rows.push({ group: true, label: '■ ' + grp.label + (grp.unassigned ? '　（商品設定の「担当」が空の商品）' : ''), cls: groupClass(grp) });
+      if (!grp.rows.length) rows.push({ label: 'この日に受け渡す商品はありません', cells: stores.map(function () { return 0; }), total: 0 });
+      grp.rows.forEach(function (r) { rows.push({ label: r.no + '. ' + (r.name || ('商品 ' + r.no)), cells: r.cells, total: r.total }); });
+    });
+    E.content.appendChild(allHead(g.label + '　店ごとの個数（個）', '（行＝商品・列＝店・いちばん下が全店の合計）'));
+    E.content.appendChild(gridView({ step: 'all-production', corner: '商品', cols: storeCols(stores), rows: rows,
+      foot: { label: '全店の合計', cells: g.totals, total: g.total }, titleOf: function (r, j) { return stores[j] + '・' + r.label + ': ' + r.cells[j] + ' 個'; } }));
+    var ny = stores.filter(function (_, j) { return g.closedNewYear[j] && g.totals[j] > 0; });
+    if (ny.length) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '元日営業でない設定の店に、この日の受注があります（' + ny.join('・') + '）。受渡日を確かめてください。' }));
+    var outs = stores.filter(function (n) { return m.byStore[n] && m.byStore[n].outQty > 0; });
+    if (outs.length) E.content.appendChild(h('div', { 'class': 'osechi-warn', text: '受渡日が商品設定の候補にない数量がある店: ' + outs.join('・') + '（表に入れていません。店を選ぶと中身が出ます）。' }));
+  }
+
   // ---- ダウンロード（xlsx・CSV）: 1回押したら終わるまで押せない・自動で送り直さない ----
   var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   var DOWNLOADS = {
@@ -1777,7 +2093,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   };
   async function download(kind) {
     var D = own(DOWNLOADS, kind) ? DOWNLOADS[kind] : null;
-    if (!L || !D || L.dl || L.host.isBusy() || (D.allStores ? !isHq() : !L.store)) return;
+    if (!L || !D || L.dl || L.host.isBusy() || (D.allStores ? !isHq() : (!L.store || isAll()))) return;   // 全店は「全店の注文（Excel）」だけ
     var seq = L.seq, host = L.host;
     L.dl = true;
     refreshChrome();
@@ -1803,7 +2119,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
 
   // ---- 印刷（A4 横・商品ごとに改ページ・ひな形に近い見た目）。印刷のたびに記録・印刷用の領域は終わったら消す ----
   async function onPrint() {
-    if (!L || !L.store || !L.data || L.host.isBusy() || L.dl) return;
+    if (!L || !L.store || !L.data || L.data.all || L.host.isBusy() || L.dl) return;   // 全店は印刷しない（店を1つ選ぶ）
     var host = L.host, seq = L.seq;
     var method = L.tab === 'delivery' ? 'delivery' : 'store';
     if (L.tab === 'summary' || L.tab === 'orders' || L.tab === 'sandwich') {
@@ -1845,7 +2161,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
 
   // ---- 店内受注品一覧の印刷（A4 横・1日＝1ページ・xlsx と同じ並び）。画面の数をそのまま印刷する（いつの時点かを紙にも出す） ----
   async function onProdPrint() {
-    if (!L || !L.store || L.host.isBusy() || L.dl) return;
+    if (!L || !L.store || isAll() || L.host.isBusy() || L.dl) return;
     var m = L.data && L.data.production;
     if (!m || !m.days.length) return;
     var host = L.host, seq = L.seq, cur = prodSelected(m);
@@ -2214,6 +2530,52 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     '.osechi-lpc .osechi-obulk .osechi-btn{width:auto;flex:0 0 auto;min-height:36px;font-size:15px;padding:4px 14px;white-space:nowrap}',
     // 店内受注品一覧（PC）: 上の説明を1行に
     '.osechi-lpc .osechi-prod-intro{margin:0 0 4px}',
+    // ---- PC の上の段の2つのまとまり（2026-11-02 PO「横幅があるからと言って横長に広げない・置き方でまとめる」）----
+    //   左＝選ぶ・見る物（店・枚数・締め日・報告のしかた）／右＝する操作（Excel・CSV・印刷｜全店の注文）。右のまとまりは右端に寄せる（間の空きは1か所だけ）
+    '.osechi-lgrp{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}',
+    '.osechi-lgrp-r{margin-left:auto;justify-content:flex-end}',
+    '.osechi-lpc .osechi-lgrp-r>.osechi-lall{padding-left:8px;border-left:2px solid #d8cbb8}',   // 全店の注文は、店ごとの操作と線で分ける
+    '.osechi-lpc .osechi-lbar1{gap:6px 8px}.osechi-lpc .osechi-lgrp{gap:6px 8px}',
+    '.osechi-lpc .osechi-lgrp .osechi-lstore select.osechi-input{min-width:9.5em}',
+    '.osechi-lpc .osechi-lgrp .osechi-ldead{padding:4px 10px}',
+    '.osechi-lpc .osechi-lbar2>.osechi-lsearch{margin-left:auto}',   // 2段め: 切り替え（左）・探す（右）
+    '.osechi-lpc .osechi-lactions .osechi-btn:disabled,.osechi-lpc .osechi-prod-actions .osechi-btn:disabled{opacity:.45}',
+    // 受け渡しの日（PC）: 文字の幅のボタンを左から並べる（6等分に引き伸ばさない）
+    '.osechi-lpc .osechi-prod-days{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}',
+    '.osechi-lpc .osechi-prod-day{flex:0 0 auto;min-width:7.5em;min-height:48px;padding:4px 16px}',
+    // ---- 全店（本部だけ・2026-11-02）: 店ごとの数の表。行の見出し（左）・列の見出し（上）・合計の行（下）は残る ----
+    '.osechi-ghead{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;margin:10px 0 4px}',
+    '.osechi-ghead>.osechi-lsub{margin:0}',
+    '.osechi-gtable{width:auto;min-width:0}',
+    '.osechi-gtable th.osechi-sfix{text-align:left;white-space:nowrap;max-width:15em;overflow:hidden;text-overflow:ellipsis}',
+    '.osechi-gtable th.osechi-gcol{width:2.6em;min-width:2.6em;max-width:3em;white-space:normal;word-break:break-all;line-height:1.15;font-size:12px;vertical-align:bottom}',   // 店の名前は2字ずつ折る（列を細く＝27店が1画面に）
+    '.osechi-gtable th.osechi-gtot,.osechi-gtable td.osechi-stot{background:#f6efe2;font-weight:900}',
+    '.osechi-gtable td{font-variant-numeric:tabular-nums}',
+    '.osechi-gtable tr.osechi-gzero>th{color:#5f6670;font-weight:600}',
+    '.osechi-gtable tr.osechi-ggrp>th{text-align:left;font-weight:900;color:#3d2a20;padding:3px 8px}',
+    '.osechi-gtable tr.osechi-prod-ga>th{background:#fce4d6}.osechi-gtable tr.osechi-prod-gb>th{background:#ddebf7}.osechi-gtable tr.osechi-prod-gc>th{background:#e2efda}.osechi-gtable tr.osechi-prod-go>th{background:#ededed}.osechi-gtable tr.osechi-prod-gn>th{background:#fff2cc}',
+    '.osechi-gtable .osechi-snone{font-size:11px}',
+    // PC: 表の枠の中で、列の見出しは上・行の見出しは左・合計の行は下に残す（セルごと。表は30行ほど＝重くない）
+    '.osechi-lpc .osechi-gtable thead{position:static}',
+    '.osechi-lpc .osechi-gtable thead th{position:sticky;top:0;z-index:3}',
+    '.osechi-lpc .osechi-gtable .osechi-sfix{position:sticky;left:0;z-index:2}',
+    '.osechi-lpc .osechi-gtable thead th.osechi-sfix{z-index:4}',
+    '.osechi-lpc .osechi-gtable tfoot{position:static}',
+    '.osechi-lpc .osechi-gtable tfoot th,.osechi-lpc .osechi-gtable tfoot td{position:sticky;bottom:0;z-index:3}',
+    '.osechi-lpc .osechi-gtable tfoot th.osechi-sfix{z-index:4}',
+    '.osechi-lpc .osechi-gtable th,.osechi-lpc .osechi-gtable td{height:20px;padding:1px 4px}',
+    '.osechi-lpc .osechi-gtable{font-size:13px}',
+    '.osechi-lpc .osechi-gscroll{overflow:visible}',
+    // 全店の集計（店×商品）: 店を1つ選んだときの集計と同じ詰め方（店渡しと宅配が 1280px で左右に並ぶ）
+    '.osechi-lpc .osechi-gtable-c{font-size:12px}',
+    '.osechi-lpc .osechi-gtable-c th,.osechi-lpc .osechi-gtable-c td{height:17px;padding:1px 2px}',
+    '.osechi-gtable-c th.osechi-gcol{width:1.8em;min-width:1.8em;max-width:2.2em}',
+    '@media (min-height:900px){.osechi-lpc .osechi-gtable-c{font-size:14px}.osechi-lpc .osechi-gtable-c th,.osechi-lpc .osechi-gtable-c td{height:21px;padding:1px 4px}}',
+    // 申込書ごと（全店）: 店の列（受付とお客様の列を少し詰める）
+    '.osechi-lpc .osechi-otable-all{min-width:1180px}',
+    '.osechi-lpc .osechi-otable .osechi-oc-store{width:6em;font-weight:700}',
+    '.osechi-lpc .osechi-otable-all .osechi-oc-recv{width:15.5em}.osechi-lpc .osechi-otable-all .osechi-oc-cls{width:17.5em}',
+    '.osechi-oc-store{font-weight:700}',
     // ---- 店内受注品一覧（画面）----
     '.osechi-prod-actions>.osechi-btn-row{margin-top:0}',
     '.osechi-prod-intro{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 6px}',
@@ -2384,7 +2746,10 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
         cleanProduction: cleanProduction, defaultProdDay: defaultProdDay, prodGroupTitle: prodGroupTitle, prodDaySub: prodDaySub, prodPrintLayout: prodPrintLayout,
         DEPT_CLASS: DEPT_CLASS, groupClass: groupClass,
         PROD_HEADS: PROD_HEADS, PROD_SLOTS_HEAD: PROD_SLOTS_HEAD, slotHeadParts: slotHeadParts, prodRowTexts: prodRowTexts,
-        PC_MIN_WIDTH: PC_MIN_WIDTH, isPcWidth: isPcWidth, pagesOf: pagesOf, pageFit: pageFit, tabLabelParts: tabLabelParts, PHONE_ORDER: PHONE_ORDER
+        PC_MIN_WIDTH: PC_MIN_WIDTH, isPcWidth: isPcWidth, pagesOf: pagesOf, pageFit: pageFit, tabLabelParts: tabLabelParts, PHONE_ORDER: PHONE_ORDER,
+        // 全店（2026-11-02）
+        ALL_STORES: ALL_STORES, ALL_ROWS_MAX: ALL_ROWS_MAX, buildAllData: buildAllData, allMethodGrid: allMethodGrid, allSummaryGrid: allSummaryGrid, allSandwichGrid: allSandwichGrid,
+        cleanAllProduction: cleanAllProduction, allProductionGrid: allProductionGrid, rowMatchesQ: rowMatchesQ, rowKeys: rowKeys
       }
     };
   }

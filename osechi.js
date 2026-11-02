@@ -57,7 +57,7 @@
   'use strict';
 
   // ===== 版・定数 =====
-  var OSECHI_UI_BUILD = 'osechi-ui-2026-11-01b';
+  var OSECHI_UI_BUILD = 'osechi-ui-2026-11-02a';
   var SESSION_KEY = 'osechi_session_v1';        // sessionStorage（このタブだけ・閉じれば消える）
   var LAST_DONE_KEY = 'osechi_last_done_v1';    // sessionStorage（直前の受付番号だけ）
   var DRAFT_DB = 'osechi_drafts_v1';            // IndexedDB（作りかけ・12時間）
@@ -113,6 +113,8 @@
     //   openList（2026-10-31）＝受注状況の全部を1本で（店渡し・宅配・集計・店内受注品一覧・注文の中身）。大きな店で数百 KB＝待ちを長めに。
     //   前の listCustomers・getSummary・getProductionList（切り替えごとに1本）は呼ばない。getOrder は「ほかの人が先に直した」ときの読み直しだけ
     openList: { timeoutMs: 60000, retryNetwork: true },
+    // openListAll（2026-11-02・本部だけ）＝全店の受注状況を1本で（店ごとの数・全店の注文の中身）。全店で数 MB＝待ちをさらに長めに
+    openListAll: { timeoutMs: 90000, retryNetwork: true },
     getOrder: { timeoutMs: 20000, retryNetwork: true },
     updateOrder: { timeoutMs: 45000, retryNetwork: true },
     cancelOrder: { timeoutMs: 30000, retryNetwork: true },
@@ -141,7 +143,7 @@
   // 待ち時間の記録の、操作の呼び名（画面の言葉）
   var ACTION_LABELS = {
     ping: '窓口の確かめ', startSession: 'ログインの確かめ', getConfig: '設定を読む', ocr: '写真の読み取り', checkOrder: '似た注文の確認',
-    submitOrder: '注文を送る', openList: '受注状況を開く', getOrder: '注文を読み直す', updateOrder: '修正を送る', cancelOrder: '取り消す',
+    submitOrder: '注文を送る', openList: '受注状況を開く', openListAll: '全店の受注状況を開く', getOrder: '注文を読み直す', updateOrder: '修正を送る', cancelOrder: '取り消す',
     exportReport: '報告用 Excel', exportCsv: 'CSV', exportProduction: '店内受注品一覧 Excel', exportAllOrders: '全店の注文 Excel', logPrint: '印刷の記録',
     adminStatus: '管理の件数', adminExportNow: '管理の転記',
     setItemStatus: '商品を止める・戻す', setAcceptPause: '受付を止める・再開', listChanges: '確定後の変更を読む', confirmChange: '変更を確認した',
@@ -1626,6 +1628,14 @@
     '.osechi-views{display:flex;gap:6px;padding:6px 10px;background:#f3e7d6;border-bottom:2px solid #e2cfb4}',
     '.osechi-views>.osechi-btn{min-height:48px;font-size:17px}',
     '.osechi-views>.osechi-btn[aria-current="page"]{background:#8f1d2c;color:#fff;border-color:#6e1521}',
+    // PC（幅 1024px 以上・2026-11-02 PO「横長のボタンは避け、赤い見出しの帯にコンパクトに」）: 切り替えは赤い帯の中に、文字の幅のタブで。
+    //   システム名（おせち受注）は左上に1つ・その右にタブ・使い方は右端。いま選んでいるタブは白い面（色の面で示す）。押す的の高さは 40px（マウス）
+    '.osechi-hdtabs .osechi-htitle{flex:0 1 auto}',
+    '.osechi-header>.osechi-views{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0;margin:0 auto 0 20px;background:transparent;border:0}',
+    '.osechi-header>.osechi-views>.osechi-btn{width:auto;flex:0 0 auto;min-height:40px;padding:4px 18px;font-size:16px;font-weight:800;border-radius:10px;border:2px solid rgba(255,255,255,.6);background:transparent;color:#fff}',
+    '.osechi-header>.osechi-views>.osechi-btn:hover{background:rgba(255,255,255,.16)}',
+    '.osechi-header>.osechi-views>.osechi-btn[aria-current="page"]{background:#fff;color:#8f1d2c;border-color:#fff}',
+    '.osechi-header>.osechi-views>.osechi-btn:focus-visible{outline:3px solid #e2b93b;outline-offset:2px}',
     '.osechi-badge{display:inline-block;font-size:13px;font-weight:900;border-radius:8px;padding:0 6px;margin-top:3px}',
     '.osechi-badge-soldout{background:#c62828;color:#fff}',
     '.osechi-badge-needcall{background:#ea7a00;color:#fff}',
@@ -2254,10 +2264,11 @@
     var c = S.ctx.container;
     clear(c);
     var sub = h('span', { 'class': 'osechi-htitle-sub', text: '確認しています…' });
+    var guide = h('button', { type: 'button', 'class': 'osechi-hbtn', 'data-act': 'guide', text: '使い方', on: { click: showGuide } });
     var header = h('div', { 'class': 'osechi-header' }, [
       h('button', { type: 'button', 'class': 'osechi-hbtn', 'data-act': 'close', 'aria-label': 'おせち受注を閉じてホームへ戻る', text: '← 戻る', on: { click: requestClose } }),
       h('div', { 'class': 'osechi-htitle' }, [h('span', { 'class': 'osechi-htitle-main', text: 'おせち受注' }), sub]),
-      h('button', { type: 'button', 'class': 'osechi-hbtn', 'data-act': 'guide', text: '使い方', on: { click: showGuide } })
+      guide
     ]);
     var views = h('div', { 'class': 'osechi-views osechi-hidden', 'data-step': 'views', role: 'group', 'aria-label': 'おせち受注の中の切り替え' });
     var wrap = h('div', { 'class': 'osechi-wrap' });
@@ -2265,7 +2276,32 @@
     var footer = h('div', { 'class': 'osechi-footer osechi-hidden' }, h('div', { 'class': 'osechi-footer-in' }));
     var rootEl = h('div', { 'class': 'osechi-root', lang: 'ja' }, [header, views, body, footer]);
     c.appendChild(rootEl);
-    S.els = { root: rootEl, sub: sub, views: views, body: body, wrap: wrap, footer: footer, footerIn: footer.firstChild };
+    S.els = { root: rootEl, header: header, guide: guide, sub: sub, views: views, body: body, wrap: wrap, footer: footer, footerIn: footer.firstChild };
+    placeViews();
+    watchViewsWidth();
+  }
+  // 切り替え（注文を入れる｜受注状況）の置き場（2026-11-02 PO「横長のボタンは避け、赤い見出しの帯にタブとしてコンパクトに」）:
+  //   PC（幅 1024px 以上）＝赤い帯の中（おせち受注の名前の右）に文字の幅のタブ／スマホ＝今までどおり帯の下に大きな2つ（親指で押しやすい）。
+  //   同じ要素を動かすだけ（2か所に作らない＝同じ名前を2回出さない）。幅をまたいだら置き直す
+  var VIEWS_PC_QUERY = '(min-width: 1024px)';
+  var viewsMq = null;
+  function viewsOnPc() {
+    try { return !!(root.matchMedia && root.matchMedia(VIEWS_PC_QUERY).matches); } catch (e) { return false; }
+  }
+  function placeViews() {
+    var E = S.els;
+    if (!E || !E.views) return;
+    var pc = viewsOnPc();
+    if (pc) { if (E.views.parentNode !== E.header) E.header.insertBefore(E.views, E.guide); }
+    else if (E.views.parentNode !== E.root) E.root.insertBefore(E.views, E.body);
+    E.root.classList.toggle('osechi-hdtabs', pc);
+  }
+  function watchViewsWidth() {
+    if (viewsMq || !root.matchMedia) return;
+    try {
+      viewsMq = root.matchMedia(VIEWS_PC_QUERY);
+      if (viewsMq.addEventListener) viewsMq.addEventListener('change', placeViews); else if (viewsMq.addListener) viewsMq.addListener(placeViews);
+    } catch (e) { viewsMq = null; }
   }
   function updateHeader() {
     if (!S.els) return;
