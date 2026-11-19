@@ -25,7 +25,7 @@
  * 本部だけ: 店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」（2026-10-31）＝窓口 exportAllOrders（店を送らない・店の区分にはボタンを作らない）。
  * 本部だけ: 店の選び方のいちばん上の「全店」（2026-11-02 PO「全店一覧や、全店合計も」）＝窓口 openListAll の1本（窓口が本部かを確かめる）。
  *   6つの切り替えとも、店ごとの数と全店の合計の表（申込書ごとは全店の注文を1行ずつ・店の列つき・直す／取り消すはその注文の店のまま）。
- *   店渡・宅配のお客様の名前・住所は出さない（店を1つ選ぶと出る）。報告用ファイル・CSV・印刷は店を1つ選ぶと使える（全店の Excel は「全店の注文（Excel）」）。
+ *   店渡・宅配のお客様の名前・住所は出さない（店を1つ選ぶと出る）。CSV・印刷は店を1つ選ぶと使える。報告用ファイル（Excel）は押して店を選ぶ（2026-11-19・全店の一覧の Excel は「全店の注文（Excel）」）。
  * PC の上の段（2026-11-02 PO「横長のボタンは避け、置き方でヘッダをコンパクトに」）: 左＝選ぶ・見る物／右＝する操作。2段めは切り替え（左）と探す（右）。
  * 切り替えの名前（2026-11-01 PO・スマレコ v88.11）: 報告書の Excel のシートの名前と同じ（Report_Xlsx.gs の rptNewSheet_）＝PC でもスマホでも
  *   申込書ごと｜おせち集計｜店渡｜宅配｜サンドイッチ・冷製オードブル｜店内受注品一覧。サンド（27番）は集計の下から、自分の切り替えへ。
@@ -38,7 +38,7 @@
 (function (root) {
   'use strict';
 
-  var BUILD = 'osechi-ui-2026-11-02a';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
+  var BUILD = 'osechi-ui-2026-11-19a';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
   var STYLE_ID = 'osechi-list-style';
   var PRINT_ID = 'osechi-print';
   var PRINT_ROWS = 15;                   // ひな形の1ページの行数（15行を超えたら「（続き）」）
@@ -470,7 +470,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
    *   集計中の行（いまの注文が入る締め日の行・PO 2026-11-01「集計中のまま、当該週の表示が出ません」）＝いまの累計（窓口の pending）を入れ、
    *     provisional（途中の数・締めまで増える）の印を付ける。前の版の「途中経過」の別の行は作らない（同じ数を2回出さない）。
    *   合計行＝いちばん新しい累計（集計中の行があればその数・無ければ窓口の total）＝上の行より小さくならない。
-   *   報告書の xlsx（exportReport）は、今までどおり締めた行まで（ひな形の決まり）。画面だけの見せ方
+   *   報告書の xlsx（exportReport）の「おせち集計」も同じ決まり（窓口 gas/Report_Model.gs の rptSummaryView_・2026-11-19。前は締めた行までで、11月の締め日の間の注文が出なかった）
    */
   function summaryTable(summary, store, method) {
     var s = (summary && typeof summary === 'object') ? summary : {};
@@ -1110,7 +1110,7 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
       [E.bar1, E.bar2].forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
     }
     // PC では上の段を1段に収めるため、ボタンの字を短く（何をするかは title に。押したときの動きは同じ）
-    E.btnXlsx.textContent = pc ? '報告用 Excel' : '報告用ファイル（Excel）をダウンロード';
+    xlsxLabel();
     E.btnCsv.textContent = pc ? 'CSV' : 'CSV をダウンロード';
     if (E.btnAll) E.btnAll.textContent = pc ? '全店の注文 Excel' : '全店の注文（Excel）をダウンロード';
     E.rulesSummary.textContent = pc ? '報告のしかた' : '報告のしかた（送り先・宅配・最終確認）';
@@ -1128,6 +1128,12 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     onTab(btns[j].getAttribute('data-tab'));
     try { btns[j].focus(); } catch (e) { /* 何もしない */ }
   }
+  /** 報告用ファイル（Excel）の釦の字と札: 店を1つ選んでいれば、その店の報告書／全店なら、押して店を選ぶ（2026-11-19）。PC は上の段を1段に収める短い字 */
+  function xlsxLabel() {
+    var E = L.els, all = isAll(), pc = !!L.pc;
+    E.btnXlsx.textContent = all ? (pc ? '報告用 Excel（店を選ぶ）' : '店を選んで報告用 Excel をダウンロード') : (pc ? '報告用 Excel' : '報告用ファイル（Excel）をダウンロード');
+    E.btnXlsx.setAttribute('title', all ? '押すと店を選び、その店の報告用ファイル（Excel・店で作るのと同じ物）を作ります' : '報告用ファイル（Excel）をダウンロード');
+  }
   /** 店・切り替え・ボタンの状態（店が決まるまで押せない・はじめの読み込みが終わるまで印刷とダウンロードは押せない。読み直しの間は押せる） */
   function refreshChrome() {
     var E = L.els, has = !!L.store, ready = !!L.data;
@@ -1140,15 +1146,18 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     });
     E.content.setAttribute('aria-labelledby', 'osechi-l-tab-' + L.tab);
     var prod = L.tab === 'production', pm = ready ? L.data.production : null, all = isAll();
-    // 全店: 店ごとの報告用ファイル・CSV・印刷・店内受注品一覧の Excel と印刷は、店を1つ選ぶと使える（消さずに薄く・理由は title）。全店の Excel は「全店の注文（Excel）」
-    [E.btnXlsx, E.btnCsv, E.btnPrint].forEach(function (b) { b.disabled = !has || L.dl || !ready || all; });
+    // 全店: 報告用ファイル（Excel）は、押すと店を選んで、その店の報告書を出す（2026-11-19 PO「本部が通常の店舗集計表（Excel）を見られない」＝
+    //   前は全店で薄くなり、指を置いたときの札にしか理由が無かった）。CSV・印刷・店内受注品一覧の Excel と印刷は、店を1つ選ぶと使える（消さずに薄く・理由は title）
+    E.btnXlsx.disabled = !has || L.dl || !ready;
+    [E.btnCsv, E.btnPrint].forEach(function (b) { b.disabled = !has || L.dl || !ready || all; });
     if (E.btnAll) E.btnAll.disabled = L.dl;   // 全店の注文は店を選ばなくても押せる
     E.btnProdXlsx.disabled = !has || L.dl || !ready || all;
     E.btnProdPrint.disabled = !has || L.dl || !pm || !pm.days.length || all;   // 印刷は画面の数をそのまま使う＝読めてから
     var why = all ? '店を1つ選ぶと使えます（全店の Excel は「全店の注文（Excel）」）' : null;
-    [[E.btnXlsx, '報告用ファイル（Excel）をダウンロード'], [E.btnCsv, 'お客様リストの CSV をダウンロード'], [E.btnPrint, null], [E.btnProdXlsx, null], [E.btnProdPrint, null]].forEach(function (x) {
+    [[E.btnCsv, 'お客様リストの CSV をダウンロード'], [E.btnPrint, null], [E.btnProdXlsx, null], [E.btnProdPrint, null]].forEach(function (x) {
       if (why) x[0].setAttribute('title', why); else if (x[1]) x[0].setAttribute('title', x[1]); else x[0].removeAttribute('title');
     });
+    xlsxLabel();
     E.actions.classList.toggle('osechi-hidden', prod);
     E.prodActions.classList.toggle('osechi-hidden', !prod);
     // 締め日の帯・報告のしかた・申込書の枚数は、報告（お客様リスト）のためのもの＝店内受注品一覧では畳んで、表を最初の画面に入れる
@@ -2085,26 +2094,54 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
   // ---- ダウンロード（xlsx・CSV）: 1回押したら終わるまで押せない・自動で送り直さない ----
   var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   var DOWNLOADS = {
-    xlsx: { action: 'exportReport', args: {}, busy: '報告用ファイル（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: 'おせち報告書_' },
+    // 報告用ファイル: 全店を選んでいるときは、押すと店を選ぶ（pickInAll・本部だけ。窓口は今までどおり exportReport に店を1つ渡す）
+    xlsx: { action: 'exportReport', args: {}, busy: '報告用ファイル（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: 'おせち報告書_', pickInAll: true },
     csv: { action: 'exportCsv', args: { kind: 'orders' }, busy: 'CSV を作っています…', ext: '.csv', mime: 'text/csv', fallback: 'おせちお客様リスト_' },
     production: { action: 'exportProduction', args: {}, busy: '店内受注品一覧（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: '店内受注品一覧_' },
     // 全店の注文（本部だけ・PO 2026-10-31）: 店を選ばなくても押せる（店を送らない）。窓口も本部かを確かめる
     all: { action: 'exportAllOrders', args: {}, busy: '全店の注文（Excel）を作っています…', ext: '.xlsx', mime: XLSX_MIME, fallback: 'おせち注文_全店_', allStores: true }
   };
+  /**
+   * 全店を選んでいるとき: どの店の報告用ファイルを作るか（店舗表の順＝全店の表と同じ並び）。やめたら ''。
+   * 選ばずに「作る」を押したら、もう一度聞く（黙ってほかの店のファイルを作らない）
+   */
+  async function pickReportStore() {
+    var h = L.h, host = L.host;
+    var stores = (L.data && Array.isArray(L.data.stores) && L.data.stores.length) ? L.data.stores : ((host.cfg && host.cfg.stores) || []);
+    var warn = '';
+    for (var tries = 0; tries < 3; tries++) {
+      var sel = h('select', { 'class': 'osechi-input', 'data-field': 'report-store', 'aria-label': '報告用ファイルを作る店' },
+        [h('option', { value: '', text: '— 店を選んでください —' })].concat(stores.map(function (s) { return h('option', { value: str(s), text: str(s) }); })));
+      var body = h('div', { 'data-step': 'report-store-pick' }, [sel, warn ? h('div', { 'class': 'osechi-warn', role: 'alert', text: warn }) : null]);
+      var pick = await host.ask({ tone: 'info', title: '報告用ファイル（Excel）を作る店', message: '店で作るのと同じ報告用ファイル（店渡・宅配・おせち集計・サンドイッチ）を、選んだ店の分で作ります。', body: body,
+        buttons: [{ id: 'go', label: 'この店の報告用ファイルを作る', kind: 'gold' }, { id: 'cancel', label: 'やめる', kind: 'secondary' }], cancelId: 'cancel' });
+      if (pick !== 'go') return '';
+      if (sel.value && stores.indexOf(sel.value) >= 0) return sel.value;
+      warn = '店を選んでください。';
+    }
+    return '';
+  }
   async function download(kind) {
     var D = own(DOWNLOADS, kind) ? DOWNLOADS[kind] : null;
-    if (!L || !D || L.dl || L.host.isBusy() || (D.allStores ? !isHq() : (!L.store || isAll()))) return;   // 全店は「全店の注文（Excel）」だけ
-    var seq = L.seq, host = L.host;
+    if (!L || !D || L.dl || L.host.isBusy() || (D.allStores ? !isHq() : !L.store)) return;
+    var seq = L.seq, host = L.host, target = '';
+    if (!D.allStores && isAll()) {   // 全店で出せる店ごとのファイルは報告用ファイルだけ（押して店を選ぶ）。CSV・店内受注品一覧は店を1つ選ぶと使える
+      if (!D.pickInAll) return;
+      L.dl = true;
+      refreshChrome();
+      try { target = await pickReportStore(); } finally { if (L && L.seq === seq) { L.dl = false; refreshChrome(); } }
+      if (!target || !alive(seq)) return;
+    }
     L.dl = true;
     refreshChrome();
     var layer = host.busy(D.busy, { sub: '回数に上限があるので、終わるまでお待ちください' });
     try {
-      var r = await host.api(D.action, Object.assign({}, D.args, D.allStores ? {} : storeArg()));
+      var r = await host.api(D.action, Object.assign({}, D.args, D.allStores ? {} : (target ? { store: target } : storeArg())));
       host.endBusy(layer);
       if (!alive(seq)) return;
       var bytes = base64ToBytes(r.base64);
       if (D.ext === '.xlsx' && !isZipBytes(bytes)) throw new Error('受け取ったファイルが Excel の形ではありません');
-      var name = /\.(xlsx|csv)$/i.test(str(r.filename)) ? str(r.filename) : D.fallback + (D.allStores ? '' : L.store) + D.ext;
+      var name = /\.(xlsx|csv)$/i.test(str(r.filename)) ? str(r.filename) : D.fallback + (D.allStores ? '' : (target || L.store)) + D.ext;
       var saved = host.saveFile(bytes, D.mime, name, D.ext);
       setNote('ダウンロードしました: ' + saved + (r.reportDate ? '（報告日 ' + str(r.reportDate) + '）' : ''));
     } catch (e) {
@@ -2547,6 +2584,9 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     '.osechi-ghead{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;margin:10px 0 4px}',
     '.osechi-ghead>.osechi-lsub{margin:0}',
     '.osechi-gtable{width:auto;min-width:0}',
+    // スマホ（全店の店×商品などの横に長い表）: 枠を縦にも送る形にして、見出しの行と左の列を枠の中に残す（2026-11-19・ui_design_principles 原則4。
+    //   横に送る枠だけだと、ページを縦に送ったときに見出しが流れていた）。PC は .osechi-lpc .osechi-lscroll が max-height を外す（表の枠＝受注状況の枠が送る）
+    '.osechi-gscroll{max-height:70vh;overflow:auto;border:1px solid #e6dccd;border-radius:10px}',
     '.osechi-gtable th.osechi-sfix{text-align:left;white-space:nowrap;max-width:15em;overflow:hidden;text-overflow:ellipsis}',
     '.osechi-gtable th.osechi-gcol{width:2.6em;min-width:2.6em;max-width:3em;white-space:normal;word-break:break-all;line-height:1.15;font-size:12px;vertical-align:bottom}',   // 店の名前は2字ずつ折る（列を細く＝27店が1画面に）
     '.osechi-gtable th.osechi-gtot,.osechi-gtable td.osechi-stot{background:#f6efe2;font-weight:900}',

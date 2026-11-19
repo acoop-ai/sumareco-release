@@ -57,7 +57,7 @@
   'use strict';
 
   // ===== 版・定数 =====
-  var OSECHI_UI_BUILD = 'osechi-ui-2026-11-02a';
+  var OSECHI_UI_BUILD = 'osechi-ui-2026-11-19a';
   var SESSION_KEY = 'osechi_session_v1';        // sessionStorage（このタブだけ・閉じれば消える）
   var LAST_DONE_KEY = 'osechi_last_done_v1';    // sessionStorage（直前の受付番号だけ）
   var DRAFT_DB = 'osechi_drafts_v1';            // IndexedDB（作りかけ・12時間）
@@ -1528,6 +1528,9 @@
     '.osechi-header{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 10px;padding-top:calc(8px + env(safe-area-inset-top,0px));background:#8f1d2c;color:#fff;border-bottom:4px solid #c9a227}',
     '.osechi-hbtn{flex:0 0 auto;min-height:46px;min-width:46px;padding:4px 12px;border-radius:12px;border:2px solid rgba(255,255,255,.65);background:rgba(255,255,255,.12);color:#fff;font-size:17px;font-weight:800;cursor:pointer;-webkit-tap-highlight-color:transparent}',
     '.osechi-hbtn:active{background:rgba(255,255,255,.3)}',
+    // 戻る・TOP（2026-11-19）: PC は「← ひとつ前に戻る」「↑ TOP」・狭い画面は「← 戻る」「↑」（帯に「おせち受注」の名前を残す）
+    '.osechi-hwide{display:none}@media (min-width:1024px){.osechi-hwide{display:inline}}',
+    '@media (max-width:520px){.osechi-htop-t{display:none}.osechi-header .osechi-hbtn{padding:4px 9px}}',
     '.osechi-htitle{flex:1 1 auto;min-width:0}',
     '.osechi-htitle-main{display:block;font-size:21px;font-weight:900;line-height:1.25;letter-spacing:.04em}',
     '.osechi-htitle-sub{display:block;font-size:14px;line-height:1.3;opacity:.95;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -1775,18 +1778,39 @@
   }
   function dialogEl() { return layerEl('dialog'); }
 
+  // ---- 見出しの帯の「← ひとつ前に戻る」「↑ TOP」（2026-11-19・PO の決まり「戻る・TOP はヘッダと同じ固定」） ----
+  //   帯は本文の外（本文だけが縦に動く）＝本文・表の枠をいちばん下まで送っても、いつも見えて押せる。左端の決まった位置（戻る → TOP）
+  /** 「← ひとつ前に戻る」（狭い画面は「← 戻る」＝帯に名前と使い方を残すため。読み上げは aria-label の全文） */
+  function backButton(act, aria, fn) {
+    return h('button', { type: 'button', 'class': 'osechi-hbtn osechi-hback', 'data-act': act, 'aria-label': aria, on: { click: fn } },
+      ['← ', h('span', { 'class': 'osechi-hwide', text: 'ひとつ前に' }), '戻る']);
+  }
+  /** 「↑ TOP」: その画面の本文（と、その中で縦に送る表の枠）をいちばん上へ。横の位置・開け閉め・選んだ物は変えない */
+  function topButton(scrollerOf) {
+    return h('button', { type: 'button', 'class': 'osechi-hbtn osechi-htop', 'data-act': 'top', 'aria-label': 'いちばん上へ（TOP）', title: 'いちばん上へ',
+      on: { click: function () { scrollToTop(scrollerOf()); } } }, ['↑', h('span', { 'class': 'osechi-htop-t', text: ' TOP' })]);   // 狭い画面は「↑」だけ（帯に名前を残す）
+  }
+  function scrollToTop(el) {
+    if (!el) return;
+    el.scrollTop = 0;
+    Array.prototype.forEach.call(el.querySelectorAll('[data-step="list-body"]'), function (x) { x.scrollTop = 0; });   // PC の受注状況の表の枠
+    try { root.scrollTo(0, 0); } catch (e) { /* 動かない画面はそのまま */ }
+  }
+
   // ---- 階層2: 1枚の画面（使い方・写真・後でお客様リストの1件）。開く・閉じるはこの2つだけ ----
   function openSub(title, body, opt) {
     opt = opt || {};
     var el = layerEl('sub');
     S.sub = null;
     clear(el);
-    var header = h('div', { 'class': 'osechi-header' }, [
-      h('button', { type: 'button', 'class': 'osechi-hbtn', 'data-act': 'sub-close', 'aria-label': '閉じて前の画面へ戻る', text: '← 戻る', on: { click: function () { closeSub(); } } }),
-      h('div', { 'class': 'osechi-htitle' }, [h('span', { 'class': 'osechi-htitle-main', text: title })])
-    ]);
     var wrap = h('div', { 'class': 'osechi-wrap' }, body);
     var subBody = h('div', { 'class': 'osechi-sub-body' }, wrap);
+    // 戻る・TOP は見出しの帯の左端（帯ごと固定＝本文を送っても消えない・2026-11-19 PO の決まり「戻る・TOP はヘッダと同じ固定」）
+    var header = h('div', { 'class': 'osechi-header' }, [
+      backButton('sub-close', '閉じて前の画面へ戻る', function () { closeSub(); }),
+      topButton(function () { return subBody; }),
+      h('div', { 'class': 'osechi-htitle' }, [h('span', { 'class': 'osechi-htitle-main', text: title })])
+    ]);
     el.appendChild(header);
     el.appendChild(subBody);
     var footer = null;
@@ -2264,15 +2288,17 @@
     var c = S.ctx.container;
     clear(c);
     var sub = h('span', { 'class': 'osechi-htitle-sub', text: '確認しています…' });
-    var guide = h('button', { type: 'button', 'class': 'osechi-hbtn', 'data-act': 'guide', text: '使い方', on: { click: showGuide } });
-    var header = h('div', { 'class': 'osechi-header' }, [
-      h('button', { type: 'button', 'class': 'osechi-hbtn', 'data-act': 'close', 'aria-label': 'おせち受注を閉じてホームへ戻る', text: '← 戻る', on: { click: requestClose } }),
-      h('div', { 'class': 'osechi-htitle' }, [h('span', { 'class': 'osechi-htitle-main', text: 'おせち受注' }), sub]),
-      guide
-    ]);
+    // 利用ガイドの入口は右上（名前は「おせち受注利用ガイド」・帯は短く「利用ガイド」＝2026-11-12 PO の名前の決まり）
+    var guide = h('button', { type: 'button', 'class': 'osechi-hbtn', 'data-act': 'guide', 'aria-label': 'おせち受注利用ガイドを開く', text: '利用ガイド', on: { click: showGuide } });
     var views = h('div', { 'class': 'osechi-views osechi-hidden', 'data-step': 'views', role: 'group', 'aria-label': 'おせち受注の中の切り替え' });
     var wrap = h('div', { 'class': 'osechi-wrap' });
     var body = h('div', { 'class': 'osechi-body' }, wrap);
+    var header = h('div', { 'class': 'osechi-header' }, [
+      backButton('close', 'おせち受注を閉じてホームへ戻る（ひとつ前に戻る）', requestClose),
+      topButton(function () { return body; }),
+      h('div', { 'class': 'osechi-htitle' }, [h('span', { 'class': 'osechi-htitle-main', text: 'おせち受注' }), sub]),
+      guide
+    ]);
     var footer = h('div', { 'class': 'osechi-footer osechi-hidden' }, h('div', { 'class': 'osechi-footer-in' }));
     var rootEl = h('div', { 'class': 'osechi-root', lang: 'ja' }, [header, views, body, footer]);
     c.appendChild(rootEl);
@@ -4282,18 +4308,19 @@
       step('📨', '送る', '「この内容で送信」を押します。黄色の注意が出たら、お客様に確かめて「確認したうえでこのまま送る」。商品の注意は赤い枠で出て、押すとその商品の欄へ動きます。似た注文があれば「上書き／別の注文として受注する／やめる」を選びます。'),
       step('✅', '受付番号', '受付番号が出たら完了です。続けて「次の注文を撮影する」を押せます。')
     ]);
-    var extra = h('div', { 'class': 'osechi-small' }, lines('・1枚の申込書が1件の注文です（同じ内容でも、別の申込書なら「別の注文として受注する」）。\n・本部が受付を止めているときは、上に赤い帯が出ます。再開されるまで送れません（入力は端末に残ります）。\n・売り切れの商品は数量を入れられません。\n・要電話確認の商品は、お客様に電話で確かめてから送ります。\n・入力の途中は、この端末に12時間だけ残ります（写真は残しません）。サインアウトすると消えます。\n・送信を何回押しても、通信が切れて送り直しても、同じ注文は1件だけ登録されます。'));
+    var extra = h('div', { 'class': 'osechi-small' }, lines('・1枚の申込書が1件の注文です（同じ内容でも、別の申込書なら「別の注文として受注する」）。\n・本部が受付を止めているときは、上に赤い帯が出ます。再開されるまで送れません（入力は端末に残ります）。\n・売り切れの商品は数量を入れられません。\n・要電話確認の商品は、お客様に電話で確かめてから送ります。\n・入力の途中は、この端末に12時間だけ残ります（写真は残しません）。サインアウトすると消えます。\n・送信を何回押しても、通信が切れて送り直しても、同じ注文は1件だけ登録されます。\n・上の帯の「↑ TOP」で、いちばん上へ戻ります（表の枠も）。「← ひとつ前に戻る」で前の画面へ戻ります。'));
     // 受注状況（上の切り替え）の使い方
     var listHead = h('div', { 'class': 'osechi-h2', text: '受注状況' });
     var listBody = h('ol', { 'class': 'osechi-guide-steps', 'data-step': 'guide-list' }, [
-      step('📋', '開く', '上の「受注状況」を押します。はじめは「申込書ごと」（1行＝1枚の申込書）。おせち集計・店渡・宅配・サンドイッチ・冷製オードブル・店内受注品一覧に切り替えて見ます（名前は報告書の Excel のシートと同じ）。本部の方は、毎回、見る店を選びます。'),
+      step('📋', '開く', '上の「受注状況」を押します。はじめは「申込書ごと」（1行＝1枚の申込書）。おせち集計・店渡・宅配・サンドイッチ・冷製オードブル・店内受注品一覧に切り替えて見ます（名前は報告書の Excel のシートと同じ）。本部の方は、毎回、見る店を選びます（いちばん上の「全店」を選ぶと、店ごとの数と全店の合計）。'),
       step('🖥', 'PC で開いたとき', '横長の画面に合わせた形になります。上の1〜2段に店・次の締め日・Excel・CSV・印刷・探す欄、その下に切り替え、残りの高さを表が使います（表は枠の中で動き、列の見出しは上に残ります）。店渡・宅配は Excel のページ（1ページ15行）の形を横に並べ、注文の無い商品は名前だけを小さく出します。おせち集計は店渡しと宅配を左右に並べます。切り替えはキーボードの ← → でも動きます。'),
       step('🧾', '申込書ごと', '1枚の申込書が1行です（日付の商品だけの注文も）。受付番号・受付の日時・お客様・商品（例「3番 店渡し1・28番 12/31×1」）・受付係員・〆が並び、本部が確定した数に入っている注文には「報告済み・本部で確定」と出ます。行の「直す」で注文を直す画面、「取り消す」で理由を入れて取り消せます（直す画面を開かずに）。本部の方は、行を選んで「選んだ N 件を取り消す」で、まとめて取り消せます（一度に50件まで・理由は1つ・取り消す前に受付番号と氏名の一覧で確かめます）。', mini(['直す', '取り消す', '選んだ 3 件を取り消す'])),
       step('🔍', '探す', '氏名・電話・受付番号で探せます。ひらがな・カタカナ・ローマ字、全角・半角のどれで打っても当たります。空白で区切ると、どの言葉も含む行だけ。漢字の氏名を読み（やまだ）で探すことはできません。', mini(['すずき', 'suzuki', '090-1234'])),
       step('✏️', '直す・取り消す', '店渡し・宅配の行を押すと、すぐに注文を直す画面が出ます（「修正を送る」）。取り消すときは、理由を入れます。送ったあとも一覧はそのまま使えます（直した行は「直しました」の印・一覧の上に「読み込み直しています…」）。ほかの人が先に直していたら、最新の内容を読み込み直します。報告日の 8:00 を過ぎた締め日の注文（本部が確定した数に入っている注文）を直す・取り消すときは、送る前に「本部に知らされます」と出ます（止まりません）。'),
-      step('📊', 'おせち集計', '締め日ごとの累計です。いちばん新しい「集計中」の行には、次の締め日の分を含む、いまの時点の数が入ります（締めまで増えます・点線の枠と「集計中（〇時点・途中の数）」の札）。合計の行は、いまの累計です。報告用の Excel は、今までどおり締めた行までです。'),
+      step('📊', 'おせち集計', '締め日ごとの累計です。いちばん新しい「集計中」の行には、次の締め日の分を含む、いまの時点の数が入ります（締めまで増えます・点線の枠と「集計中（〇時点・途中の数）」の札）。合計の行は、いまの累計です。報告用の Excel の「おせち集計」も同じ数です（集計中の行は斜体と点線の枠・表の下に「〇〆の行は集計中」の1行）。報告日には、その日に報告する締め日の行の数を見ます。'),
       step('🥪', 'サンドイッチ・冷製オードブル', 'パーティーサンドプレート（27番）の、受渡日ごとの数です（代金未払いの分も数えます）。元日営業でない店の 1/1 は斜線です。前は「集計」のいちばん下にあった表です（数は同じ）。'),
-      step('📥', '報告する', '締め日と報告日は上の帯に出ます。報告日は「報告用ファイル（Excel）をダウンロード」か「印刷」。回数に上限があるので、1回押したら終わるまで待ちます。'),
+      step('📥', '報告する', '締め日と報告日は上の帯に出ます。報告日は「報告用ファイル（Excel）をダウンロード」か「印刷」。回数に上限があるので、1回押したら終わるまで待ちます。本部の方は、店を1つ選んでいれば、その店の報告用の Excel。「全店」を選んでいるときは「報告用 Excel（店を選ぶ）」で、店を選んで出します（店で作る報告書と同じ物）。'),
+      step('🏢', '全店（本部の方）', '店を選ぶ欄のいちばん上の「全店」を選ぶと、6つの切り替えとも、店ごとの数と全店の合計が出ます。おせち集計は、先に店ごとのいまの累計、その下に全店の締め日ごとの累計です。お客様の名前は出しません（店を1つ選ぶと出ます）。CSV と印刷は店を1つ選ぶと使えます。'),
       step('🍣', '店内受注品一覧', '受注状況のいちばん右「店内受注品一覧」で、店で作る商品（惣菜・鮮魚・サービスカウンターの担当）を、受け渡しの日ごと・担当ごとに、作る数と、いちばん早い受取の時刻で見られます（お客様の名前は出しません）。印刷は A4 横・1日1ページ、Excel にもできます。'),
       step('🗂️', '全店の注文（本部の方）', '店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」で、全店の注文（取消を除く）を1つの Excel にできます。店を選ばなくても押せます。1行が1件の注文（1枚の申込書）で、左に店の名前、そのあとに注文の項目と商品ごとの数（日付の商品 20〜32番も）が並びます。'),
       step('！', '確定後の変更（本部の方）', '報告日の 8:00（本部が数を確定する朝）より後に、店が直した・取り消した注文があると、上に赤と黄色の帯が出ます。押すと、店・受付番号・お客様・いつ・だれ・どの〆か・変えた所（前→後）が出ます。確かめたら「確認した」（本部のだれが押しても、全員に「確認済み」と出ます）。おせち集計の表では、その締め日の行に「！締め後の変更 N 件」が出ます。'),
@@ -4301,7 +4328,7 @@
     ]);
     var listExtra = h('div', { 'class': 'osechi-small' }, lines('・お客様の氏名・住所・電話は、この端末に残しません（同じ画面で開き直したときにすぐ出せるよう、画面のメモリにだけ置きます。サインアウトで消えます）。\n・待ち時間の記録は、画面のいちばん下の版の行を長押し（または5回続けて押す）すると出ます。'));
     var close = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'guide-close', text: '閉じる', on: { click: function () { closeSub(); } } });
-    openSub('おせち受注の使い方', [body, extra, listHead, listBody, listExtra, close]);
+    openSub('おせち受注利用ガイド', [body, extra, listHead, listBody, listExtra, close]);
   }
   function showPhotoBig() {
     if (!S.photo || !S.photo.url || isBusy()) return;
