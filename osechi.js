@@ -57,7 +57,7 @@
   'use strict';
 
   // ===== 版・定数 =====
-  var OSECHI_UI_BUILD = 'osechi-ui-2026-11-26a';
+  var OSECHI_UI_BUILD = 'osechi-ui-2026-11-26b';
   var SESSION_KEY = 'osechi_session_v1';        // sessionStorage（このタブだけ・閉じれば消える）
   var LAST_DONE_KEY = 'osechi_last_done_v1';    // sessionStorage（直前の受付番号だけ）
   var DRAFT_DB = 'osechi_drafts_v1';            // IndexedDB（作りかけ・12時間）
@@ -1821,6 +1821,8 @@
     '.osechi-blist{max-height:40vh;overflow:auto;margin:8px 0;padding:6px 8px 6px 2.4em;font-size:15px;line-height:1.7;border:1px solid #e0d5c5;border-radius:8px;background:#fffaf2}',
     '.osechi-chgcard.osechi-chgcard-done{border:2px solid #cdbfae;background:#fafaf7}',
     '.osechi-chghead{font-size:17px;margin:0 0 4px}',
+    // 同じ注文の何回かの直し（2026-11-26b）: 1枚のカードの中に、回ごとの区切り（新しい順）
+    '.osechi-chgev-many{border-top:1px dashed #d8c8b2;padding-top:6px;margin-top:6px}',
     '.osechi-chgbadge{display:inline-flex;align-items:center;gap:6px;background:#fff4c2;border:2px solid #c62828;color:#9a1c12;border-radius:999px;padding:2px 10px;font-weight:900;font-size:14px;margin:2px 0 6px}',
     '.osechi-chgbadge span{font-weight:900}',
     '.osechi-chgcard-done .osechi-chgbadge{background:#f1f1ec;border-color:#9aa0a6;color:#3f4650}',
@@ -4580,7 +4582,7 @@
       step('🏢', '全店（本部の方）', '店を選ぶ欄のいちばん上の「全店」を選ぶと、6つの切り替えとも、店ごとの数と全店の合計が出ます。おせち集計は、先に店ごとのいまの累計、その下に全店の締め日ごとの累計です。お客様の名前は出しません（店を1つ選ぶと出ます）。CSV と印刷は店を1つ選ぶと使えます。'),
       step('🍣', '店内受注品一覧', '受注状況のいちばん右「店内受注品一覧」で、店で作る商品（惣菜・鮮魚・サービスカウンターの担当）を、受け渡しの日ごと・担当ごとに、作る数と、いちばん早い受取の時刻で見られます（お客様の名前は出しません）。印刷は A4 横・1日1ページ、Excel にもできます。'),
       step('🗂️', '全店の注文（本部の方）', '店を選ぶ欄の下の「全店の注文（Excel）をダウンロード」で、全店の注文（取消を除く）を1つの Excel にできます。店を選ばなくても押せます。1行が1件の注文（1枚の申込書）で、左に店の名前、そのあとに注文の項目と商品ごとの数（日付の商品 20〜32番も）が並びます。'),
-      step('！', '確定後の変更（本部の方）', '報告日の 8:00（本部が数を確定する朝）より後に、店が直した・取り消した注文があると、上に赤と黄色の帯が出ます。押すと、店・受付番号・お客様・いつ・だれ・どの〆か・変えた所（前→後）が出ます。確かめたら「確認した」（本部のだれが押しても、全員に「確認済み」と出ます）。おせち集計の表では、その締め日の行に「！締め後の変更 N 件」が出ます。もう報告した期間の承り日で、あとから入った受注も、同じ帯と一覧に「後から入った受注」として出ます。'),
+      step('！', '確定後の変更（本部の方）', '報告日の 8:00（本部が数を確定する朝）より後に、店が直した・取り消した注文があると、上に赤と黄色の帯が出ます。押すと、店・受付番号・お客様・いつ・だれ・どの〆か・変えた所（前→後）が出ます。確かめたら「確認した」（本部のだれが押しても、全員に「確認済み」と出ます）。数は注文の数です（同じ注文を何回か直しても1件・確認も注文ごとに1回）。おせち集計の表では、報告済みの締め日の行の、数の変わった表（店渡し／宅配）に「！締め後の変更 N 件」が出ます（集計中の行には出ません）。もう報告した期間の承り日で、あとから入った受注も、同じ帯と一覧に「後から入った受注」として出ます。'),
       step('🗓', '受付日 未確認（前からの注文）', '受付日を入れる前に入った注文は「受付日 未確認」の印が付き、登録した時刻の締めで数えています。申込書ごとの「受付日 未確認だけ」で探し、行の「直す」で承り日を入れると、その日の締めへ移ります（直した記録が残ります）。'),
       step('⏸', '受付と商品の停止（本部の方）', 'はじめの画面の「受付と商品の停止」から、商品ごとに 通常／売り切れ／要電話確認 を切り替え、全店の受付を一時停止・再開できます。押すとすぐ全店に効きます（押した人と時刻を記録します）。全店の受付を止めるときは、先に確かめます。')
     ]);
@@ -4740,11 +4742,38 @@
         at: cleanText(x.at, 20), by: cleanText(x.by, 120), op: cleanText(x.op, 10), registeredBy: cleanText(x.registeredBy, 120), route: cleanText(x.route, 10),
         closing: cleanText(x.closing, 12), report: cleanText(x.report, 12), confirmAt: cleanText(x.confirmAt, 20),
         diffs: Array.isArray(x.diffs) ? x.diffs.slice(0, 80).map(function (d) { return { label: cleanText(d && d.label, 40), before: cleanText(d && d.before, 160), after: cleanText(d && d.after, 160) }; }) : null,
-        checked: ck
+        checked: ck,
+        // おせち集計の印（2026-11-26b・窓口 changeMarksOf_）: 確定した行と、数のある表。無い（前の窓口）なら null＝〆の行に両方の表
+        marks: Array.isArray(x.marks) ? x.marks.slice(0, 4).map(function (m) { return { closing: ymd12(m && m.closing), store: !!(m && m.store === true), delivery: !!(m && m.delivery === true) }; })
+          .filter(function (m) { return m.closing; }) : null
       });
     });
-    var unconfirmed = toInt(c.unconfirmed) >= 0 ? toInt(c.unconfirmed) : items.filter(function (x) { return !x.checked; }).length;
-    return { unconfirmed: unconfirmed, total: toInt(c.total) >= 0 ? toInt(c.total) : items.length, rule: cleanText(c.rule && c.rule.text, 120), items: items };
+    // 件数は注文の数（2026-11-26b）。窓口の数が無ければ、ここで注文ごとに数える
+    var byOrder = changeGroups(items);
+    var unconfirmed = toInt(c.unconfirmed) >= 0 ? toInt(c.unconfirmed) : byOrder.filter(function (g) { return !g.checked; }).length;
+    return { unconfirmed: unconfirmed, total: toInt(c.total) >= 0 ? toInt(c.total) : byOrder.length, rule: cleanText(c.rule && c.rule.text, 120), items: items };
+  }
+  /**
+   * 版ごとの items → 注文ごと（新しい順・2026-11-26b）: [{ orderId, store, customer, items（新しい順）, checked（全部の版を確認済み）, version（いちばん新しい版）,
+   *   checkedBy（いちばん新しい確認）}]。一覧のカードと「確認した」は注文ごと（同じ注文の何回かの直しは1件）
+   */
+  function changeGroups(items) {
+    var out = [], at = {};
+    (items || []).forEach(function (x) {
+      var g = at[x.orderId];
+      if (!g) { g = at[x.orderId] = { orderId: x.orderId, store: x.store, customer: x.customer, items: [], checked: true, version: 0, checkedBy: null }; out.push(g); }
+      g.items.push(x);
+      if (!x.checked) g.checked = false;
+      if (x.version > g.version) g.version = x.version;
+      if (!g.customer && x.customer) g.customer = x.customer;
+      if (x.checked && (!g.checkedBy || str(x.checked.at) > str(g.checkedBy.at))) g.checkedBy = x.checked;
+    });
+    return out;
+  }
+  /** 注文が、その〆の行（とその表）に印を持つか（集計の行から開いたときの絞り込み）。印の無い前の窓口は〆・前の〆・後の〆で */
+  function changeHits(x, closing, method) {
+    if (x.marks) return x.marks.some(function (m) { return m.closing === closing && (!method || m[method]); });
+    return x.closing === closing || x.fromClosing === closing || x.toClosing === closing;
   }
   /** 受注状況（openList）で受け取った一覧を置く（受注状況の部品が呼ぶ） */
   function setChanges(c) {
@@ -4800,13 +4829,14 @@
         return;
       }
     }
-    var filter = opts.filter === 'all' ? 'all' : 'open', scope = { store: opts.store || '', closing: opts.closing || '' };
+    var filter = opts.filter === 'all' ? 'all' : 'open', scope = { store: opts.store || '', closing: opts.closing || '', method: opts.method === 'store' || opts.method === 'delivery' ? opts.method : '' };
     var top = h('div'), listBox = h('div', { 'data-step': 'change-list' });
+    /** 注文ごと（2026-11-26b）: 同じ注文の何回かの直しは1枚のカード。集計の行から開いたときは、その〆（とその表）に印のある注文だけ */
     function shown() {
-      return (CHG.data ? CHG.data.items : []).filter(function (x) {
-        if (filter === 'open' && x.checked) return false;
-        if (scope.store && x.store !== scope.store) return false;
-        if (scope.closing && x.closing !== scope.closing && x.fromClosing !== scope.closing && x.toClosing !== scope.closing) return false;
+      return changeGroups(CHG.data ? CHG.data.items : []).filter(function (g) {
+        if (filter === 'open' && g.checked) return false;
+        if (scope.store && g.store !== scope.store) return false;
+        if (scope.closing && !g.items.some(function (x) { return changeHits(x, scope.closing, scope.method); })) return false;
         return true;
       });
     }
@@ -4821,18 +4851,63 @@
       top.appendChild(tabs);
       if (scope.store || scope.closing) {
         top.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'change-scope' }, [
-          '絞り込み: ' + [scope.store, scope.closing ? mdOf(scope.closing) + '〆' : ''].filter(Boolean).join('・') + ' ',
-          h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-link', 'data-act': 'change-scope-clear', text: '全店・全部の〆を見る', on: { click: function () { scope = { store: '', closing: '' }; draw(); } } })
+          '絞り込み: ' + [scope.store, scope.closing ? mdOf(scope.closing) + '〆' : '', scope.method ? (scope.method === 'store' ? '店渡し' : '宅配') + 'の表' : ''].filter(Boolean).join('・') + ' ',
+          h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-link', 'data-act': 'change-scope-clear', text: '全店・全部の〆を見る', on: { click: function () { scope = { store: '', closing: '', method: '' }; draw(); } } })
         ]));
       }
-      var xs = shown();
-      if (!xs.length) listBox.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'change-none', text: filter === 'open' ? '未確認の変更はありません。' : '確定後の変更はありません。' }));
-      xs.forEach(function (x) { listBox.appendChild(changeCard(x)); });
-      if (d.total > d.items.length) listBox.appendChild(h('p', { 'class': 'osechi-small', text: '新しい ' + d.items.length + ' 件を出しています（全部で ' + d.total + ' 件）。' }));
+      var gs = shown();
+      if (!gs.length) listBox.appendChild(h('div', { 'class': 'osechi-info', 'data-step': 'change-none', text: filter === 'open' ? '未確認の変更はありません。' : '確定後の変更はありません。' }));
+      gs.forEach(function (g) { listBox.appendChild(changeCard(g)); });
+      var nOrders = changeGroups(d.items).length;
+      if (d.total > nOrders) listBox.appendChild(h('p', { 'class': 'osechi-small', text: '新しい ' + nOrders + ' 件を出しています（全部で ' + d.total + ' 件）。' }));
     }
-    function changeCard(x) {
-      var card = h('div', { 'class': 'osechi-chgcard' + (x.checked ? ' osechi-chgcard-done' : ''), 'data-key': x.key, 'data-step': 'change-card', 'data-kind': x.kind });
-      var head = h('div', { 'class': 'osechi-chghead' }, [h('b', { text: x.store + '・受付番号 ' + x.orderId }), x.customer ? '・' + x.customer + ' 様' : '']);
+    /** 1つの注文のカード: 上に店・受付番号・お客様、その下に直した回ごとの「どの〆・いつ・だれ・前→後」（新しい順）、いちばん下に「確認した」（注文ごと） */
+    function changeCard(g) {
+      var last = g.items[0];
+      var card = h('div', { 'class': 'osechi-chgcard' + (g.checked ? ' osechi-chgcard-done' : ''), 'data-key': last.key, 'data-order': g.orderId, 'data-step': 'change-card', 'data-kind': last.kind });
+      var head = h('div', { 'class': 'osechi-chghead' }, [h('b', { text: g.store + '・受付番号 ' + g.orderId }), g.customer ? '・' + g.customer + ' 様' : '',
+        g.items.length > 1 ? h('span', { 'class': 'osechi-small', text: '（この注文の変更 ' + g.items.length + ' 回・1件として数えます）' }) : null]);
+      var parts = [head];
+      g.items.forEach(function (x) { parts.push(changeEvent(x, g.items.length > 1)); });
+      var foot = h('div', { 'class': 'osechi-chgfoot' });
+      function drawFoot(msg) {
+        clear(foot);
+        if (g.checked) { foot.appendChild(h('div', { 'class': 'osechi-chgok', 'data-step': 'change-checked', text: '✓ 確認済み（' + ((g.checkedBy && g.checkedBy.by) || '?') + '・' + fmtDateTime(g.checkedBy && g.checkedBy.at) + '）' })); return; }
+        var b = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'change-confirm', text: g.items.length > 1 ? 'この注文の変更を確認した' : '確認した' });
+        b.addEventListener('click', async function () {
+          if (b.disabled) return;
+          b.disabled = true; b.textContent = '記録しています…';
+          try {
+            // 注文ごと: 見ている版まで（窓口は、それより後に入った直しを確認しない）
+            var r = await api('confirmChange', { orderId: g.orderId, version: g.version });
+            var ck = { by: cleanText(r && r.checked && r.checked.by, 120), at: cleanText(r && r.checked && r.checked.at, 20) };
+            g.items.forEach(function (x) { if (!x.checked && x.version <= g.version) x.checked = ck; });
+            g.checked = g.items.every(function (x) { return !!x.checked; });
+            g.checkedBy = ck;
+            if (toInt(r && r.unconfirmed) >= 0) CHG.data.unconfirmed = toInt(r.unconfirmed);
+            syncChangeCount();
+            if (g.checked) card.classList.add('osechi-chgcard-done');
+            drawFoot('');
+            clear(top); draw();   // 件数と並びを直す（未確認だけを見ていれば、この注文は一覧から外れる）
+            if (S.phase === 'intro') refreshIntro();
+            var lm = root.OsechiListModule;
+            if (lm && typeof lm.changesUpdated === 'function') { try { lm.changesUpdated(); } catch (e2) { /* 何もしない */ } }
+          } catch (e) {
+            if (isAuthStop(e)) { closeSub(); showAuthStop(e); return; }
+            drawFoot(e.message || '記録できませんでした。');
+          }
+        });
+        foot.appendChild(b);
+        if (msg) foot.appendChild(h('div', { 'class': 'osechi-fieldmsg', role: 'alert', text: msg }));
+      }
+      drawFoot('');
+      parts.push(foot);
+      add(card, parts);
+      return card;
+    }
+    /** 直した1回（版）: どの〆・いつ・だれ・前→後 */
+    function changeEvent(x, many) {
+      var box = h('div', { 'class': many ? 'osechi-chgev osechi-chgev-many' : 'osechi-chgev', 'data-step': 'change-event', 'data-key': x.key, 'data-kind': x.kind });
       var meta = h('div', { 'class': 'osechi-small' }, lines(x.kind === 'late'
         ? fmtDateTime(x.at) + ' に入力（' + (x.by || '?') + (x.route ? '・' + x.route + 'から' : '') + '）＝報告のあと'
         : fmtDateTime(x.at) + ' に「' + (x.op || '変更') + '」（' + (x.by || '?') + '）\n' +
@@ -4849,36 +4924,8 @@
           }))
         ]);
       }
-      var foot = h('div', { 'class': 'osechi-chgfoot' });
-      function drawFoot(msg) {
-        clear(foot);
-        if (x.checked) { foot.appendChild(h('div', { 'class': 'osechi-chgok', 'data-step': 'change-checked', text: '✓ 確認済み（' + (x.checked.by || '?') + '・' + fmtDateTime(x.checked.at) + '）' })); return; }
-        var b = h('button', { type: 'button', 'class': 'osechi-btn osechi-btn-primary', 'data-act': 'change-confirm', text: '確認した' });
-        b.addEventListener('click', async function () {
-          if (b.disabled) return;
-          b.disabled = true; b.textContent = '記録しています…';
-          try {
-            var r = await api('confirmChange', { orderId: x.orderId, version: x.version });
-            x.checked = { by: cleanText(r && r.checked && r.checked.by, 120), at: cleanText(r && r.checked && r.checked.at, 20) };
-            if (toInt(r && r.unconfirmed) >= 0) CHG.data.unconfirmed = toInt(r.unconfirmed);
-            syncChangeCount();
-            card.classList.add('osechi-chgcard-done');
-            drawFoot('');
-            clear(top); draw();   // 件数と並びを直す（未確認だけを見ていれば、この1件は一覧から外れる）
-            if (S.phase === 'intro') refreshIntro();
-            var lm = root.OsechiListModule;
-            if (lm && typeof lm.changesUpdated === 'function') { try { lm.changesUpdated(); } catch (e2) { /* 何もしない */ } }
-          } catch (e) {
-            if (isAuthStop(e)) { closeSub(); showAuthStop(e); return; }
-            drawFoot(e.message || '記録できませんでした。');
-          }
-        });
-        foot.appendChild(b);
-        if (msg) foot.appendChild(h('div', { 'class': 'osechi-fieldmsg', role: 'alert', text: msg }));
-      }
-      drawFoot('');
-      add(card, [head, badge, meta, diffs, foot]);
-      return card;
+      add(box, [badge, meta, diffs, many && x.checked ? h('div', { 'class': 'osechi-small osechi-chgok', text: '✓ この回は確認済み（' + (x.checked.by || '?') + '）' }) : null]);
+      return box;
     }
     draw();
     openSub('確定後の変更（本部）', [top, listBox]);
@@ -5033,7 +5080,8 @@
         CALL_LOG_MAX: CALL_LOG_MAX, CallLog: CallLog, logCall: logCall, cleanMs: cleanMs, timingLine: timingLine, secText: secText, ACTION_LABELS: ACTION_LABELS, BULK_CANCEL_MAX: BULK_CANCEL_MAX,
         PRECHECK_DELAY_MS: PRECHECK_DELAY_MS, PRECHECK_MAX: PRECHECK_MAX,
         // 2026-11-01: 止める・取扱いなし・確定後の変更
-        cleanStopLog: cleanStopLog, cleanChanges: cleanChanges, cleanConfirmRow: cleanConfirmRow, jstMs: jstMs, closedTitle: closedTitle, NH_QTY_TEXT: NH_QTY_TEXT
+        cleanStopLog: cleanStopLog, cleanChanges: cleanChanges, cleanConfirmRow: cleanConfirmRow, jstMs: jstMs, closedTitle: closedTitle, NH_QTY_TEXT: NH_QTY_TEXT,
+        changeGroups: changeGroups, changeHits: changeHits   // 2026-11-26b: 注文ごと・集計の行の絞り込み
       }
     };
   }

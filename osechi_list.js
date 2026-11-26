@@ -38,7 +38,7 @@
 (function (root) {
   'use strict';
 
-  var BUILD = 'osechi-ui-2026-11-26a';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
+  var BUILD = 'osechi-ui-2026-11-26b';   // osechi.js の OSECHI_UI_BUILD と同じ値（違えば osechi.js が使わない）
   var STYLE_ID = 'osechi-list-style';
   var PRINT_ID = 'osechi-print';
   var PRINT_ROWS = 15;                   // ひな形の1ページの行数（15行を超えたら「（続き）」）
@@ -846,20 +846,27 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var server = m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5], +(m[6] || 0)) : NaN;
     return { closing: row.closing, report: row.report, confirmAt: row.confirmAt, skewMs: isFinite(server) ? server - L.data.at : 0 };
   }
-  /** 本部だけ: いまの店の、締め日の行ごとの確定後の変更の件数 → { 'yyyy/MM/dd': { total, open } } */
-  function changeMarks() {
-    var out = {};
+  /**
+   * 本部だけ: いまの店の、締め日の行ごとの確定後の変更の件数 → { 'yyyy/MM/dd': { total, open } }（method＝その表: store／delivery）。
+   *   2026-11-26b（PO「２件直したのに３件」「まだ11/29を迎えてないのに２件変更」）: 数は注文の数（同じ注文の何回かの直し・店渡しと宅配の両方でも1件）。
+   *   印を付ける行と表は窓口の marks（確定した＝報告日の朝8時を過ぎた行・その表に数のある注文）だけ。集計中の行・抜けた側のまだ報告していない行には付けない。
+   *   marks の無い前の窓口: その〆の行（両方の表）だけ（前の〆・後の〆には付けない）
+   */
+  function changeMarks(method) {
+    var out = {}, ids = {};
     if (!L || !L.host || !L.host.me || L.host.me.role !== 'hq' || typeof L.host.changes !== 'function') return out;
     var d = L.host.changes();
     (d && d.items ? d.items : []).forEach(function (x) {
       if (L.store !== ALL_STORES && x.store !== L.store) return;   // 全店は全部の店の分
-      // 受付日を直して〆が移った修正（追補 v12）は、前の〆と後の〆の両方の行に印（どちらの数も変わる）
-      [x.closing, x.fromClosing, x.toClosing].filter(function (c, i, a) { return c && a.indexOf(c) === i; }).forEach(function (c) {
-        var m = out[c] = out[c] || { total: 0, open: 0 };
-        m.total++;
-        if (!x.checked) m.open++;
+      var ms = Array.isArray(x.marks) ? x.marks : [{ closing: x.closing, store: true, delivery: true }];
+      ms.forEach(function (m) {
+        if (!m || !m.closing || (method && !m[method])) return;
+        var k = m.closing, e = ids[k] = ids[k] || { all: {}, open: {} };
+        e.all[x.orderId] = true;
+        if (!x.checked) e.open[x.orderId] = true;
       });
     });
+    Object.keys(ids).forEach(function (k) { out[k] = { total: Object.keys(ids[k].all).length, open: Object.keys(ids[k].open).length }; });
     return out;
   }
   /** 本部だけ: 受注状況のいちばん上の赤と黄色の帯（確定後の変更の未確認） */
@@ -1898,14 +1905,14 @@ root.SearchNorm={key:key,terms:terms,hit:hit,locate:locate,fold:fold,skel:skel,r
     var cap = pc ? h('tr', { 'class': 'osechi-scap' }, h('th', { scope: 'colgroup', colspan: String(head.length), 'class': 'osechi-scap-' + method, text: METHOD_MARK[method] + '（累計）' })) : null;
     var when = hhmm(t.asOf), day = str(t.asOf).match(/^\d{4}\/(\d{2})\/(\d{2})/);
     var asOfText = (day ? Number(day[1]) + '/' + Number(day[2]) + ' ' : '') + when;
-    var marks = changeMarks();   // 本部だけ: 締め日の行ごとの、確定後の変更の件数（この店）
+    var marks = changeMarks(method);   // 本部だけ: 締め日の行ごとの、確定後の変更の件数（この店・この表に数のある注文の数）
     var body = t.rows.map(function (r) {
       var mk = marks[r.closing];
       var repCell = h('td', null, [mdDow(r.report)]);
       if (mk) {
         repCell.appendChild(h('button', { type: 'button', 'class': 'osechi-schg', 'data-act': 'sum-changes', 'data-closing': r.closing,
           'aria-label': mdDow(r.closing) + '〆の、締め後の変更 ' + mk.total + ' 件を見る', text: '！締め後の変更 ' + mk.total + ' 件' + (mk.open ? '（未確認 ' + mk.open + '）' : ''),
-          on: { click: function () { L.host.openChanges({ store: isAll() ? '' : L.store, closing: r.closing, filter: 'all' }); } } }));
+          on: { click: function () { L.host.openChanges({ store: isAll() ? '' : L.store, closing: r.closing, method: method, filter: 'all' }); } } }));
       }
       return h('tr', { 'class': (r.inProgress ? 'osechi-snow' : '') + (r.filled ? ' osechi-sfilled' : '') + (r.provisional ? ' osechi-sprov' : '') + (mk ? ' osechi-schgrow' : ''), 'data-kind': r.provisional ? 'in-progress' : null }, [
         h('th', { scope: 'row', 'class': 'osechi-sfix' }, r.provisional
